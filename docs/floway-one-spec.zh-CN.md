@@ -244,6 +244,8 @@ Desktop Shell 不实现 Provider、路由、Key、用量或配置业务。
 - sidecar 异常退出时，托盘显示错误状态并提供查看日志和重启操作。
 - 操作系统关机或用户注销时尽力优雅停止，不阻塞系统退出。
 
+正常关闭窗口只隐藏窗口，Desktop Shell 和 sidecar 都继续运行。Desktop Shell 正常退出或异常崩溃时，sidecar 必须随 owner 进程一起终止；MVP 不接管上一次壳进程遗留的 sidecar。各平台应使用可强制验证的 owner-lifetime 机制，例如 Windows Job Object、Linux parent-death signal，以及 macOS 的父进程监测或生命周期管道，而不是假设子进程会自动退出。
+
 ### 8.3 托盘菜单
 
 MVP 托盘菜单包含：
@@ -261,6 +263,8 @@ MVP 托盘菜单包含：
 发行包包含与目标平台和架构匹配的 Node.js runtime、编译后的 Gateway、生产依赖、数据库 migrations 和 Dashboard 静态资源。
 
 MVP 不要求把所有资源压缩成一个二进制文件。`sharp` 等原生依赖必须随目标平台单独构建和验证，不能依赖用户机器现场编译。
+
+首个公开 macOS 版本同时发布 arm64 和 x64 两个独立安装包，不制作 universal binary。两个架构使用相同版本号和功能集合，并在各自的原生 runner 上完成 sidecar、`sharp`、签名和安装验证。
 
 ## 9. 单租户多 Key 模型
 
@@ -432,15 +436,18 @@ UI 隐藏是体验优化，后端拒绝才是安全和数据一致性保证。
 
 ### 12.4 本地凭据
 
-Floway One 会保存订阅 OAuth token 和 Provider API Key。正式发行前必须明确凭据静态存储方案：
+Floway One 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与系统凭据存储结合的方案：
 
 - 数据目录和敏感文件使用仅当前用户可读写的权限。
-- 主密钥优先保存到 macOS Keychain、Windows Credential Manager 或 Linux Secret Service。
-- SQLite 中的 Provider 凭据应使用主密钥加密，或迁移到系统凭据存储。
+- 每台设备生成独立的 256-bit 主密钥。
+- 主密钥保存到 macOS Keychain、Windows Credential Manager 或 Linux Secret Service，不与 SQLite 放在同一目录。
+- SQLite 中的 Provider OAuth token、Provider API Key 和其他可恢复明文凭据使用主密钥执行带认证的字段级加密。
+- 加密记录携带格式版本、随机 nonce 和认证信息，以支持后续密钥轮换与算法迁移。
+- 系统凭据存储不可用时默认启动失败并给出明确错误；是否为无 Secret Service 的 Linux 环境提供受限 key-file fallback，留到 Linux 发行阶段决定。
 - 日志、崩溃报告和导出文件不得意外包含明文凭据。
-- 备份导出若包含凭据，必须在 UI 中明确提示其敏感性。
+- 不得把主密钥直接写入普通备份。
 
-仅依赖“数据库位于本机”不足以完成正式版安全要求。
+Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与应用配置位于同一目录。Floway One 保存的是可长期使用的订阅凭据，因此只借鉴字段加密方式，不沿用同目录 key-file 作为桌面正式版的正常路径。
 
 ### 12.5 WebView
 
@@ -502,12 +509,26 @@ Floway One 会保存订阅 OAuth token 和 Provider API Key。正式发行前必
 - 导入不得静默丢弃其他用户或重写 Key 所有权。
 - 恢复完成后应验证单 owner 不变量。
 
+Floway One 提供两种明确区分的导出：
+
+| 导出类型 | 默认 | 内容 | 保护方式 |
+| --- | --- | --- | --- |
+| 完整备份 | 是 | 包含恢复现有客户端所需的 Provider 凭据、API Key、配置和状态。 | 用户提供备份密码，使用内存困难 KDF 派生独立备份密钥，再对完整归档执行带认证加密。 |
+| 安全导出 | 否 | 保留非敏感配置结构，移除 Provider 凭据、API Key 明文、session 和服务器私密材料。 | 可输出明文，适合诊断、分享和 Issue 附件。 |
+
+完整备份不得默认产生明文文件，备份密码不得保存到数据库或系统凭据存储。自动升级前创建的同机恢复点可以使用设备主密钥保护，因为它不承担跨设备迁移职责。
+
 ### 14.3 应用升级
 
 - Desktop Shell、Node sidecar、Gateway、migrations 和 Dashboard 必须作为一个版本整体发布。
 - 不允许桌面壳与 sidecar 独立升级到不兼容版本。
-- 升级包必须签名并校验。
-- 升级失败应保留上一版本可执行文件和升级前数据备份。
+- 默认使用 GitHub Releases 的 stable channel，预发布版本通过用户显式选择的 preview channel 提供。
+- 使用 Tauri updater 生成并校验签名更新清单和安装包；Tauri updater 签名与操作系统代码签名分别管理。
+- macOS 安装包使用 Developer ID 签名并完成 notarization。
+- 应用在后台检查和下载完整更新，下一次启动前提示用户安装，不在运行中的 LLM 请求期间替换文件。
+- 安装更新前创建受设备主密钥保护的数据库恢复点。
+- MVP 不承诺应用二进制自动回滚；更新后健康检查失败时进入恢复界面，保留数据库恢复点、完整错误和上一版本下载入口。
+- 数据库 migration 失败时不得标记新版本健康，也不得覆盖升级前恢复点。
 
 ## 15. 发行策略
 
@@ -521,7 +542,7 @@ Floway One 会保存订阅 OAuth token 和 Provider API Key。正式发行前必
 ### 15.2 阶段二：macOS 桌面 MVP
 
 - Tauri 2 桌面壳。
-- macOS arm64 首发，随后验证 x64。
+- macOS arm64 和 x64 同时发布独立安装包。
 - 托盘、单实例、关闭隐藏和完全退出。
 - sidecar 打包、签名和基础更新机制。
 - Personal Profile 和单 owner 强制。
@@ -557,6 +578,7 @@ Floway One 会保存订阅 OAuth token 和 Provider API Key。正式发行前必
 | FO-DESK-003 | 用户必须能从托盘重新打开窗口。 |
 | FO-DESK-004 | 完全退出必须优雅停止 sidecar。 |
 | FO-DESK-005 | sidecar 异常退出必须在桌面壳中可见。 |
+| FO-DESK-006 | Desktop Shell 正常退出或异常崩溃后不得遗留无人管理的 sidecar。 |
 | FO-TENANT-001 | Personal Profile 必须只允许 seed owner 存在。 |
 | FO-TENANT-002 | 服务端必须拒绝创建、删除或降级 owner。 |
 | FO-TENANT-003 | 所有新 API Key 必须归属于 owner。 |
@@ -575,6 +597,10 @@ Floway One 会保存订阅 OAuth token 和 Provider API Key。正式发行前必
 | FO-DATA-001 | 重启应用后 Upstream、Key 和设置必须完整保留。 |
 | FO-DATA-002 | Personal Profile 必须拒绝不符合单 owner 不变量的备份导入。 |
 | FO-DATA-003 | migration 或存储失败必须阻止服务进入伪健康状态。 |
+| FO-BACKUP-001 | 默认完整备份必须包含恢复所需凭据并使用独立备份密码加密。 |
+| FO-BACKUP-002 | 安全导出必须移除所有可直接使用的凭据和 session。 |
+| FO-UPDATE-001 | stable 更新必须通过 Tauri updater 签名及目标平台代码签名验证。 |
+| FO-UPDATE-002 | 更新前必须创建受保护的数据库恢复点。 |
 
 ## 17. 非功能需求
 
@@ -620,6 +646,10 @@ MVP 只有同时满足以下条件才可称为可用：
 13. 外部网页无法通过免密登录获得本机控制面 session。
 14. 备份恢复后仍满足唯一 owner 和 Key 所有权不变量。
 15. 生产发行包在目标系统上通过真实安装、启动、Provider 登录、streaming 请求、WebSocket 和卸载验证。
+16. macOS arm64 和 x64 安装包均通过相同的端到端验收。
+17. 强制终止 Desktop Shell 后，owner-lifetime 机制能够终止 sidecar；重新启动不会遇到自身遗留的端口占用。
+18. 完整备份不能在没有密码的情况下读取，安全导出中不存在可直接使用的 Provider、API Key 或 session 凭据。
+19. 更新包签名错误、更新后健康检查失败和 migration 失败均不会删除升级前恢复点。
 
 ## 19. 测试策略
 
@@ -640,6 +670,8 @@ MVP 只有同时满足以下条件才可称为可用：
 - Key Upstream 范围测试。
 - 多用户备份导入拒绝测试。
 - Runtime Profile capability 序列化测试。
+- 敏感字段落盘密文与主密钥缺失失败测试。
+- 完整备份密码验证、篡改拒绝和安全导出脱敏测试。
 
 ### 19.3 Dashboard
 
@@ -653,6 +685,7 @@ MVP 只有同时满足以下条件才可称为可用：
 
 - 单实例测试。
 - sidecar 启停和异常退出测试。
+- Desktop Shell 被强制终止后的 sidecar 清理测试。
 - 关闭窗口继续运行测试。
 - 托盘恢复与完全退出测试。
 - 外部链接隔离测试。
@@ -661,9 +694,11 @@ MVP 只有同时满足以下条件才可称为可用：
 ### 19.5 发行验证
 
 - 每个平台在干净环境安装。
+- macOS arm64 与 x64 分别在原生架构完成安装和端到端请求验证。
 - 验证不依赖系统 Node.js 或编译工具链。
 - 验证原生依赖与 CPU 架构匹配。
 - 验证应用签名和升级包校验。
+- 验证错误签名、损坏更新包和更新后健康检查失败路径。
 - 验证升级前备份和失败回滚。
 
 ## 20. 上游同步策略
@@ -689,16 +724,46 @@ Floway One 应保持以下代码组织原则：
 | 个人版条件散布 | 上游同步困难、行为逐渐分叉。 | 使用 Runtime Profile 和集中策略模块。 |
 | Tauri 壳与 sidecar 版本错配 | UI、数据库和 Gateway 不兼容。 | 作为单一版本整体发布和回滚。 |
 
-## 22. 待决策项
+## 22. Clash 对标决策
 
-- macOS 首发是否同时支持 arm64 和 x64。
-- 正式版凭据采用字段级加密、系统凭据存储，还是两者结合。
-- sidecar 在 Desktop Shell 崩溃后继续运行，还是由系统自动清理。
-- 自动升级采用的发布渠道、签名和回滚机制。
-- Floway One 是否提供独立的 headless CLI，以及它是否属于 MVP。
-- 应用设置中是否允许修改端口，还是首版固定为 `8788`。
-- 请求记录默认关闭还是提供短期默认保留时间。
-- 备份是否默认包含敏感凭据，以及是否提供不含凭据的安全导出。
+本节以 Clash Verge Rev 的桌面壳与 Mihomo core 组合为参照。Floway One 借鉴其“桌面壳管理独立 core”的产品结构，但根据 LLM 客户端持久化 endpoint、Provider token 价值更高、请求正文更敏感等差异调整实现。
+
+| 议题 | Clash Verge Rev 观察 | Floway One 决策 |
+| --- | --- | --- |
+| macOS 架构 | 官方发布分别构建 Apple Silicon 和 Intel 安装包。 | 首个公开版本同时发布 arm64 与 x64 独立安装包。 |
+| 凭据存储 | 对 WebDAV 字段使用 AES-256-GCM，但加密 key 保存在应用目录。 | 使用字段级带认证加密，主密钥由系统凭据存储保护，不在普通配置目录放置主密钥。 |
+| 窗口关闭 | CloseRequested 被拦截并隐藏窗口，core 和壳继续运行。 | 相同行为；窗口关闭不停止 Gateway。 |
+| 壳进程退出 | 正常退出执行 core cleanup；另有系统 service 模式。 | MVP 不安装系统 service；壳正常退出或崩溃时由 owner-lifetime 机制清理 sidecar。 |
+| 自动升级 | GitHub Releases、Tauri updater 签名、平台代码签名，后台下载并延后安装。 | 采用相同主干方案，增加升级前数据库恢复点；MVP 健康失败进入恢复界面，不承诺自动二进制回滚。 |
+| Headless CLI | Mihomo core 作为独立 externalBin 随桌面应用发行，桌面产品仍以 GUI 管理为主。 | 内部 sidecar 保持可独立启动，但 headless CLI 不属于 MVP；桌面稳定后再定义受支持的 `serve/status/open` 接口。 |
+| 端口 | 代理端口可配置，冲突时可以为当前会话选择临时端口。 | 默认 `8788`，允许在高级设置中显式修改；冲突时失败并诊断，绝不自动漂移。 |
+| 请求记录 | 连接和日志主要服务实时诊断，用户配置备份独立处理。 | 聚合用量和性能默认开启，请求正文记录默认关闭，由每个 API Key 显式开启并选择保留期。 |
+| 备份 | 备份移除 WebDAV 凭据，但配置和 profiles 仍可能包含连接凭据。 | 默认提供密码加密的完整备份，同时提供不含任何可用凭据的安全导出。 |
+
+### 22.1 已确定的产品默认值
+
+- macOS 首发同时支持 arm64 与 x64。
+- 凭据采用字段级加密与系统凭据存储结合。
+- sidecar 不在 Desktop Shell 崩溃后继续成为孤儿进程。
+- stable channel 使用 GitHub Releases 与 Tauri updater 签名更新。
+- headless CLI 不属于 MVP。
+- 端口默认 `8788`，可以显式修改，不自动 fallback。
+- 聚合统计默认开启，请求正文记录默认关闭。
+- 完整备份默认加密，安全导出默认脱敏。
+
+### 22.2 参考实现
+
+以下事实核对自 Clash Verge Rev 官方仓库固定提交 `f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a`：
+
+- [Tauri 配置、externalBin 与 updater 签名](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/tauri.conf.json)
+- [macOS arm64/x64 构建、Apple 签名与 updater 产物](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/.github/workflows/release.yml)
+- [窗口关闭隐藏与应用退出清理](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/lib.rs)
+- [core 生命周期管理](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/core/manager/lifecycle.rs)
+- [端口冲突的会话级 fallback](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/config/port.rs)
+- [AES-256-GCM 字段加密](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/config/encrypt.rs)
+- [同目录加密 key 的生成与读取](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/utils/dirs.rs)
+- [备份内容与 WebDAV 凭据移除](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/core/backup.rs)
+- [后台下载与下次启动安装更新](https://github.com/clash-verge-rev/clash-verge-rev/blob/f5cc24ec9fc7c6f025ecbd5b1952c27b3facc17a/src-tauri/src/core/updater.rs)
 
 ## 23. 成功判断
 
