@@ -148,9 +148,12 @@ pnpm run dev
 pnpm run verify
 ```
 
-`verify` chains every check `.github/workflows/verify.yaml` runs, so a green run
-locally is a green run on a pull request. Each link is also a script of its own,
-in the order the chain runs them: `typegen`, `lint`, `typecheck`, `test`,
+`verify` chains every root verification script named by
+`.github/workflows/verify.yaml`, reproducing that script set on the current
+host. Pull requests additionally run the packaged Node verifier on Windows to
+exercise platform-specific assembly and startup paths. Each link is also a
+script of its own, in the order the chain runs them: `typegen`, `lint`,
+`typecheck`, `test`,
 `test:installers`, `check:agents-md`, `check:generated-assets`,
 `check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries
 the assertions about the emitted bundle, and the final check assembles an
