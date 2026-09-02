@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { platform as currentPlatform, userInfo } from 'node:os';
 import { posix, win32 } from 'node:path';
 
@@ -12,27 +13,69 @@ export interface PersonalRuntimePaths {
   readonly credentialLockDatabasePath: string;
 }
 
-export interface PersonalRuntimePathOptions {
-  readonly dataDir?: string;
+export interface PersonalRuntimeRootOptions {
   readonly platform?: NodeJS.Platform;
+  readonly resolveWindowsRoamingAppData?: () => string;
   readonly stableUserHome?: string;
+}
+
+export interface PersonalRuntimePathOptions extends PersonalRuntimeRootOptions {
+  readonly dataDir?: string;
 }
 
 const stableUserHome = (): string => userInfo().homedir;
 
-export const resolveDefaultPersonalDataDir = (
-  platform: NodeJS.Platform = currentPlatform(),
-  userHome = stableUserHome(),
-): string => {
-  if (platform === 'win32') {
-    if (!win32.isAbsolute(userHome)) throw new Error('Floway One requires an absolute operating-system user profile directory');
-    // FOLDERID_RoamingAppData is the Windows per-user roaming application-data root.
-    // Node's OS user record supplies the stable profile location without trusting APPDATA.
-    // https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid#folderid_roamingappdata
-    // https://docs.libuv.org/en/v1.x/misc.html#c.uv_os_get_passwd
-    return win32.join(win32.normalize(userHome), 'AppData', 'Roaming', 'Floway One');
+let cachedWindowsRoamingAppData: string | undefined;
+
+const queryWindowsRoamingAppData = (): string => {
+  if (cachedWindowsRoamingAppData !== undefined) return cachedWindowsRoamingAppData;
+
+  const value = execFileSync('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    '[Console]::Out.Write([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData))',
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+  }).trim();
+  if (!win32.isAbsolute(value)) {
+    throw new Error(`Windows returned a non-absolute Roaming AppData Known Folder: ${value}`);
   }
 
+  cachedWindowsRoamingAppData = win32.normalize(value);
+  return cachedWindowsRoamingAppData;
+};
+
+const resolveWindowsPersonalDataDir = (windowsRoamingAppData: () => string): string => {
+  let roamingAppData: string;
+  try {
+    roamingAppData = windowsRoamingAppData();
+    if (!win32.isAbsolute(roamingAppData)) {
+      throw new Error(`Windows returned a non-absolute Roaming AppData Known Folder: ${roamingAppData}`);
+    }
+  } catch (cause) {
+    throw new Error('Floway One could not resolve the Windows Roaming AppData Known Folder', { cause });
+  }
+
+  // FOLDERID_RoamingAppData is the redirectable per-user application-data root.
+  // Environment.GetFolderPath resolves it through the operating system rather
+  // than trusting process environment variables or synthesizing a profile path.
+  // https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid#folderid_roamingappdata
+  // https://learn.microsoft.com/en-us/dotnet/api/system.environment.specialfolder
+  return win32.join(win32.normalize(roamingAppData), 'Floway One');
+};
+
+export const resolveDefaultPersonalDataDir = (
+  options: PersonalRuntimeRootOptions = {},
+): string => {
+  const platform = options.platform ?? currentPlatform();
+  if (platform === 'win32') {
+    return resolveWindowsPersonalDataDir(options.resolveWindowsRoamingAppData ?? queryWindowsRoamingAppData);
+  }
+
+  const userHome = options.stableUserHome ?? stableUserHome();
   if (!posix.isAbsolute(userHome)) throw new Error('Floway One requires an absolute operating-system user home directory');
   const normalizedHome = posix.normalize(userHome);
   if (platform === 'darwin') {
@@ -53,7 +96,7 @@ export const resolvePersonalRuntimePaths = (
 ): PersonalRuntimePaths => {
   const platform = options.platform ?? currentPlatform();
   const path = platform === 'win32' ? win32 : posix;
-  const stableDataDir = resolveDefaultPersonalDataDir(platform, options.stableUserHome ?? stableUserHome());
+  const stableDataDir = resolveDefaultPersonalDataDir(options);
   const dataDir = options.dataDir === undefined ? stableDataDir : path.normalize(options.dataDir);
   if (!path.isAbsolute(dataDir)) throw new Error(`Floway One application data directory must be absolute: ${dataDir}`);
 

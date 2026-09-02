@@ -1,4 +1,4 @@
-import { test } from 'vitest';
+import { assert, test } from 'vitest';
 
 import {
   resolveDefaultPersonalDataDir,
@@ -6,19 +6,46 @@ import {
 } from '../src/personal-runtime.ts';
 import { assertEquals } from '@floway-dev/test-utils';
 
-test('personal application data uses the platform-standard suffix beneath the stable OS user profile', () => {
+test('POSIX personal application data uses the platform-standard suffix beneath the stable OS user home', () => {
   assertEquals(
-    resolveDefaultPersonalDataDir('darwin', '/Users/stable'),
+    resolveDefaultPersonalDataDir({ platform: 'darwin', stableUserHome: '/Users/stable' }),
     '/Users/stable/Library/Application Support/Floway One',
   );
   assertEquals(
-    resolveDefaultPersonalDataDir('linux', '/home/stable'),
+    resolveDefaultPersonalDataDir({ platform: 'linux', stableUserHome: '/home/stable' }),
     '/home/stable/.local/share/floway-one',
   );
+});
+
+test('Windows personal application data follows the operating-system Known Folder when it is redirected', () => {
+  const paths = resolvePersonalRuntimePaths({
+    platform: 'win32',
+    resolveWindowsRoamingAppData: () => 'R:\\Redirected\\Roaming',
+  });
+
+  assertEquals(paths.dataDir, 'R:\\Redirected\\Roaming\\Floway One');
   assertEquals(
-    resolveDefaultPersonalDataDir('win32', 'C:\\Users\\stable'),
-    'C:\\Users\\stable\\AppData\\Roaming\\Floway One',
+    paths.credentialLockDatabasePath,
+    'R:\\Redirected\\Roaming\\Floway One\\credential-lock\\device-master-key-v1.creation-lock.db',
   );
+});
+
+test('Windows Known Folder lookup failures preserve the operating-system cause', () => {
+  const unavailable = new Error('Windows Known Folder unavailable');
+
+  let error: unknown;
+  try {
+    resolvePersonalRuntimePaths({
+      platform: 'win32',
+      resolveWindowsRoamingAppData: () => { throw unavailable; },
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  assert(error instanceof Error);
+  assertEquals(error.message, 'Floway One could not resolve the Windows Roaming AppData Known Folder');
+  assert(error.cause === unavailable);
 });
 
 test('default personal paths ignore mutable HOME and application-data environment variables', () => {

@@ -49,6 +49,7 @@ initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
 export interface NodeEntryOverrides {
+  readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
 }
 
@@ -57,7 +58,7 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const personalPaths = profile === 'personal'
     ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
     : undefined;
-  const { db, deviceMasterKeyCreationLock, personalStorage } = bootstrapNodePlatform(
+  const { db, deviceMasterKeyCreationLock, personalStorage } = (overrides.bootstrapNodePlatform ?? bootstrapNodePlatform)(
     personalPaths === undefined
       ? { profile: 'server' }
       : { profile: 'personal', storage: personalPaths },

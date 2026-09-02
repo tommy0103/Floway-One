@@ -110,6 +110,7 @@ const runtimeParent = process.platform === 'win32' ? resolve(ROOT, '.tmp') : tmp
 await mkdir(runtimeParent, { recursive: true });
 const runtimeRoot = await mkdtemp(join(runtimeParent, 'floway-packaged-node-'));
 const packageRoot = resolve(runtimeRoot, 'app');
+const packagedDefaultPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-default-entry-verification.ts');
 const packagedPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-entry-verification.ts');
 const children = new Set<ChildProcessByStdio<null, Readable, Readable>>();
 const serviceChildren = new Set<ChildProcess>();
@@ -368,18 +369,19 @@ const assertCiphertextAtRest = (databasePath: string): void => {
 
 const assertPersonalStartupFailure = async (
   name: string,
-  personalPaths: PersonalRuntimePaths,
+  personalPaths: PersonalRuntimePaths | undefined,
   extraEnv: NodeJS.ProcessEnv,
   expectedChain: readonly string[],
+  entryPath = packagedPersonalEntry,
 ): Promise<void> => {
-  const child = spawn(serverCommand[0]!, [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal'], {
+  const child = spawn(serverCommand[0]!, [...serverCommand.slice(1, -1), entryPath, '--profile=personal'], {
     cwd: packageRoot,
     env: {
       ...process.env,
       ADMIN_KEY,
       FLOWAY_DB_PATH: resolve(runtimeRoot, `${name}-ignored-floway.db`),
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${name}-files`),
-      FLOWAY_PACKAGED_PERSONAL_PATHS: JSON.stringify(personalPaths),
+      FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
       NODE_ENV: 'production',
       PORT: String(verificationPort),
       ...extraEnv,
@@ -436,6 +438,37 @@ const assertPersonalStartupFailure = async (
       else rejectRefused(error);
     });
   });
+};
+
+const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
+  if (process.platform !== 'win32') return;
+
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    '[Console]::Out.Write([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData))',
+  ], { encoding: 'utf8' });
+  const roamingAppData = stdout.trim();
+  if (!isAbsolute(roamingAppData)) fail(`Windows returned a non-absolute Roaming AppData Known Folder: ${roamingAppData}`);
+
+  const dataDir = join(roamingAppData, 'Floway One');
+  await assertPersonalStartupFailure(
+    'windows-default-personal-paths',
+    undefined,
+    {
+      APPDATA: 'Y:\\hostile-appdata',
+      HOME: 'Z:\\hostile-home',
+      USERPROFILE: 'X:\\hostile-profile',
+    },
+    [
+      'Floway packaged default entry stopped after path resolution',
+      `data directory: ${dataDir}`,
+      `credential lock: ${join(dataDir, 'credential-lock', 'device-master-key-v1.creation-lock.db')}`,
+    ],
+    packagedDefaultPersonalEntry,
+  );
 };
 
 const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
@@ -660,6 +693,19 @@ if (source === undefined) throw new Error('Missing packaged personal path fixtur
 const paths = JSON.parse(source);
 await runNodeEntry({ resolvePersonalRuntimePaths: () => paths });
 `);
+    await writeFile(packagedDefaultPersonalEntry, `
+import { runNodeEntry } from './src/run-node-entry.ts';
+await runNodeEntry({
+  bootstrapNodePlatform: options => {
+    if (options.profile !== 'personal') throw new Error('Expected the personal runtime profile');
+    throw new Error([
+      'Floway packaged default entry stopped after path resolution',
+      \`data directory: \${options.storage.dataDir}\`,
+      \`credential lock: \${options.storage.credentialLockDatabasePath}\`,
+    ].join('\\n'));
+  },
+});
+`);
 
     await Promise.all([
       access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
@@ -677,6 +723,8 @@ await runNodeEntry({ resolvePersonalRuntimePaths: () => paths });
     const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
     await assertServerSurface(server.origin);
     await stopRuntime(server.child);
+
+    await assertWindowsDefaultPersonalEntry();
 
     const systemStoreAvailable = await exerciseIsolatedCredentialStore();
     if (systemStoreAvailable) {
