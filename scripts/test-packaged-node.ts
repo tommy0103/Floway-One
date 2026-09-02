@@ -646,7 +646,7 @@ try {
       fail('the packaged server command no longer ends at the production Node entry');
     }
     await writeFile(packagedPersonalEntry, `
-import { runNodeEntry } from './entry.ts';
+import { runNodeEntry } from './src/run-node-entry.ts';
 const source = process.env.FLOWAY_PACKAGED_PERSONAL_PATHS;
 if (source === undefined) throw new Error('Missing packaged personal path fixture');
 const paths = JSON.parse(source);
