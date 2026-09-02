@@ -29,6 +29,7 @@ import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { listenNodeServer } from './src/node-listener.ts';
+import { installPersonalLogging } from './src/personal-logging.ts';
 import { loadPersonalRuntime } from './src/personal-runtime.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { startNodeRuntime } from './src/start-runtime.ts';
@@ -55,7 +56,14 @@ const profileValue = process.env.FLOWAY_PROFILE ?? 'server';
 if (profileValue !== 'personal' && profileValue !== 'server') {
   throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profileValue)}`);
 }
-const personalRuntime = profileValue === 'personal' ? loadPersonalRuntime() : null;
+const startupWarnings: string[] = [];
+const personalRuntime = profileValue === 'personal'
+  ? loadPersonalRuntime({ warn: warning => startupWarnings.push(warning) })
+  : null;
+if (personalRuntime !== null) {
+  installPersonalLogging(personalRuntime.logsDir);
+  for (const warning of startupWarnings) console.warn(warning);
+}
 const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
 
 // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a

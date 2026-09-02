@@ -149,7 +149,10 @@ ADMIN_KEY='replace-with-a-secret' pnpm run dev:one
 Set `PORT` when deliberately moving the personal endpoint. The selected port
 is persisted in `runtime.json`, and startup warns that configured AI clients
 must be updated. A port conflict or inaccessible application-data directory
-stops startup rather than selecting a fallback.
+stops startup rather than selecting a fallback. Personal stdout and stderr are
+also retained in size-bounded rotating files under the application-data logs
+directory; ordinary Node server mode continues to use its existing console
+behavior.
 
 Podman users can instead follow the
 [systemd deployment guide](./docker/systemd/README.md).
