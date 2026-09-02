@@ -12,6 +12,7 @@ import { PERSONAL_STDERR_LOG, PERSONAL_STDOUT_LOG } from '../src/personal-loggin
 const execFileAsync = promisify(execFile);
 const PLATFORM_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CHILD = fileURLToPath(new URL('./fixtures/personal-logging-child.ts', import.meta.url));
+const FAILURE_CHILD = fileURLToPath(new URL('./fixtures/personal-logging-failure-child.ts', import.meta.url));
 const MAX_BYTES = 192;
 const MAX_FILES = 3;
 
@@ -55,4 +56,48 @@ test('personal logging tees application streams into bounded rotating files', as
     .toContain('final application stdout');
   expect((await Promise.all(stderrFiles.map(async file => await readFile(join(logsDir, file), 'utf8')))).join(''))
     .toContain('final application stderr');
+});
+
+test('personal logging persists a fatal startup error chain before native process exit', async () => {
+  const failure = await execFileAsync(process.execPath, [
+    '--import',
+    'tsx',
+    FAILURE_CHILD,
+    'startup',
+    logsDir,
+  ], { cwd: PLATFORM_ROOT }).then(
+    () => null,
+    (cause: unknown) => cause as Error & { code: number; stderr: string },
+  );
+
+  expect(failure).not.toBeNull();
+  expect(failure?.code).not.toBe(0);
+  expect(failure?.stderr).toContain('forced personal startup failure');
+
+  const fatalLog = await readFile(join(logsDir, PERSONAL_STDERR_LOG), 'utf8');
+  expect(fatalLog).toContain('FATAL: Floway One runtime failed to start');
+  expect(fatalLog).toContain('Error: forced personal startup failure');
+  expect(fatalLog).toContain('Error: forced migration failure');
+  expect(fatalLog).toContain('Error: forced storage cause');
+  expect(fatalLog.match(/Caused by:/g)).toHaveLength(2);
+  expect(fatalLog).toContain('personal-logging-failure-child.ts');
+});
+
+test('personal logging forwards output and fails the runtime when its sink fails', async () => {
+  const failure = await execFileAsync(process.execPath, [
+    '--import',
+    'tsx',
+    FAILURE_CHILD,
+    'sink',
+    logsDir,
+  ], { cwd: PLATFORM_ROOT }).then(
+    () => null,
+    (cause: unknown) => cause as Error & { code: number; stderr: string },
+  );
+
+  expect(failure).not.toBeNull();
+  expect(failure?.code).not.toBe(0);
+  expect(failure?.stderr).toContain('forwarded before forced sink failure');
+  expect(failure?.stderr).toContain('Floway One could not write bounded log');
+  expect(failure?.stderr).toContain(PERSONAL_STDERR_LOG);
 });

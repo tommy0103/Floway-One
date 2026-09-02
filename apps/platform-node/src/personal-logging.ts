@@ -23,6 +23,7 @@ interface PersonalLoggingOptions {
 }
 
 export interface InstalledPersonalLogging {
+  writeFatal(cause: unknown): void;
   restore(): void;
 }
 
@@ -49,12 +50,16 @@ class RotatingFileSink {
   }
 
   write(chunk: string | Uint8Array, encoding?: BufferEncoding): void {
-    let bytes = typeof chunk === 'string' ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
-    if (bytes.byteLength > this.maxBytes) bytes = bytes.subarray(bytes.byteLength - this.maxBytes);
-    if (this.size > 0 && this.size + bytes.byteLength > this.maxBytes) this.rotate();
+    try {
+      let bytes = typeof chunk === 'string' ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
+      if (bytes.byteLength > this.maxBytes) bytes = bytes.subarray(bytes.byteLength - this.maxBytes);
+      if (this.size > 0 && this.size + bytes.byteLength > this.maxBytes) this.rotate();
 
-    appendFileSync(this.path, bytes);
-    this.size += bytes.byteLength;
+      appendFileSync(this.path, bytes);
+      this.size += bytes.byteLength;
+    } catch (cause) {
+      throw new Error(`Floway One could not write bounded log ${this.path}`, { cause });
+    }
   }
 
   private rotate(): void {
@@ -71,7 +76,11 @@ class RotatingFileSink {
   }
 }
 
-const teeStream = (stream: NodeJS.WriteStream, sink: RotatingFileSink): (() => void) => {
+const teeStream = (
+  stream: NodeJS.WriteStream,
+  sink: RotatingFileSink,
+  reportRuntimeFailure: (error: Error) => void,
+): (() => void) => {
   const originalWrite = stream.write;
   const write = ((
     chunk: string | Uint8Array,
@@ -79,17 +88,51 @@ const teeStream = (stream: NodeJS.WriteStream, sink: RotatingFileSink): (() => v
     callback?: WriteCallback,
   ): boolean => {
     const encoding = typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined;
-    sink.write(chunk, encoding);
     const args: unknown[] = [chunk];
     if (encodingOrCallback !== undefined) args.push(encodingOrCallback);
     if (callback !== undefined) args.push(callback);
-    return Reflect.apply(originalWrite, stream, args) as boolean;
+    let forwarded = false;
+    let forwardFailure: unknown;
+    try {
+      forwarded = Reflect.apply(originalWrite, stream, args) as boolean;
+    } catch (cause) {
+      forwardFailure = cause;
+    }
+
+    try {
+      sink.write(chunk, encoding);
+    } catch (cause) {
+      reportRuntimeFailure(cause instanceof Error
+        ? cause
+        : new Error('Floway One bounded logging failed with a non-Error value', { cause }));
+    }
+
+    if (forwardFailure !== undefined) throw forwardFailure;
+    return forwarded;
   }) as NodeJS.WriteStream['write'];
   stream.write = write;
 
   return () => {
     if (stream.write === write) stream.write = originalWrite;
   };
+};
+
+const formatFatalError = (cause: unknown): string => {
+  const sections = ['FATAL: Floway One runtime failed to start'];
+  const seen = new Set<unknown>();
+  let current: unknown = cause;
+  let first = true;
+
+  while (!seen.has(current)) {
+    seen.add(current);
+    if (!first) sections.push('Caused by:');
+    sections.push(current instanceof Error ? (current.stack ?? current.toString()) : String(current));
+    if (!(current instanceof Error) || current.cause === undefined) break;
+    current = current.cause;
+    first = false;
+  }
+
+  return `${sections.join('\n')}\n`;
 };
 
 export const installPersonalLogging = (
@@ -101,9 +144,18 @@ export const installPersonalLogging = (
   try {
     const stdoutSink = new RotatingFileSink(join(logsDir, PERSONAL_STDOUT_LOG), maxBytes, maxFiles);
     const stderrSink = new RotatingFileSink(join(logsDir, PERSONAL_STDERR_LOG), maxBytes, maxFiles);
-    const restoreStdout = teeStream(options.stdout ?? process.stdout, stdoutSink);
-    const restoreStderr = teeStream(options.stderr ?? process.stderr, stderrSink);
+    let runtimeFailureReported = false;
+    const reportRuntimeFailure = (error: Error): void => {
+      if (runtimeFailureReported) return;
+      runtimeFailureReported = true;
+      // Node's Console suppresses exceptions thrown by its destination stream.
+      // Leave that call stack before failing so a broken durable sink cannot be hidden.
+      process.nextTick(() => { throw error; });
+    };
+    const restoreStdout = teeStream(options.stdout ?? process.stdout, stdoutSink, reportRuntimeFailure);
+    const restoreStderr = teeStream(options.stderr ?? process.stderr, stderrSink, reportRuntimeFailure);
     return {
+      writeFatal: cause => stderrSink.write(formatFatalError(cause)),
       restore: () => {
         restoreStderr();
         restoreStdout();
@@ -111,5 +163,29 @@ export const installPersonalLogging = (
     };
   } catch (cause) {
     throw new Error(`Floway One could not initialize bounded logs in ${logsDir}`, { cause });
+  }
+};
+
+export const runWithPersonalFatalLogging = async <T>(
+  logging: InstalledPersonalLogging | null,
+  start: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await start();
+  } catch (cause) {
+    if (logging !== null) {
+      try {
+        // Native uncaught-exception output bypasses JavaScript WriteStream.write,
+        // so persist the startup chain directly before restoring Node's fatal path.
+        logging.writeFatal(cause);
+      } catch (loggingCause) {
+        throw new AggregateError(
+          [cause, loggingCause],
+          'Floway One startup failed and its fatal diagnostics could not be persisted',
+          { cause },
+        );
+      }
+    }
+    throw cause;
   }
 };

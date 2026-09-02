@@ -29,7 +29,7 @@ import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { listenNodeServer } from './src/node-listener.ts';
-import { installPersonalLogging } from './src/personal-logging.ts';
+import { installPersonalLogging, runWithPersonalFatalLogging } from './src/personal-logging.ts';
 import { loadPersonalRuntime } from './src/personal-runtime.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { startNodeRuntime } from './src/start-runtime.ts';
@@ -60,8 +60,8 @@ const startupWarnings: string[] = [];
 const personalRuntime = profileValue === 'personal'
   ? loadPersonalRuntime({ warn: warning => startupWarnings.push(warning) })
   : null;
+const personalLogging = personalRuntime === null ? null : installPersonalLogging(personalRuntime.logsDir);
 if (personalRuntime !== null) {
-  installPersonalLogging(personalRuntime.logsDir);
   for (const warning of startupWarnings) console.warn(warning);
 }
 const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
@@ -76,7 +76,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
   process.exit(1);
 }
 
-const info = await startNodeRuntime({
+const info = await runWithPersonalFatalLogging(personalLogging, async () => await startNodeRuntime({
   bootstrap: () => bootstrapNodePlatform(personalRuntime === null
     ? { profile: 'server' }
     : {
@@ -106,6 +106,6 @@ const info = await startNodeRuntime({
     startScheduledMaintenance();
     return address;
   },
-});
+}));
 
 console.log(`Floway listening on ${personalRuntime?.endpoint ?? `http://localhost:${info.port}`}`);
