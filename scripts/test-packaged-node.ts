@@ -136,6 +136,22 @@ const waitForLine = async (child: ChildProcessWithoutNullStreams, stream: Readab
   });
 });
 
+const waitForPath = async (path: string, child: ChildProcess): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch (error) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`service exited before creating ${path}`, { cause: error });
+      }
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    }
+  }
+  throw new Error(`service did not create ${path} before the startup deadline`);
+};
+
 const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> => {
   if (!START_LINUX_SECRET_SERVICE) return async () => undefined;
   if (process.platform !== 'linux') fail('FLOWAY_START_TEST_SECRET_SERVICE is supported only on Linux');
@@ -151,6 +167,8 @@ const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> =
   // https://dbus.freedesktop.org/doc/dbus-daemon.1.html
   // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L137-L146
   // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L999-L1006
+  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-util.c#L122-L123
+  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/control/gkd-control-server.c#L406-L446
   const bus = spawn('dbus-daemon', ['--session', '--nofork', '--print-address=1'], { stdio: ['pipe', 'pipe', 'pipe'] });
   serviceChildren.add(bus);
   const busAddress = await waitForLine(bus, bus.stdout);
@@ -162,7 +180,7 @@ const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> =
   });
   serviceChildren.add(keyring);
   keyring.stdin.end('floway-ci-secret-service\n');
-  await waitForLine(keyring, keyring.stdout);
+  await waitForPath(resolve(serviceRuntimeDirectory, 'keyring/control'), keyring);
   await execFileAsync('gnome-keyring-daemon', ['--start', '--components=secrets'], {
     env: process.env,
     timeout: 10_000,
