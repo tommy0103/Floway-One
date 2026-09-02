@@ -8,6 +8,7 @@
 | Index inventory | Keep `Index` as the complete sorted inventory of CI workflows, skills, and workspace package directories with a short responsibility overview. | `pnpm run check:agents-md` |
 | Task scope | Derive every action from the user's request and preserve unrelated working-tree state. | Final diff review |
 | Questions | Answer requested questions from read-only evidence. | Final diff review |
+| Engineering skills | Read the tracker, triage, and domain conventions under `docs/agents/` before using issue-driven engineering skills. | Workflow review |
 | Findings | Reproduce the reported scenario and validate third-party findings against primary sources before acting. | Investigation evidence |
 | Instruments | Establish that every verifier ran, observed the relevant property, and reached the state it claims to force. | Verification output |
 | Tool edits | Read generated, autofixed, codemodded, and bulk-edited diffs against the resulting files. | Final diff review |
