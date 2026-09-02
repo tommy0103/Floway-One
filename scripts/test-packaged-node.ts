@@ -257,7 +257,7 @@ const startRuntime = async (
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${profile}-files`),
       FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
       NODE_ENV: 'production',
-      PORT: String(verificationPort),
+      PORT: profile === 'personal' ? String(verificationPort) : '0',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
