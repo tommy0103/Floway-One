@@ -47,6 +47,7 @@
   },
   "devDependencies": {
     "@floway-dev/gateway": "workspace:*",
+    "@floway-dev/test-utils": "workspace:*",
     "@react-router/dev": "8.3.0",
     "@testing-library/react": "^16.3.0",
     "@types/culori": "^4.0.1",

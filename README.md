@@ -122,16 +122,18 @@ pnpm run deploy
 
 ### Node.js
 
-The Node.js target applies SQLite migrations automatically and defaults to
-`./data/floway.db`, `./data/files`, and port `8788`:
+The Node.js target builds and serves the production Dashboard together with the
+data-plane and control-plane APIs. It applies SQLite migrations automatically
+and defaults to `./data/floway.db`, `./data/files`, and port `8788`:
 
 ```bash
 pnpm install
 ADMIN_KEY='replace-with-a-secret' pnpm run dev:node
 ```
 
-It serves the data-plane and control-plane APIs but not the dashboard. Use
-Docker Compose for the complete self-hosted UI, or serve the web app separately.
+The Dashboard and gateway share <http://localhost:8788>; no separate web server
+or reverse proxy is required for this mode. The command rebuilds the Dashboard
+before starting so it also works immediately after a clean checkout.
 Production Node.js deployments must set both `NODE_ENV=production` and a
 non-empty `ADMIN_KEY`.
 
@@ -146,14 +148,19 @@ pnpm run dev
 pnpm run verify
 ```
 
-`verify` chains every check `.github/workflows/verify.yaml` runs, so a green run
-locally is a green run on a pull request. Each link is also a script of its own,
-in the order the chain runs them: `typegen`, `lint`, `typecheck`, `test`,
+`verify` chains every root verification script named by
+`.github/workflows/verify.yaml`, reproducing that script set on the current
+host. Pull requests additionally run the packaged Node verifier on Windows to
+exercise platform-specific assembly and startup paths. Each link is also a
+script of its own, in the order the chain runs them: `typegen`, `lint`,
+`typecheck`, `test`,
 `test:installers`, `check:agents-md`, `check:generated-assets`,
-`check:verify-parity`, and `build:web`, which carries the assertions about the
-emitted bundle. `typegen` comes first because the generated route types are not
-checked in and the lint configuration is type-aware, so a fresh clone has to
-produce them before anything else can read the dashboard's sources.
+`check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries
+the assertions about the emitted bundle, and the final check assembles an
+isolated production Node runtime and executes its image command. `typegen` comes
+first because the generated route types are not checked in and the lint
+configuration is type-aware, so a fresh clone has to produce them before
+anything else can read the dashboard's sources.
 
 [AGENTS.md](./AGENTS.md) defines the repository-wide agent requirements and
 indexes its CI workflows, skills, workspace packages, and their responsibilities.

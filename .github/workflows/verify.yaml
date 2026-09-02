@@ -41,7 +41,7 @@ jobs:
           # one, the image, a deploy — can emit a bundle nobody asserted
           # against.
           - name: build
-            run: pnpm run build:web
+            run: pnpm run build:web && pnpm run test:packaged-node
     name: ${{ matrix.check.name }}
     runs-on: ubuntu-latest
     steps:
@@ -65,3 +65,22 @@ jobs:
         run: pnpm run typegen
       - name: ${{ matrix.check.name }}
         run: ${{ matrix.check.run }}
+
+  packaged-node-windows:
+    name: packaged-node-windows
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build and test packaged Node runtime
+        run: pnpm run build:web && pnpm run test:packaged-node

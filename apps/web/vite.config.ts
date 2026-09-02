@@ -6,7 +6,20 @@ import { reactRouter } from '@react-router/dev/vite';
 import MagicString from 'magic-string';
 import { defineConfig, runnerImport, type Plugin } from 'vite';
 
+import { productionDashboardNavigationPaths } from './dashboard-routes';
 import { wranglerProxiedPaths } from './gateway-paths';
+
+const dashboardRoutesManifest = (): Plugin => ({
+  name: 'floway-dashboard-routes-manifest',
+  applyToEnvironment: environment => environment.name === 'client',
+  generateBundle() {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'dashboard-routes.json',
+      source: `${JSON.stringify(productionDashboardNavigationPaths, null, 2)}\n`,
+    });
+  },
+});
 
 // Part of the app's CSS is authored in TypeScript, because its rules spend
 // values the running app spends too: the WinUI layer under src/winui
@@ -226,6 +239,7 @@ export default defineConfig({
   },
   plugins: [
     browserSafeGraph(),
+    dashboardRoutesManifest(),
     prismComponentsEsm(),
     typescriptStylesheets(),
     reactRouter(),

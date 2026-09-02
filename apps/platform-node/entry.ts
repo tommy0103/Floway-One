@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { Agent, Pool, setGlobalDispatcher } from 'undici';
 import { WebSocketServer } from 'ws';
@@ -24,6 +26,7 @@ setGlobalDispatcher(new Agent({
 }));
 
 import { bootstrapNodePlatform } from './src/bootstrap.ts';
+import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import {
@@ -64,8 +67,13 @@ initRepo(new SqlRepo(db));
 
 startScheduledMaintenance();
 
+const localApp = createLocalApp({
+  gatewayFetch: app.fetch,
+  staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),
+});
+
 serve({
-  fetch: app.fetch,
+  fetch: localApp.fetch,
   port,
   websocket: { server: new WebSocketServer({ noServer: true }) },
 }, info => {
