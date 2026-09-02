@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,6 +101,7 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   });
 };
 
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (process.argv[1] !== undefined
+  && realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(resolve(process.argv[1]))) {
   await runNodeEntry();
 }
