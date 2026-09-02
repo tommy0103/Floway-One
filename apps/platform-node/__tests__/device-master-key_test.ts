@@ -1,5 +1,6 @@
 import { test } from 'vitest';
 
+import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
 import {
   createOperatingSystemCredential,
   loadDeviceMasterKey,
@@ -24,24 +25,26 @@ class MemoryCredential implements DeviceMasterKeyCredential {
   }
 }
 
+const creationLock: DeviceMasterKeyCreationLock = { run: operation => operation() };
+
 test('device master key reads the existing 256-bit value without rewriting it', async () => {
   const existing = Uint8Array.from({ length: 32 }, (_, index) => index);
   const credential = new MemoryCredential(existing);
 
-  const loaded = await loadDeviceMasterKey(false, credential);
+  const loaded = await loadDeviceMasterKey(creationLock, false, credential);
 
   assertEquals(loaded, existing);
   assertEquals(credential.reads, 1);
   assertEquals(credential.writes, []);
   loaded[0] = 255;
-  assertEquals((await loadDeviceMasterKey(false, credential))[0], 0);
+  assertEquals((await loadDeviceMasterKey(creationLock, false, credential))[0], 0);
 });
 
 test('device master key creates, reads back, and returns the persisted value only for an empty personal database', async () => {
   const credential = new MemoryCredential(null);
   const generated = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
 
-  const loaded = await loadDeviceMasterKey(true, credential, size => {
+  const loaded = await loadDeviceMasterKey(creationLock, true, credential, size => {
     assertEquals(size, 32);
     return generated;
   });
@@ -51,44 +54,14 @@ test('device master key creates, reads back, and returns the persisted value onl
   assertEquals(credential.reads, 2);
 });
 
-test('device master key serializes concurrent first creation and returns the authoritative persisted winner', async () => {
-  let persisted: Uint8Array | null = null;
-  let writes = 0;
-  let releaseFirstWrite!: () => void;
-  const firstWriteReached = new Promise<void>(resolve => { releaseFirstWrite = resolve; });
-  let continueFirstWrite!: () => void;
-  const firstWriteMayContinue = new Promise<void>(resolve => { continueFirstWrite = resolve; });
-  const credential: DeviceMasterKeyCredential = {
-    getSecret: () => persisted,
-    setSecret: async secret => {
-      writes++;
-      releaseFirstWrite();
-      await firstWriteMayContinue;
-      persisted = new Uint8Array(secret);
-    },
-  };
-  const firstGenerated = Uint8Array.from({ length: 32 }, (_, index) => index);
-  const secondGenerated = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
-
-  const first = loadDeviceMasterKey(true, credential, () => firstGenerated);
-  await firstWriteReached;
-  const second = loadDeviceMasterKey(true, credential, () => secondGenerated);
-  continueFirstWrite();
-
-  const [firstLoaded, secondLoaded] = await Promise.all([first, second]);
-  assertEquals(firstLoaded, firstGenerated);
-  assertEquals(secondLoaded, firstGenerated);
-  assertEquals(writes, 1);
-});
-
 test('device master key reports missing and malformed credential-store values without exposing bytes', async () => {
   await assertRejects(
-    () => loadDeviceMasterKey(false, new MemoryCredential(null)),
+    () => loadDeviceMasterKey(creationLock, false, new MemoryCredential(null)),
     Error,
     'Floway One device master key is missing from the operating system credential store',
   );
   const error = await assertRejects(
-    () => loadDeviceMasterKey(false, new MemoryCredential([1, 2, 3])),
+    () => loadDeviceMasterKey(creationLock, false, new MemoryCredential([1, 2, 3])),
     Error,
     'Floway One device master key must contain exactly 32 bytes',
   );
@@ -98,7 +71,7 @@ test('device master key reports missing and malformed credential-store values wi
 test('device master key preserves credential-store failures as error causes', async () => {
   const readFailure = new Error('credential store locked');
   const readError = await assertRejects(
-    () => loadDeviceMasterKey(false, {
+    () => loadDeviceMasterKey(creationLock, false, {
       getSecret: () => { throw readFailure; },
       setSecret: () => { throw new Error('unexpected write'); },
     }),
@@ -109,7 +82,7 @@ test('device master key preserves credential-store failures as error causes', as
 
   const writeFailure = new Error('credential store unavailable');
   const writeError = await assertRejects(
-    () => loadDeviceMasterKey(true, {
+    () => loadDeviceMasterKey(creationLock, true, {
       getSecret: () => null,
       setSecret: () => { throw writeFailure; },
     }),
@@ -135,4 +108,31 @@ test('Linux requires Secret Service and preserves its unavailable error as the o
     'Linux Secret Service is unavailable for the Floway One device master key',
   );
   assert(credentialError.cause === unavailable);
+});
+
+test('Linux rejects a successful vendor keyutils fallback mutation when Secret Service readback has no value', async () => {
+  let fallbackPassword: string | null = null;
+  let secretServiceReads = 0;
+  const credential = createOperatingSystemCredential('Floway test', 'fallback', 'linux', {
+    Entry: class {
+      getSecret = () => null;
+      setSecret = () => undefined;
+      setPassword = (password: string) => { fallbackPassword = password; };
+      deleteCredential = () => false;
+    },
+    findCredentials: () => {
+      secretServiceReads++;
+      return [];
+    },
+  });
+
+  const error = await assertRejects(
+    () => loadDeviceMasterKey(creationLock, true, credential, () => new Uint8Array(32).fill(7)),
+    Error,
+    'Failed to save the Floway One device master key in the operating system credential store',
+  );
+  assert(fallbackPassword !== null, 'the vendor fallback mutation must report success before rejection');
+  assertEquals(secretServiceReads, 3);
+  assert(error.cause instanceof Error);
+  assertEquals(error.cause.message, 'Failed to verify the Floway One device master key in Linux Secret Service');
 });

@@ -1,9 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import { Entry, findCredentials, type Credential } from '@napi-rs/keyring';
+
+import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 
 const DEVICE_MASTER_KEY_BYTES = 32;
 // The binding maps this service/account entry to macOS Keychain, Windows
@@ -12,12 +11,6 @@ const DEVICE_MASTER_KEY_BYTES = 32;
 // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
 const CREDENTIAL_SERVICE = 'Floway One';
 const CREDENTIAL_ACCOUNT = 'device-master-key-v1';
-const CREATION_LOCK_PATH = join(
-  tmpdir(),
-  `floway-one-device-master-key-${process.getuid?.() ?? 'current-user'}.lock`,
-);
-const CREATION_LOCK_RETRY_MS = 25;
-const CREATION_LOCK_TIMEOUT_MS = 30_000;
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -72,7 +65,7 @@ export const createOperatingSystemCredential = (
   // authoritative read/probe and verify every mutation through it so the
   // fallback can never be silently accepted.
   // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/linux_credential_builder.rs
-  // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L406-L438
+  // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L527-L553
   const listFromSecretService = (): Credential[] => {
     try {
       return bindings.findCredentials(service);
@@ -120,94 +113,12 @@ const validateMasterKey = (stored: ArrayLike<number>): Uint8Array => {
   return Uint8Array.from(bytes);
 };
 
-const processExists = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'EPERM') return true;
-    if (code === 'ESRCH') return false;
-    throw error;
-  }
-};
-
-const removeStaleCreationLock = (): boolean => {
-  let owner: string;
-  try {
-    owner = readFileSync(CREATION_LOCK_PATH, 'utf8');
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return true;
-    throw new Error('Failed to inspect the Floway One device master key creation lock', { cause });
-  }
-  if (!/^[1-9]\d*$/u.test(owner)) {
-    throw new Error('Floway One device master key creation lock has an invalid owner');
-  }
-  if (processExists(Number(owner))) return false;
-  try {
-    unlinkSync(CREATION_LOCK_PATH);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error('Failed to remove a stale Floway One device master key creation lock', { cause });
-    }
-  }
-  return true;
-};
-
-const tryAcquireCreationLock = (): (() => void) | null => {
-  let descriptor: number;
-  try {
-    // `wx` maps to an exclusive create: only one process can own first-key
-    // creation at a time. A PID lets a later launch recover a crashed owner.
-    // https://nodejs.org/docs/latest-v24.x/api/fs.html#file-system-flags
-    descriptor = openSync(CREATION_LOCK_PATH, 'wx', 0o600);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
-      return removeStaleCreationLock() ? tryAcquireCreationLock() : null;
-    }
-    throw new Error('Failed to acquire the Floway One device master key creation lock', { cause });
-  }
-  try {
-    writeFileSync(descriptor, String(process.pid));
-  } finally {
-    closeSync(descriptor);
-  }
-  return () => {
-    try {
-      unlinkSync(CREATION_LOCK_PATH);
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw new Error('Failed to release the Floway One device master key creation lock', { cause });
-      }
-    }
-  };
-};
-
-const withCreationLock = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const deadline = Date.now() + CREATION_LOCK_TIMEOUT_MS;
-  let release = tryAcquireCreationLock();
-  while (release === null) {
-    if (Date.now() >= deadline) {
-      throw new Error('Timed out waiting for Floway One device master key creation');
-    }
-    await new Promise(resolve => setTimeout(resolve, CREATION_LOCK_RETRY_MS));
-    release = tryAcquireCreationLock();
-  }
-  try {
-    const result = await operation();
-    release();
-    return result;
-  } catch (cause) {
-    try { release(); } catch { /* preserve the original operation failure */ }
-    throw cause;
-  }
-};
-
 export const loadDeviceMasterKey = async (
+  creationLock: DeviceMasterKeyCreationLock,
   createIfMissing: boolean,
   credential?: DeviceMasterKeyCredential,
   generate: (size: number) => Uint8Array = randomBytes,
-): Promise<Uint8Array> => await withCreationLock(async () => {
+): Promise<Uint8Array> => await creationLock.run(async () => {
   let resolvedCredential: DeviceMasterKeyCredential;
   let stored: ArrayLike<number> | null;
   try {

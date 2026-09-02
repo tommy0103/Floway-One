@@ -150,9 +150,10 @@ pnpm run verify
 
 `verify` chains every root verification script named by
 `.github/workflows/verify.yaml`, reproducing that script set on the current
-host. Pull requests additionally run the packaged Node verifier on Windows to
-exercise platform-specific assembly and startup paths. Each link is also a
-script of its own, in the order the chain runs them: `typegen`, `lint`,
+host. Pull requests additionally run the packaged Node verifier against Linux
+Secret Service, Windows Credential Manager, and macOS Keychain to exercise
+platform-specific credential storage, assembly, and startup paths. Each link is
+also a script of its own, in the order the chain runs them: `typegen`, `lint`,
 `typecheck`, `test`,
 `test:installers`, `check:agents-md`, `check:generated-assets`,
 `check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries

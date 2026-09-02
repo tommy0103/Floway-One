@@ -48,6 +48,7 @@ const REPAIR_SUFFIX = ':fix';
 const SETUP_COMMANDS = new Set([
   'corepack enable',
   'pnpm install --frozen-lockfile',
+  'sudo apt-get update && sudo apt-get install --yes gnome-keyring',
   '${{ matrix.check.run }}',
 ]);
 

@@ -1,8 +1,9 @@
 import { test } from 'vitest';
 
-import type { DeviceMasterKeyCredential } from '../src/device-master-key.ts';
+import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
+import { createOperatingSystemCredential, type DeviceMasterKeyCredential } from '../src/device-master-key.ts';
 import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
-import type { SqlDatabase } from '@floway-dev/platform';
+import type { SqlDatabase, StoredSecretContext } from '@floway-dev/platform';
 import { assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = false): SqlDatabase => ({
@@ -38,20 +39,23 @@ class MemoryCredential implements DeviceMasterKeyCredential {
   }
 }
 
+const creationLock: DeviceMasterKeyCreationLock = { run: operation => operation() };
+const testContext = (value: string): StoredSecretContext => value as StoredSecretContext;
+
 test('server profile keeps stored provider secrets byte-compatible and never opens the credential store', async () => {
   const credential: DeviceMasterKeyCredential = {
     getSecret: () => { throw new Error('server profile touched credential store'); },
     setSecret: () => { throw new Error('server profile touched credential store'); },
   };
-  const codec = await createNodeStoredSecretCodec('server', databaseWithStoredState(true, true), credential);
+  const codec = await createNodeStoredSecretCodec('server', databaseWithStoredState(true, true), creationLock, credential);
 
-  assertEquals(await codec.seal('{"apiKey":"plaintext-server-value"}', 'upstream:one:config'), '{"apiKey":"plaintext-server-value"}');
+  assertEquals(await codec.seal('{"apiKey":"plaintext-server-value"}', testContext('upstream:one:config')), '{"apiKey":"plaintext-server-value"}');
 });
 
 test('personal profile creates an OS-held master key only when no protected provider data exists', async () => {
   const credential = new MemoryCredential(null);
-  const codec = await createNodeStoredSecretCodec('personal', databaseWithStoredState(false), credential);
-  const stored = await codec.seal('{"apiKey":"provider-secret"}', 'upstream:one:config');
+  const codec = await createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential);
+  const stored = await codec.seal('{"apiKey":"provider-secret"}', testContext('upstream:one:config'));
 
   assertEquals(credential.writes.length, 1);
   assertEquals(credential.writes[0]?.byteLength, 32);
@@ -60,13 +64,37 @@ test('personal profile creates an OS-held master key only when no protected prov
 
 test('personal profile reports a lost OS-held key for existing upstream or web search credentials', async () => {
   await assertRejects(
-    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(true), new MemoryCredential(null)),
+    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(true), creationLock, new MemoryCredential(null)),
     Error,
     'Floway One device master key is missing from the operating system credential store',
   );
   await assertRejects(
-    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false, true), new MemoryCredential(null)),
+    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false, true), creationLock, new MemoryCredential(null)),
     Error,
     'Floway One device master key is missing from the operating system credential store',
+  );
+});
+
+test('personal startup rejects a successful Linux keyutils fallback mutation with the Secret Service verification chain', async () => {
+  let fallbackMutationSucceeded = false;
+  const credential = createOperatingSystemCredential('Floway test', 'fallback-startup', 'linux', {
+    Entry: class {
+      getSecret = () => null;
+      setSecret = () => undefined;
+      setPassword = () => { fallbackMutationSucceeded = true; };
+      deleteCredential = () => false;
+    },
+    findCredentials: () => [],
+  });
+
+  const error = await assertRejects(
+    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential),
+    Error,
+    'Failed to save the Floway One device master key in the operating system credential store',
+  );
+  assertEquals(fallbackMutationSucceeded, true);
+  assertEquals(
+    (error.cause as Error).message,
+    'Failed to verify the Floway One device master key in Linux Secret Service',
   );
 });

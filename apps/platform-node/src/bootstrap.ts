@@ -1,3 +1,4 @@
+import { createDeviceMasterKeyCreationLock, type DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import { EventTargetChannelBroker } from './event-target-channel-broker.ts';
 import { createNodeExternalResourceFetcher } from './external-resource-fetcher.ts';
 import { nodeFetch } from './fetch.ts';
@@ -29,7 +30,7 @@ import {
   type SqlDatabase,
 } from '@floway-dev/platform';
 
-export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase } => {
+export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase; deviceMasterKeyCreationLock: DeviceMasterKeyCreationLock } => {
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
   initRuntimeProfile(profile);
@@ -49,5 +50,5 @@ export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDat
   initImageProcessor(createSharpImageProcessor());
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
-  return { db };
+  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock(dbPath) };
 };

@@ -1,30 +1,32 @@
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 
-import { createAes256GcmStoredSecretCodec } from '../src/stored-secret-codec.ts';
+import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '../src/stored-secret-codec.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const masterKey = Uint8Array.from({ length: 32 }, (_, index) => index);
+const testContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
 test('AES-256-GCM stored secrets round-trip without exposing plaintext and use fresh nonces', async () => {
   const codec = createAes256GcmStoredSecretCodec(masterKey);
   const plaintext = JSON.stringify({ apiKey: 'provider-secret-value' });
 
-  const first = await codec.seal(plaintext, 'upstream:one:config');
-  const second = await codec.seal(plaintext, 'upstream:one:config');
+  const context = testContext('upstream:one:config');
+  const first = await codec.seal(plaintext, context);
+  const second = await codec.seal(plaintext, context);
 
   assertEquals(first.includes('provider-secret-value'), false);
   assertEquals(second.includes('provider-secret-value'), false);
   assertEquals(first === second, false);
-  assertEquals(await codec.open(first, 'upstream:one:config'), plaintext);
-  assertEquals(await codec.open(second, 'upstream:one:config'), plaintext);
+  assertEquals(await codec.open(first, context), plaintext);
+  assertEquals(await codec.open(second, context), plaintext);
 });
 
 test('stored secret authentication binds ciphertext to its field context', async () => {
   const codec = createAes256GcmStoredSecretCodec(masterKey);
-  const stored = await codec.seal('{"token":"secret"}', 'upstream:one:state');
+  const stored = await codec.seal('{"token":"secret"}', testContext('upstream:one:state'));
 
   const error = await assertRejects(
-    () => codec.open(stored, 'upstream:two:state'),
+    () => codec.open(stored, testContext('upstream:two:state')),
     Error,
     'Failed to decrypt stored secret for upstream:two:state',
   );
@@ -34,13 +36,14 @@ test('stored secret authentication binds ciphertext to its field context', async
 test('stored secret authentication rejects tampering without including plaintext in the error', async () => {
   const codec = createAes256GcmStoredSecretCodec(masterKey);
   const plaintext = '{"refreshToken":"never-log-this"}';
-  const stored = await codec.seal(plaintext, 'upstream:one:state');
+  const context = testContext('upstream:one:state');
+  const stored = await codec.seal(plaintext, context);
   const parsed = JSON.parse(stored) as { $flowayEncrypted: { ciphertext: string } };
   const ciphertext = parsed.$flowayEncrypted.ciphertext;
   parsed.$flowayEncrypted.ciphertext = `${ciphertext.startsWith('A') ? 'B' : 'A'}${ciphertext.slice(1)}`;
 
   const error = await assertRejects(
-    () => codec.open(JSON.stringify(parsed), 'upstream:one:state'),
+    () => codec.open(JSON.stringify(parsed), context),
     Error,
     'Failed to decrypt stored secret for upstream:one:state',
   );
@@ -51,19 +54,19 @@ test('stored secret authentication rejects tampering without including plaintext
 test('stored secret codec rejects missing keys, unsupported versions, and plaintext rows visibly', async () => {
   const missingKeyCodec = createAes256GcmStoredSecretCodec(null);
   await assertRejects(
-    () => missingKeyCodec.seal('{}', 'upstream:one:config'),
+    () => missingKeyCodec.seal('{}', testContext('upstream:one:config')),
     Error,
     'Device master key is unavailable',
   );
 
   const codec = createAes256GcmStoredSecretCodec(masterKey);
   await assertRejects(
-    () => codec.open('{"$flowayEncrypted":{"version":2,"algorithm":"AES-256-GCM","nonce":"","ciphertext":""}}', 'upstream:one:config'),
+    () => codec.open('{"$flowayEncrypted":{"version":2,"algorithm":"AES-256-GCM","nonce":"","ciphertext":""}}', testContext('upstream:one:config')),
     Error,
     'Unsupported encrypted stored secret version 2 for upstream:one:config',
   );
   const plaintextError = await assertRejects(
-    () => codec.open('{"apiKey":"plaintext"}', 'upstream:one:config'),
+    () => codec.open('{"apiKey":"plaintext"}', testContext('upstream:one:config')),
     Error,
     'Invalid encrypted stored secret format for upstream:one:config',
   );
@@ -72,10 +75,16 @@ test('stored secret codec rejects missing keys, unsupported versions, and plaint
 
 test('stored secret codec preserves malformed base64 decoding failures', async () => {
   const codec = createAes256GcmStoredSecretCodec(masterKey);
-  const error = await assertRejects(
-    () => codec.open('{"$flowayEncrypted":{"version":1,"algorithm":"AES-256-GCM","nonce":"A","ciphertext":"A"}}', 'upstream:one:config'),
-    Error,
-    'Invalid encrypted stored secret format for upstream:one:config',
-  );
-  assert(error.cause instanceof Error);
+  const decodingFailure = new Error('sentinel base64 decoder failure');
+  const atob = vi.spyOn(globalThis, 'atob').mockImplementation(() => { throw decodingFailure; });
+  try {
+    const error = await assertRejects(
+      () => codec.open('{"$flowayEncrypted":{"version":1,"algorithm":"AES-256-GCM","nonce":"A","ciphertext":"A"}}', testContext('upstream:one:config')),
+      Error,
+      'Invalid encrypted stored secret format for upstream:one:config',
+    );
+    assert(error.cause === decodingFailure);
+  } finally {
+    atob.mockRestore();
+  }
 });

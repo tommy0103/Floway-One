@@ -9,9 +9,12 @@ const STORED_SECRET_ALGORITHM = 'AES-256-GCM';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+declare const storedSecretContextBrand: unique symbol;
+export type StoredSecretContext = string & { readonly [storedSecretContextBrand]: true };
+
 export interface StoredSecretCodec {
-  seal(plaintext: string, context: string): Promise<string>;
-  open(stored: string, context: string): Promise<string>;
+  seal(plaintext: string, context: StoredSecretContext): Promise<string>;
+  open(stored: string, context: StoredSecretContext): Promise<string>;
 }
 
 export const plaintextStoredSecretCodec: StoredSecretCodec = Object.freeze({
@@ -45,11 +48,11 @@ const decodeBase64Url = (value: unknown): Uint8Array | null => {
   return encodeBase64Url(bytes) === value ? bytes : null;
 };
 
-const invalidEnvelope = (context: string, cause?: unknown): Error => cause === undefined
+const invalidEnvelope = (context: StoredSecretContext, cause?: unknown): Error => cause === undefined
   ? new Error(`Invalid encrypted stored secret format for ${context}`)
   : new Error(`Invalid encrypted stored secret format for ${context}`, { cause });
 
-const parseEnvelope = (stored: string, context: string): StoredSecretEnvelope['$flowayEncrypted'] => {
+const parseEnvelope = (stored: string, context: StoredSecretContext): StoredSecretEnvelope['$flowayEncrypted'] => {
   let value: unknown;
   try {
     value = JSON.parse(stored);
@@ -88,7 +91,7 @@ export const createAes256GcmStoredSecretCodec = (masterKey: Uint8Array | null): 
   };
 
   return Object.freeze({
-    async seal(plaintext: string, context: string): Promise<string> {
+    async seal(plaintext: string, context: StoredSecretContext): Promise<string> {
       const nonce = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_BYTES));
       const ciphertext = await crypto.subtle.encrypt(
         { name: 'AES-GCM', iv: nonce, additionalData: encoder.encode(context) },
@@ -106,7 +109,7 @@ export const createAes256GcmStoredSecretCodec = (masterKey: Uint8Array | null): 
       return JSON.stringify(envelope);
     },
 
-    async open(stored: string, context: string): Promise<string> {
+    async open(stored: string, context: StoredSecretContext): Promise<string> {
       const envelope = parseEnvelope(stored, context);
       let nonce: Uint8Array | null;
       let ciphertext: Uint8Array | null;

@@ -67,9 +67,9 @@ import { usageMetricRows } from './usage-metrics.ts';
 import { querySqlUsageOverview } from './usage-overview-sql.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../shared/performance-histogram.ts';
 import { parseServerSecret } from '../shared/server-secret.ts';
-import { assertWebSearchProviderName, type WebSearchConfig } from '../shared/web-search-providers.ts';
+import { assertWebSearchProviderName, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
-import { plaintextStoredSecretCodec, type SqlBindValue, type SqlDatabase, type SqlPreparedStatement, type StoredSecretCodec } from '@floway-dev/platform';
+import { plaintextStoredSecretCodec, type SqlBindValue, type SqlDatabase, type SqlPreparedStatement, type StoredSecretCodec, type StoredSecretContext } from '@floway-dev/platform';
 import { addDecimalStrings, canonicalPricingSelectorKey, parseBillingMetric, parseModelKind, parseNonNegativeDecimalString, parsePricingSelectorKey, type AliasSelection, type AnnouncedMetadata } from '@floway-dev/protocols/common';
 import type { ProxyFallbackEntry, ModelPrefixConfig, UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
 import { normalizeModelPrefix, parsePerformanceOperation, UpstreamGoneError } from '@floway-dev/provider';
@@ -869,12 +869,12 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
       .run();
   }
 
-  private sealApiKey(apiKey: string, provider: string): Promise<string> {
-    return apiKey === '' ? Promise.resolve('') : this.storedSecrets.seal(apiKey, `web-search:${provider}:api-key`);
+  private sealApiKey(apiKey: string, provider: WebSearchProviderName): Promise<string> {
+    return apiKey === '' ? Promise.resolve('') : this.storedSecrets.seal(apiKey, webSearchApiKeySecretContext(provider));
   }
 
-  private openApiKey(stored: string, provider: string): Promise<string> {
-    return stored === '' ? Promise.resolve('') : this.storedSecrets.open(stored, `web-search:${provider}:api-key`);
+  private openApiKey(stored: string, provider: WebSearchProviderName): Promise<string> {
+    return stored === '' ? Promise.resolve('') : this.storedSecrets.open(stored, webSearchApiKeySecretContext(provider));
   }
 }
 
@@ -885,8 +885,10 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 // declaring the row unwritable, not a derived figure.
 export const UPSTREAM_STATE_WRITE_ATTEMPTS = 4;
 
-const upstreamConfigSecretContext = (id: string): string => `upstream:${id}:config`;
-const upstreamStateSecretContext = (id: string): string => `upstream:${id}:state`;
+const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSecretContext =>
+  `web-search:${provider}:api-key` as StoredSecretContext;
+const upstreamConfigSecretContext = (id: string): StoredSecretContext => `upstream:${id}:config` as StoredSecretContext;
+const upstreamStateSecretContext = (id: string): StoredSecretContext => `upstream:${id}:state` as StoredSecretContext;
 
 class SqlUpstreamRepo implements UpstreamRepo {
   constructor(private db: SqlDatabase, private storedSecrets: StoredSecretCodec) {}

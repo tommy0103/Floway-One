@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -19,6 +19,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
 const ADMIN_KEY = 'packaged-layout-test';
 const PERSONAL_SECRET = `packaged-personal-secret-${randomUUID()}`;
+const REQUIRE_CREDENTIAL_STORE = process.env.FLOWAY_REQUIRE_CREDENTIAL_STORE === '1';
+const START_LINUX_SECRET_SERVICE = process.env.FLOWAY_START_TEST_SECRET_SERVICE === '1';
 
 const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
@@ -63,6 +65,9 @@ const exerciseIsolatedCredentialStore = async (): Promise<boolean> => {
     return true;
   } catch (error) {
     if (process.platform === 'linux' && errorChain(error).includes('Linux Secret Service is unavailable')) {
+      if (REQUIRE_CREDENTIAL_STORE) {
+        fail(`this runner requires a working Linux Secret Service\n${errorChain(error)}`);
+      }
       console.log(`Linux Secret Service unavailable; successful personal-store smoke is not runnable on this host: ${errorChain(error)}`);
       return false;
     }
@@ -100,6 +105,88 @@ await mkdir(runtimeParent, { recursive: true });
 const runtimeRoot = await mkdtemp(join(runtimeParent, 'floway-packaged-node-'));
 const packageRoot = resolve(runtimeRoot, 'app');
 const children = new Set<ChildProcessByStdio<null, Readable, Readable>>();
+const serviceChildren = new Set<ChildProcess>();
+
+const terminateChild = async (child: ChildProcess): Promise<void> => {
+  serviceChildren.delete(child);
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
+  await exited;
+};
+
+const waitForLine = async (child: ChildProcessWithoutNullStreams, stream: Readable): Promise<string> => await new Promise((resolveLine, rejectLine) => {
+  let output = '';
+  let errors = '';
+  const timeout = setTimeout(() => rejectLine(new Error(`service startup timed out\nstdout: ${output}\nstderr: ${errors}`)), 10_000);
+  stream.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  stream.on('data', chunk => {
+    output += chunk;
+    const line = output.split('\n').find(candidate => candidate.length > 0);
+    if (line === undefined) return;
+    clearTimeout(timeout);
+    resolveLine(line);
+  });
+  child.stderr.on('data', chunk => { errors += chunk; });
+  child.once('error', error => { clearTimeout(timeout); rejectLine(error); });
+  child.once('exit', (code, signal) => {
+    clearTimeout(timeout);
+    rejectLine(new Error(`service exited before readiness (${code ?? signal})\nstdout: ${output}\nstderr: ${errors}`));
+  });
+});
+
+const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> => {
+  if (!START_LINUX_SECRET_SERVICE) return async () => undefined;
+  if (process.platform !== 'linux') fail('FLOWAY_START_TEST_SECRET_SERVICE is supported only on Linux');
+
+  const originalBusAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  const originalRuntimeDirectory = process.env.XDG_RUNTIME_DIR;
+  const serviceRuntimeDirectory = resolve(runtimeRoot, 'secret-service-runtime');
+  await mkdir(serviceRuntimeDirectory, { recursive: true, mode: 0o700 });
+  process.env.XDG_RUNTIME_DIR = serviceRuntimeDirectory;
+
+  // Run a private session bus and Secret Service daemon so the Linux job
+  // requires the same org.freedesktop.secrets API used by desktop sessions.
+  // https://dbus.freedesktop.org/doc/dbus-daemon.1.html
+  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L137-L146
+  const bus = spawn('dbus-daemon', ['--session', '--nofork', '--print-address=1'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  serviceChildren.add(bus);
+  const busAddress = await waitForLine(bus, bus.stdout);
+  process.env.DBUS_SESSION_BUS_ADDRESS = busAddress;
+
+  const keyring = spawn('gnome-keyring-daemon', ['--foreground', '--components=secrets', '--unlock'], {
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  serviceChildren.add(keyring);
+  keyring.stdin.end('floway-ci-secret-service\n');
+
+  const deadline = Date.now() + 10_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      createOperatingSystemCredential(`Floway Secret Service readiness ${randomUUID()}`, 'probe');
+      lastError = undefined;
+      break;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    }
+  }
+  if (lastError !== undefined) {
+    await Promise.all([...serviceChildren].map(terminateChild));
+    throw new Error('Isolated Linux Secret Service did not become ready', { cause: lastError });
+  }
+
+  return async () => {
+    await Promise.all([terminateChild(keyring), terminateChild(bus)]);
+    if (originalBusAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    else process.env.DBUS_SESSION_BUS_ADDRESS = originalBusAddress;
+    if (originalRuntimeDirectory === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = originalRuntimeDirectory;
+  };
+};
 
 const stopRuntime = async (child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> => {
   children.delete(child);
@@ -262,45 +349,51 @@ const assertUnavailableLinuxPersonalStartup = async (): Promise<void> => {
 };
 
 try {
-  await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
-
-  await Promise.all([
-    access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
-    access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/gateway')),
-    access(resolve(packageRoot, 'apps/web/dist/client/index.html')),
-    access(resolve(packageRoot, 'apps/web/dist/client/dashboard-routes.json')),
-  ]);
+  const stopIsolatedLinuxSecretService = await startIsolatedLinuxSecretService();
   try {
-    await access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/test-utils'));
-    fail('the isolated runtime contains a development-only dependency');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
+    await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
 
-  const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
-  await assertServerSurface(server.origin);
-  await stopRuntime(server.child);
-
-  const systemStoreAvailable = await exerciseIsolatedCredentialStore();
-  if (systemStoreAvailable) {
-    const productionCredential = createOperatingSystemCredential();
-    const existingMasterKey = await readCredential(productionCredential);
+    await Promise.all([
+      access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
+      access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/gateway')),
+      access(resolve(packageRoot, 'apps/web/dist/client/index.html')),
+      access(resolve(packageRoot, 'apps/web/dist/client/dashboard-routes.json')),
+    ]);
     try {
-      const personalDatabase = resolve(runtimeRoot, 'personal.db');
-      const personal = await startRuntime(personalDatabase, 'personal');
-      await persistPersonalSecret(personal.origin);
-      await stopRuntime(personal.child);
-      const storedMasterKey = await readCredential(productionCredential);
-      if (storedMasterKey?.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
-      assertCiphertextAtRest(personalDatabase);
-    } finally {
-      if (existingMasterKey === null) await deleteCredential(productionCredential);
+      await access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/test-utils'));
+      fail('the isolated runtime contains a development-only dependency');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-  }
 
-  await assertUnavailableLinuxPersonalStartup();
+    const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
+    await assertServerSurface(server.origin);
+    await stopRuntime(server.child);
+
+    const systemStoreAvailable = await exerciseIsolatedCredentialStore();
+    if (systemStoreAvailable) {
+      const productionCredential = createOperatingSystemCredential();
+      const existingMasterKey = await readCredential(productionCredential);
+      try {
+        const personalDatabase = resolve(runtimeRoot, 'personal.db');
+        const personal = await startRuntime(personalDatabase, 'personal');
+        await persistPersonalSecret(personal.origin);
+        await stopRuntime(personal.child);
+        const storedMasterKey = await readCredential(productionCredential);
+        if (storedMasterKey?.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
+        assertCiphertextAtRest(personalDatabase);
+      } finally {
+        if (existingMasterKey === null) await deleteCredential(productionCredential);
+      }
+    }
+
+    await assertUnavailableLinuxPersonalStartup();
+  } finally {
+    await stopIsolatedLinuxSecretService();
+  }
 } finally {
   await Promise.all([...children].map(stopRuntime));
+  await Promise.all([...serviceChildren].map(terminateChild));
   await rm(runtimeRoot, { recursive: true, force: true });
 }
 

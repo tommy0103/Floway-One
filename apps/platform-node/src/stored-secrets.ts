@@ -1,3 +1,4 @@
+import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import { loadDeviceMasterKey, type DeviceMasterKeyCredential } from './device-master-key.ts';
 import {
   createAes256GcmStoredSecretCodec,
@@ -12,6 +13,7 @@ const SEARCH_CONFIG_WITH_CREDENTIAL_SQL = "SELECT id FROM search_config WHERE ta
 export const createNodeStoredSecretCodec = async (
   profile: RuntimeProfileMode,
   db: SqlDatabase,
+  creationLock: DeviceMasterKeyCreationLock,
   credential?: DeviceMasterKeyCredential,
 ): Promise<StoredSecretCodec> => {
   if (profile === 'server') return plaintextStoredSecretCodec;
@@ -21,6 +23,6 @@ export const createNodeStoredSecretCodec = async (
     db.prepare(SEARCH_CONFIG_WITH_CREDENTIAL_SQL).first<{ id: number }>(),
   ]);
   const databaseHasProtectedValues = existingUpstream !== null || existingSearchCredential !== null;
-  const masterKey = await loadDeviceMasterKey(!databaseHasProtectedValues, credential);
+  const masterKey = await loadDeviceMasterKey(creationLock, !databaseHasProtectedValues, credential);
   return createAes256GcmStoredSecretCodec(masterKey);
 };

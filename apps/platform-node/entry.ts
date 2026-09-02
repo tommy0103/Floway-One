@@ -52,7 +52,7 @@ initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
 const profile = selectNodeRuntimeProfile(process.argv.slice(2));
-const { db } = bootstrapNodePlatform(profile);
+const { db, deviceMasterKeyCreationLock } = bootstrapNodePlatform(profile);
 const port = Number(getEnvOptional('PORT', '8788'));
 
 // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
@@ -66,7 +66,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
 }
 
 await applyMigrations(db);
-const storedSecrets = await createNodeStoredSecretCodec(profile, db);
+const storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
 initRepo(new SqlRepo(db, { storedSecrets }));
 
 startScheduledMaintenance();
