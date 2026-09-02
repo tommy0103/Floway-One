@@ -150,17 +150,23 @@ const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> =
   // requires the same org.freedesktop.secrets API used by desktop sessions.
   // https://dbus.freedesktop.org/doc/dbus-daemon.1.html
   // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L137-L146
+  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L999-L1006
   const bus = spawn('dbus-daemon', ['--session', '--nofork', '--print-address=1'], { stdio: ['pipe', 'pipe', 'pipe'] });
   serviceChildren.add(bus);
   const busAddress = await waitForLine(bus, bus.stdout);
   process.env.DBUS_SESSION_BUS_ADDRESS = busAddress;
 
-  const keyring = spawn('gnome-keyring-daemon', ['--foreground', '--components=secrets', '--unlock'], {
+  const keyring = spawn('gnome-keyring-daemon', ['--foreground', '--login', '--components=secrets'], {
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   serviceChildren.add(keyring);
   keyring.stdin.end('floway-ci-secret-service\n');
+  await waitForLine(keyring, keyring.stdout);
+  await execFileAsync('gnome-keyring-daemon', ['--start', '--components=secrets'], {
+    env: process.env,
+    timeout: 10_000,
+  });
 
   const deadline = Date.now() + 10_000;
   let lastError: unknown;
