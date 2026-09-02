@@ -423,7 +423,7 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
     // pnpm deploy's temporary package retains keyring-node's documented
     // CommonJS entry. Replacing only that packaged copy makes the native
     // facility unavailable without adding a test-only branch to production.
-    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L4
+    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L5
     await writeFile(keyringModulePath, `'use strict';\nconst unavailable = () => { throw new Error(${JSON.stringify(sentinel)}); };\nexports.Entry = class Entry { constructor() { unavailable(); } };\nexports.findCredentials = unavailable;\n`);
     await assertPersonalStartupFailure(
       `unavailable-${process.platform}-credential-store`,
