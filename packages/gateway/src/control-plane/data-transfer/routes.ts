@@ -16,7 +16,7 @@ import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-valida
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
 import type { ApiKey, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
-import { assertRuntimeProfileData, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
+import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type importBody } from '../schemas.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
@@ -157,7 +157,9 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
 
     // D1 does not expose a transaction spanning these repositories. Complete
     // validation therefore happens before this delete wave; a storage failure
-    // after it begins can still leave a partially restored deployment.
+    // after it begins can still leave a partially restored deployment. A
+    // personal import keeps its only owner in place until the atomic user
+    // upsert below succeeds, so a failed write cannot leave it ownerless.
     const deletes: Promise<unknown>[] = [
       repo.sessions.deleteAll(),
       repo.apiKeys.deleteAll(),
@@ -168,8 +170,8 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
       repo.proxyBackoffs.deleteAll(),
       repo.openaiResponsesSnapshots.deleteAll(),
       repo.openaiResponsesItems.deleteAll(),
-      repo.users.deleteAll(),
     ];
+    if (!isPersonalRuntimeProfile()) deletes.push(repo.users.deleteAll());
     if (performanceIncluded) deletes.push(repo.performance.deleteAll());
     await Promise.all(deletes);
   }

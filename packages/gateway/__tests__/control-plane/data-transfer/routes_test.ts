@@ -1473,6 +1473,38 @@ test('personal profile rejects a multi-user import before mutating stored data',
   }
 });
 
+test('personal replace import preserves the owner when its atomic upsert fails', async () => {
+  const { app, repo } = setup();
+  const usersBefore = await repo.users.listIncludingDeleted();
+  const persistenceError = new Error('simulated owner persistence failure');
+  const save = vi.spyOn(repo.users, 'save').mockRejectedValueOnce(persistenceError);
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', version: 20, data: latestImportData() }),
+    });
+
+    assertEquals(response.status, 500);
+    assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
+    assertEquals(save.mock.calls, [[SEED_ADMIN]]);
+  } finally {
+    save.mockRestore();
+    initRuntimeProfile('server');
+  }
+});
+
+test('server replace import still removes users absent from the payload', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(USER_BOB);
+
+  const result = await doImport(app, 'replace', latestImportData());
+
+  assertEquals(result.status, 200);
+  assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [SEED_ADMIN.id]);
+});
+
 test('v20 import rejects api_keys whose user_id does not appear in the payload', async () => {
   const { app, repo } = setup();
   await repo.users.save(SEED_ADMIN);

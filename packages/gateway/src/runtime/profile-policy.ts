@@ -7,19 +7,19 @@ export const PERSONAL_USER_MANAGEMENT_ERROR = 'User management is unavailable in
 export const PERSONAL_OWNER_ADMIN_ERROR = 'The personal profile owner must remain an administrator.';
 export const PERSONAL_OWNER_UPSTREAMS_ERROR = 'The personal profile owner must have unrestricted upstream access.';
 
-const isPersonalProfile = (): boolean => getRuntimeProfile().mode === 'personal';
+export const isPersonalRuntimeProfile = (): boolean => getRuntimeProfile().mode === 'personal';
 
 export const personalUserCreationError = (): string | null =>
-  isPersonalProfile() ? PERSONAL_USER_MANAGEMENT_ERROR : null;
+  isPersonalRuntimeProfile() ? PERSONAL_USER_MANAGEMENT_ERROR : null;
 
 export const personalUserDeletionError = (): string | null =>
-  isPersonalProfile() ? PERSONAL_USER_MANAGEMENT_ERROR : null;
+  isPersonalRuntimeProfile() ? PERSONAL_USER_MANAGEMENT_ERROR : null;
 
 export const personalUserUpdateError = (
   userId: number,
   patch: { isAdmin?: boolean; upstreamIds?: readonly string[] | null },
 ): string | null => {
-  if (!isPersonalProfile()) return null;
+  if (!isPersonalRuntimeProfile()) return null;
   if (userId !== SEED_ADMIN_USER_ID) return PERSONAL_USER_MANAGEMENT_ERROR;
   if (patch.isAdmin === false) return PERSONAL_OWNER_ADMIN_ERROR;
   if (patch.upstreamIds !== undefined && patch.upstreamIds !== null) return PERSONAL_OWNER_UPSTREAMS_ERROR;
@@ -27,13 +27,13 @@ export const personalUserUpdateError = (
 };
 
 export const personalApiKeyOwnerId = (actorUserId: number): number =>
-  isPersonalProfile() ? SEED_ADMIN_USER_ID : actorUserId;
+  isPersonalRuntimeProfile() ? SEED_ADMIN_USER_ID : actorUserId;
 
 export const runtimeProfileDataError = (
   users: readonly User[],
   apiKeys: readonly ApiKey[],
 ): string | null => {
-  if (!isPersonalProfile()) return null;
+  if (!isPersonalRuntimeProfile()) return null;
 
   if (users.length !== 1 || users[0]?.id !== SEED_ADMIN_USER_ID) {
     const ids = users.length === 0 ? '(none)' : users.map(user => user.id).join(', ');
@@ -53,7 +53,7 @@ export const runtimeProfileDataError = (
 };
 
 export const assertRuntimeProfileData = async (): Promise<void> => {
-  if (!isPersonalProfile()) return;
+  if (!isPersonalRuntimeProfile()) return;
   const repo = getRepo();
   const [users, apiKeys] = await Promise.all([
     repo.users.listIncludingDeleted(),
