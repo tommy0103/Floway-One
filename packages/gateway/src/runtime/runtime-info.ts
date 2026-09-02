@@ -1,7 +1,14 @@
-import { getEnvOptional, getRuntimeKind, type RuntimeKind } from '@floway-dev/platform';
+import {
+  getEnvOptional,
+  getRuntimeKind,
+  getRuntimeProfile,
+  type RuntimeKind,
+  type RuntimeProfile,
+} from '@floway-dev/platform';
 
 export interface RuntimeInfo {
   kind: RuntimeKind;
+  profile: RuntimeProfile;
   runtimeLocation: string;
 }
 
@@ -24,5 +31,6 @@ export const getRuntimeLocation = (request: Request): string => {
 
 export const getRuntimeInfo = (request: Request): RuntimeInfo => ({
   kind: getRuntimeKind(),
+  profile: getRuntimeProfile(),
   runtimeLocation: getRuntimeLocation(request),
 });
