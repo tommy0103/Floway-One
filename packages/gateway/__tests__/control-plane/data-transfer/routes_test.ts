@@ -22,6 +22,7 @@ import type { ApiKey, PerformanceTelemetryRecord, WebSearchUsageRecord, StoredOp
 import { tokenUsageMetrics } from '../../../src/repo/usage-metrics.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { InMemoryRepo } from '../../repo/memory.ts';
+import { initRuntimeProfile } from '@floway-dev/platform';
 import { ALL_PROVIDER_KINDS, type UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals } from '@floway-dev/test-utils';
 
@@ -1451,6 +1452,25 @@ test('v20 export/import round-trips users and per-key user_id', async () => {
   assertEquals(restoredUsers.find(u => u.id === USER_BOB.id)?.passwordHash, USER_BOB.passwordHash);
   const restoredKey = await repo.apiKeys.findByRawKey(KEY_B.key);
   assertEquals(restoredKey?.userId, USER_BOB.id);
+});
+
+test('personal profile rejects a multi-user import before mutating stored data', async () => {
+  const { app, repo } = setup();
+  await repo.apiKeys.save(KEY_A);
+  initRuntimeProfile('personal');
+  try {
+    const result = await doImport(app, 'replace', latestImportData({
+      users: [SEED_ADMIN, USER_BOB],
+      apiKeys: [{ ...KEY_B, userId: USER_BOB.id }],
+    }));
+
+    assertEquals(result.status, 400);
+    assertEquals(result.body.error, 'invalid personal profile data: expected exactly the seed owner (user 1); found user ids: 1, 2');
+    assertEquals(await repo.apiKeys.list(), [KEY_A]);
+    assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [SEED_ADMIN.id]);
+  } finally {
+    initRuntimeProfile('server');
+  }
 });
 
 test('v20 import rejects api_keys whose user_id does not appear in the payload', async () => {

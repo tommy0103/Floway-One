@@ -31,6 +31,7 @@ import { applyMigrations } from './src/migrate.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import {
   app,
+  assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
@@ -64,6 +65,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
 
 await applyMigrations(db);
 initRepo(new SqlRepo(db));
+await assertRuntimeProfileData();
 
 startScheduledMaintenance();
 

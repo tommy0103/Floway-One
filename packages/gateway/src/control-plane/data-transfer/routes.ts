@@ -16,6 +16,7 @@ import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-valida
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
 import type { ApiKey, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
+import { assertRuntimeProfileData, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type importBody } from '../schemas.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
@@ -136,6 +137,9 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   if (parsed.type === 'invalid') return c.json({ error: parsed.error }, 400);
   const { users, apiKeys, upstreams, proxies, usage, searchUsage, performance, performanceIncluded, searchConfig } = parsed.data;
 
+  const profileError = runtimeProfileDataError(users, apiKeys);
+  if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
+
   const repo = getRepo();
   // Merge mode needs each key's prior dump policy to identify transitions that
   // must disconnect live subscribers after the replacement row is stored.
@@ -193,6 +197,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   await Promise.all(upstreams.map(upstream => warmModelsCache(upstream, c)));
   for (const record of performance) await repo.performance.set(record);
   await repo.webSearchConfig.save(searchConfig);
+  await assertRuntimeProfileData();
 
   return c.json({
     ok: true,
