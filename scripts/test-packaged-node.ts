@@ -7,6 +7,8 @@ import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { pnpmCommandForPlatform } from './node-runtime.ts';
+
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
@@ -14,6 +16,9 @@ const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
 const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
 };
+
+if (pnpmCommandForPlatform('win32') !== 'pnpm.cmd') fail('Windows must launch pnpm.cmd');
+if (pnpmCommandForPlatform('linux') !== 'pnpm') fail('non-Windows hosts must launch pnpm');
 
 const dockerfile = await readFile(resolve(ROOT, 'docker/Dockerfile'), 'utf8');
 const expectedAssembly = 'RUN node --experimental-strip-types scripts/generate-node-runtime.ts /server';
@@ -141,4 +146,4 @@ try {
   await rm(runtimeRoot, { recursive: true, force: true });
 }
 
-console.log('Packaged Node runtime executes its production CMD with the Dashboard and gateway on one origin');
+console.log('Packaged Node runtime executes its production CMD with the Dashboard and gateway on one origin; pnpm.cmd selection is verified for Windows');
