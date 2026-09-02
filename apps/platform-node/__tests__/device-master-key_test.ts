@@ -119,28 +119,3 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   assert(error.cause instanceof Error);
   assertEquals(error.cause.message, 'Failed to verify the Floway One device master key in Linux Secret Service');
 });
-
-test('credential-store failure injection preserves its platform sentinel as the original cause', async () => {
-  const previous = process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
-  process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE = 'Windows Credential Manager unavailable sentinel';
-  try {
-    const error = await assertRejects(
-      async () => createOperatingSystemCredential('Floway test', 'failure-injection', 'win32', {
-        Entry: class {
-          getSecret = () => null;
-          setSecret = () => undefined;
-          setPassword = () => undefined;
-          deleteCredential = () => false;
-        },
-        findCredentials: () => [],
-      }),
-      Error,
-      'Injected operating system credential-store failure for Floway verification',
-    );
-    assert(error.cause instanceof Error);
-    assertEquals(error.cause.message, 'Windows Credential Manager unavailable sentinel');
-  } finally {
-    if (previous === undefined) delete process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
-    else process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE = previous;
-  }
-});

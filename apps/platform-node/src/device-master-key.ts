@@ -48,15 +48,6 @@ export const createOperatingSystemCredential = (
   platform: NodeJS.Platform = process.platform,
   bindings: KeyringBindings = defaultKeyringBindings,
 ): DeviceMasterKeyCredential => {
-  // Packaged native-platform jobs use this boundary to force the same startup
-  // failure on hosts where locking the runner's real credential store is not
-  // safe or deterministic.
-  const injectedFailure = process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
-  if (injectedFailure !== undefined) {
-    throw new Error('Injected operating system credential-store failure for Floway verification', {
-      cause: new Error(injectedFailure),
-    });
-  }
   if (platform !== 'linux') {
     const entry = new bindings.Entry(service, account);
     return {

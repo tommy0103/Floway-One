@@ -1,9 +1,10 @@
 import { execFile, spawn, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { type Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -411,12 +412,28 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
   const sentinel = process.platform === 'darwin'
     ? 'macOS Keychain locked sentinel'
     : 'Windows Credential Manager unavailable sentinel';
-  await assertPersonalStartupFailure(
-    `unavailable-${process.platform}-credential-store`,
-    resolve(runtimeRoot, `unavailable-${process.platform}-credential-store.db`),
-    { FLOWAY_TEST_CREDENTIAL_STORE_FAILURE: sentinel },
-    [outer, 'Injected operating system credential-store failure for Floway verification', sentinel],
-  );
+  const packagedRequire = createRequire(resolve(packageRoot, 'apps/platform-node/package.json'));
+  const keyringModulePath = packagedRequire.resolve('@napi-rs/keyring');
+  const relativeKeyringPath = relative(await realpath(packageRoot), keyringModulePath);
+  if (relativeKeyringPath.startsWith('..') || isAbsolute(relativeKeyringPath)) {
+    fail(`resolved packaged keyring outside the temporary runtime: ${keyringModulePath}`);
+  }
+  const originalKeyringModule = await readFile(keyringModulePath);
+  try {
+    // pnpm deploy's temporary package retains keyring-node's documented
+    // CommonJS entry. Replacing only that packaged copy makes the native
+    // facility unavailable without adding a test-only branch to production.
+    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L4
+    await writeFile(keyringModulePath, `'use strict';\nconst unavailable = () => { throw new Error(${JSON.stringify(sentinel)}); };\nexports.Entry = class Entry { constructor() { unavailable(); } };\nexports.findCredentials = unavailable;\n`);
+    await assertPersonalStartupFailure(
+      `unavailable-${process.platform}-credential-store`,
+      resolve(runtimeRoot, `unavailable-${process.platform}-credential-store.db`),
+      {},
+      [outer, sentinel],
+    );
+  } finally {
+    await writeFile(keyringModulePath, originalKeyringModule);
+  }
 };
 
 const tamperSearchCredential = (databasePath: string): void => {
