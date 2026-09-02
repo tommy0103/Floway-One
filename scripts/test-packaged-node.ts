@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -40,7 +40,9 @@ const parseServerCommand = (source: string): string[] => {
 };
 const serverCommand = parseServerCommand(commandSource);
 
-const runtimeRoot = await mkdtemp(join(tmpdir(), 'floway-packaged-node-'));
+const runtimeParent = process.platform === 'win32' ? resolve(ROOT, '.tmp') : tmpdir();
+await mkdir(runtimeParent, { recursive: true });
+const runtimeRoot = await mkdtemp(join(runtimeParent, 'floway-packaged-node-'));
 const packageRoot = resolve(runtimeRoot, 'app');
 let child: ChildProcessByStdio<null, Readable, Readable> | undefined;
 

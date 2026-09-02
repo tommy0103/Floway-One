@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { cp, mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,6 +24,7 @@ try {
     // A .cmd file is not executable by itself on Windows. Node documents
     // shell-backed spawn as the supported launch path:
     // https://nodejs.org/docs/latest-v22.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows
+    const deployTarget = windows ? relative(ROOT, platformNodeRoot) : platformNodeRoot;
     const child = spawn(windows ? 'pnpm.cmd' : 'pnpm', [
       '--filter',
       '@floway-dev/platform-node',
@@ -31,7 +32,7 @@ try {
       '--prod',
       '--legacy',
       '--ignore-scripts',
-      platformNodeRoot,
+      deployTarget,
     ], { cwd: ROOT, env: process.env, shell: windows, stdio: 'inherit' });
     child.once('error', rejectRun);
     child.once('exit', (code, signal) => {
