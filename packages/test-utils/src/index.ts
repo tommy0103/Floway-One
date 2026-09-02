@@ -7,5 +7,6 @@ export {
   assertStringIncludes,
   assertThrows,
 } from './assert.ts';
+export { gatewayTestUrls } from './gateway-routes.ts';
 export { jsonResponse, readJsonRequest, sseResponse, testFetcher, withMockedFetch } from './mock-fetch.ts';
 export { mockPerfTelemetryContext, noopAnthropicMessagesUpstreamCallOptions, noopUpstreamCallOptions, stubInternalModel, stubProvider, stubProviderModel, stubModelCandidate, testTelemetryModelIdentity } from './stubs.ts';

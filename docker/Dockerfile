@@ -5,7 +5,7 @@ ARG NODE_VERSION=22.23.1
 # `node:22-*-slim` skips riscv64, so we base off Debian directly and drop
 # in the official Node.js tarball keyed on TARGETPLATFORM. `trixie-slim`
 # gives us glibc 2.41, which the sharp riscv64 prebuilt requires.
-FROM debian:trixie-slim AS base
+FROM debian:trixie-slim AS runtime
 WORKDIR /app
 
 ARG TARGETPLATFORM
@@ -33,10 +33,13 @@ RUN set -eux; \
     rm /tmp/node.tar.xz; \
     corepack enable
 
+FROM runtime AS source
+
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json LICENSE ./
 COPY patches ./patches
 COPY apps ./apps
 COPY packages ./packages
+COPY scripts ./scripts
 
 # The web bundle is platform-independent, while Rolldown and Lightning CSS do
 # not publish riscv64 binaries. This stage therefore starts from a native Node
@@ -59,17 +62,16 @@ COPY packages ./packages
 RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm run build:web
 
-# `--prod` skips every workspace's devDependencies, most importantly
-# `wrangler → miniflare → sharp@0.34.5` at the repo root. That saves a
-# whole redundant sharp/libvips prebuilt on riscv64 — where installing
-# even one prebuilt through QEMU is already the slow step.
-# `--ignore-scripts` bypasses the root `prepare: husky` hook whose binary
-# lives in devDependencies; nothing else in the tree needs an install
-# script (sharp 0.33+ ships prebuilts through optional deps).
-FROM base AS server
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
-
+# The shared assembler drives `pnpm deploy --prod --ignore-scripts`, excluding
+# workspace devDependencies and the root prepare hook while producing a
+# self-contained platform-node installation. The packaged-runtime verifier
+# invokes the same assembler before executing this image's CMD.
+FROM source AS server-deploy
 COPY --from=web-build /app/apps/web/dist/client /app/apps/web/dist/client
+RUN node --experimental-strip-types scripts/generate-node-runtime.ts /server
+
+FROM runtime AS server
+COPY --from=server-deploy /server /app
 
 ENV NODE_ENV=production
 ENV PORT=8788
@@ -81,7 +83,7 @@ RUN mkdir -p /data/files
 VOLUME ["/data"]
 EXPOSE 8788
 
-CMD ["pnpm", "run", "dev:node"]
+CMD ["node", "apps/platform-node/node_modules/tsx/dist/cli.mjs", "apps/platform-node/entry.ts"]
 
 FROM nginx:1.27-alpine AS web
 

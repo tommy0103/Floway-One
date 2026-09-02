@@ -122,16 +122,18 @@ pnpm run deploy
 
 ### Node.js
 
-The Node.js target applies SQLite migrations automatically and defaults to
-`./data/floway.db`, `./data/files`, and port `8788`:
+The Node.js target builds and serves the production Dashboard together with the
+data-plane and control-plane APIs. It applies SQLite migrations automatically
+and defaults to `./data/floway.db`, `./data/files`, and port `8788`:
 
 ```bash
 pnpm install
 ADMIN_KEY='replace-with-a-secret' pnpm run dev:node
 ```
 
-It serves the data-plane and control-plane APIs but not the dashboard. Use
-Docker Compose for the complete self-hosted UI, or serve the web app separately.
+The Dashboard and gateway share <http://localhost:8788>; no separate web server
+or reverse proxy is required for this mode. The command rebuilds the Dashboard
+before starting so it also works immediately after a clean checkout.
 Production Node.js deployments must set both `NODE_ENV=production` and a
 non-empty `ADMIN_KEY`.
 

@@ -1,59 +1,85 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
+const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DASHBOARD_ROOT = resolve(ROOT, 'apps/web/dist/client');
-const TSX_LOADER = pathToFileURL(resolve(ROOT, 'apps/platform-node/node_modules/tsx/dist/loader.mjs')).href;
-const EXPECTED_DASHBOARD_COPY = 'COPY --from=web-build /app/apps/web/dist/client /app/apps/web/dist/client';
+const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
 
 const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
 };
 
 const dockerfile = await readFile(resolve(ROOT, 'docker/Dockerfile'), 'utf8');
-const serverStageStart = dockerfile.indexOf('FROM base AS server\n');
-if (serverStageStart === -1) fail('docker/Dockerfile has no server stage');
-const webBuildStage = dockerfile.indexOf(' AS web-build\n');
-if (webBuildStage === -1 || webBuildStage > serverStageStart) {
-  fail('the web-build stage must precede the server stage that copies from it');
+const expectedAssembly = 'RUN node --experimental-strip-types scripts/generate-node-runtime.ts /server';
+if (!dockerfile.includes(expectedAssembly)) {
+  fail(`the server deploy stage must execute ${JSON.stringify(expectedAssembly)}`);
 }
-const followingStages = dockerfile.slice(serverStageStart + 'FROM base AS server\n'.length);
+const serverStageStart = dockerfile.indexOf('FROM runtime AS server\n');
+if (serverStageStart === -1) fail('docker/Dockerfile has no final server stage');
+const followingStages = dockerfile.slice(serverStageStart + 'FROM runtime AS server\n'.length);
 const nextStage = followingStages.indexOf('\nFROM ');
 const serverStage = nextStage === -1 ? followingStages : followingStages.slice(0, nextStage);
-if (!serverStage.includes(EXPECTED_DASHBOARD_COPY)) {
-  fail(`the server stage must contain ${JSON.stringify(EXPECTED_DASHBOARD_COPY)}`);
+const expectedCopy = 'COPY --from=server-deploy /server /app';
+if (!serverStage.includes(expectedCopy)) {
+  fail(`the final server stage must contain ${JSON.stringify(expectedCopy)}`);
 }
-
-await Promise.all([
-  readFile(resolve(DASHBOARD_ROOT, 'index.html')),
-  readFile(resolve(DASHBOARD_ROOT, 'dashboard-routes.json')),
-]);
+const commandSource = /^CMD\s+(\[[^\n]+\])$/m.exec(serverStage)?.[1]
+  ?? fail('the final server stage has no JSON CMD');
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(item => typeof item === 'string');
+const parseServerCommand = (source: string): string[] => {
+  const value: unknown = JSON.parse(source);
+  if (isStringArray(value) && value.length > 0) return value;
+  return fail('the final server CMD must be a non-empty string array');
+};
+const serverCommand = parseServerCommand(commandSource);
 
 const runtimeRoot = await mkdtemp(join(tmpdir(), 'floway-packaged-node-'));
-const child = spawn(process.execPath, ['--import', TSX_LOADER, 'apps/platform-node/entry.ts'], {
-  cwd: ROOT,
-  env: {
-    ...process.env,
-    ADMIN_KEY: 'packaged-layout-test',
-    FLOWAY_DB_PATH: resolve(runtimeRoot, 'floway.db'),
-    FLOWAY_FILES_DIR: resolve(runtimeRoot, 'files'),
-    NODE_ENV: 'production',
-    PORT: '0',
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-
-let output = '';
-child.stdout.setEncoding('utf8');
-child.stderr.setEncoding('utf8');
-child.stdout.on('data', chunk => { output += chunk; });
-child.stderr.on('data', chunk => { output += chunk; });
+const packageRoot = resolve(runtimeRoot, 'app');
+let child: ChildProcessByStdio<null, Readable, Readable> | undefined;
 
 try {
+  await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
+
+  await Promise.all([
+    access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
+    access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/gateway')),
+    access(resolve(packageRoot, 'apps/web/dist/client/index.html')),
+    access(resolve(packageRoot, 'apps/web/dist/client/dashboard-routes.json')),
+  ]);
+  try {
+    await access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/test-utils'));
+    fail('the isolated runtime contains a development-only dependency');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const runningChild = spawn(serverCommand[0]!, serverCommand.slice(1), {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ADMIN_KEY: 'packaged-layout-test',
+      FLOWAY_DB_PATH: resolve(runtimeRoot, 'floway.db'),
+      FLOWAY_FILES_DIR: resolve(runtimeRoot, 'files'),
+      NODE_ENV: 'production',
+      PORT: '0',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child = runningChild;
+
+  let output = '';
+  runningChild.stdout.setEncoding('utf8');
+  runningChild.stderr.setEncoding('utf8');
+  runningChild.stdout.on('data', chunk => { output += chunk; });
+  runningChild.stderr.on('data', chunk => { output += chunk; });
+
   const readyPort = await new Promise<number>((resolveReady, rejectReady) => {
     const timeout = setTimeout(() => rejectReady(new Error(`startup timed out\n${output}`)), 10_000);
     const inspect = () => {
@@ -62,10 +88,14 @@ try {
       clearTimeout(timeout);
       resolveReady(Number(port));
     };
-    child.stdout.on('data', inspect);
-    child.once('exit', (code, signal) => {
+    runningChild.stdout.on('data', inspect);
+    runningChild.once('exit', (code, signal) => {
       clearTimeout(timeout);
       rejectReady(new Error(`server exited before startup (${code ?? signal})\n${output}`));
+    });
+    runningChild.once('error', error => {
+      clearTimeout(timeout);
+      rejectReady(error);
     });
   });
 
@@ -102,12 +132,13 @@ try {
     if (response.status !== 404) fail(`undeclared path ${path} returned ${response.status}`);
   }
 } finally {
-  if (child.exitCode === null && child.signalCode === null) {
-    const exited = once(child, 'exit');
-    child.kill('SIGTERM');
+  const runningChild = child;
+  if (runningChild?.exitCode === null && runningChild.signalCode === null) {
+    const exited = once(runningChild, 'exit');
+    runningChild.kill('SIGTERM');
     await exited;
   }
   await rm(runtimeRoot, { recursive: true, force: true });
 }
 
-console.log('Packaged Node runtime serves the production Dashboard and gateway from one origin');
+console.log('Packaged Node runtime executes its production CMD with the Dashboard and gateway on one origin');

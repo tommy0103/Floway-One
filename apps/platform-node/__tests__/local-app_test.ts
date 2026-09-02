@@ -8,27 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { createLocalApp } from '../src/local-app.ts';
-import { PUBLIC_DATA_PLANE_ROUTES } from '@floway-dev/protocols/common';
+import { gatewayTestUrls } from '@floway-dev/test-utils';
 
 const CACHE_CONTROL = 'public, max-age=31536000, immutable';
-
-const SAMPLE_SEGMENT: Record<string, string> = {
-  modelAction: 'gemini-2.5-pro:generateContent',
-  modelId: 'gemini-2.5-pro',
-};
-const concreteUrl = (path: string) =>
-  path.replaceAll(/:(\w+)(?:\{.*\})?/g, (_, name: string) => {
-    const sample = SAMPLE_SEGMENT[name];
-    if (sample === undefined) throw new Error(`No sample segment for route parameter :${name}`);
-    return sample;
-  });
-
-const gatewayUrls = [
-  ...new Set(Object.values(PUBLIC_DATA_PLANE_ROUTES).flatMap(route => route.paths.map(concreteUrl))),
-  '/api/upstreams',
-  '/auth/login',
-  '/favicon.ico',
-];
 
 let staticRoot: string;
 
@@ -150,7 +132,7 @@ describe('local app', () => {
     expect(response.headers.get('cache-control')).toBe('no-cache');
   });
 
-  it.each(gatewayUrls)('routes %s directly to the gateway', path => {
+  it.each(gatewayTestUrls)('routes %s directly to the gateway', path => {
     const gatewayResponse = new Response('gateway');
     const gatewayFetch = vi.fn(() => gatewayResponse);
     const localApp = createLocalApp({ gatewayFetch, staticRoot });
