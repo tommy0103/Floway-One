@@ -627,14 +627,22 @@ const assertPrivatePersonalStorage = async (paths: PersonalRuntimePaths, content
 
   const targets = [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath), paths.databasePath, contentPath];
   for (const target of targets) {
+    const kind = (await stat(target)).isDirectory() ? 'directory' : 'file';
     await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
 $ErrorActionPreference = 'Stop'
 $Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_TARGET')
+$Kind = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_KIND')
 $Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$Acl = Get-Acl -LiteralPath $Target
+$Acl = if ($Kind -eq 'directory') { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
 $Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if (-not $Acl.AreAccessRulesProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw "ACL verification failed for $Target" }
-`], { env: { ...process.env, FLOWAY_ACL_VERIFY_TARGET: target } });
+`], {
+      env: {
+        ...process.env,
+        FLOWAY_ACL_VERIFY_KIND: kind,
+        FLOWAY_ACL_VERIFY_TARGET: target,
+      },
+    });
   }
 };
 
