@@ -1,8 +1,9 @@
 import { execFile, spawn, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,6 +15,10 @@ import {
   createOperatingSystemCredential,
   type DeviceMasterKeyCredential,
 } from '../apps/platform-node/src/device-master-key.ts';
+import { FsFileStore } from '../apps/platform-node/src/fs-file-store.ts';
+import { resolvePersonalRuntimePaths, type PersonalRuntimePaths } from '../apps/platform-node/src/personal-runtime.ts';
+import { PersonalStorageHardener } from '../apps/platform-node/src/personal-storage.ts';
+import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '../packages/platform/src/stored-secret-codec.ts';
 
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -105,8 +110,20 @@ const runtimeParent = process.platform === 'win32' ? resolve(ROOT, '.tmp') : tmp
 await mkdir(runtimeParent, { recursive: true });
 const runtimeRoot = await mkdtemp(join(runtimeParent, 'floway-packaged-node-'));
 const packageRoot = resolve(runtimeRoot, 'app');
+const packagedPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-entry-verification.ts');
 const children = new Set<ChildProcessByStdio<null, Readable, Readable>>();
 const serviceChildren = new Set<ChildProcess>();
+
+const probe = createServer();
+await new Promise<void>((resolveListening, rejectListening) => {
+  probe.once('error', rejectListening);
+  probe.listen(0, '127.0.0.1', resolveListening);
+});
+const verificationPort = (probe.address() as { port: number }).port;
+await new Promise<void>((resolveClosed, rejectClosed) => probe.close(error => {
+  if (error === undefined) resolveClosed();
+  else rejectClosed(error);
+}));
 
 const terminateChild = async (child: ChildProcess): Promise<void> => {
   serviceChildren.delete(child);
@@ -225,16 +242,22 @@ const startRuntime = async (
   databasePath: string,
   profile: 'server' | 'personal',
   extraEnv: NodeJS.ProcessEnv = {},
+  personalPaths?: PersonalRuntimePaths,
 ): Promise<{ child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
-  const child = spawn(serverCommand[0]!, [...serverCommand.slice(1), ...(profile === 'personal' ? ['--profile=personal'] : [])], {
+  const command = profile === 'personal'
+    ? [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal']
+    : serverCommand.slice(1);
+  if (profile === 'personal' && personalPaths === undefined) fail('personal packaged runtime requires explicit verification paths');
+  const child = spawn(serverCommand[0]!, command, {
     cwd: packageRoot,
     env: {
       ...process.env,
       ADMIN_KEY,
       FLOWAY_DB_PATH: databasePath,
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${profile}-files`),
+      FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
       NODE_ENV: 'production',
-      PORT: '0',
+      PORT: String(verificationPort),
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -345,19 +368,20 @@ const assertCiphertextAtRest = (databasePath: string): void => {
 
 const assertPersonalStartupFailure = async (
   name: string,
-  databasePath: string,
+  personalPaths: PersonalRuntimePaths,
   extraEnv: NodeJS.ProcessEnv,
   expectedChain: readonly string[],
 ): Promise<void> => {
-  const child = spawn(serverCommand[0]!, [...serverCommand.slice(1), '--profile=personal'], {
+  const child = spawn(serverCommand[0]!, [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal'], {
     cwd: packageRoot,
     env: {
       ...process.env,
       ADMIN_KEY,
-      FLOWAY_DB_PATH: databasePath,
+      FLOWAY_DB_PATH: resolve(runtimeRoot, `${name}-ignored-floway.db`),
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${name}-files`),
+      FLOWAY_PACKAGED_PERSONAL_PATHS: JSON.stringify(personalPaths),
       NODE_ENV: 'production',
-      PORT: '0',
+      PORT: String(verificationPort),
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -395,14 +419,32 @@ const assertPersonalStartupFailure = async (
     }
     previousIndex = index;
   }
+  await new Promise<void>((resolveRefused, rejectRefused) => {
+    const socket = connect({ host: '127.0.0.1', port: verificationPort });
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      rejectRefused(new Error(`${name} listener probe timed out`));
+    }, 2_000);
+    socket.once('connect', () => {
+      clearTimeout(timeout);
+      socket.destroy();
+      rejectRefused(new Error(`${name} accepted a connection after startup failure`));
+    });
+    socket.once('error', error => {
+      clearTimeout(timeout);
+      if ((error as NodeJS.ErrnoException).code === 'ECONNREFUSED') resolveRefused();
+      else rejectRefused(error);
+    });
+  });
 };
 
 const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
   const outer = 'Failed to read the Floway One device master key from the operating system credential store';
+  const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'unavailable-credential-store') });
   if (process.platform === 'linux') {
     await assertPersonalStartupFailure(
       'unavailable-linux-secret-service',
-      resolve(runtimeRoot, 'unavailable-linux-secret-service.db'),
+      personalPaths,
       { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus' },
       [outer, 'Linux Secret Service is unavailable for the Floway One device master key'],
     );
@@ -427,7 +469,7 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
     await writeFile(keyringModulePath, `'use strict';\nconst unavailable = () => { throw new Error(${JSON.stringify(sentinel)}); };\nexports.Entry = class Entry { constructor() { unavailable(); } };\nexports.findCredentials = unavailable;\n`);
     await assertPersonalStartupFailure(
       `unavailable-${process.platform}-credential-store`,
-      resolve(runtimeRoot, `unavailable-${process.platform}-credential-store.db`),
+      personalPaths,
       {},
       [outer, sentinel],
     );
@@ -436,16 +478,163 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
   }
 };
 
-const tamperSearchCredential = (databasePath: string): void => {
+const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
+
+const authenticate = async (origin: string): Promise<string> => {
+  const response = await fetch(`${origin}/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: '', password: ADMIN_KEY }),
+  });
+  if (!response.ok) fail(`personal admin login returned ${response.status}`);
+  const body = await response.json() as { token?: unknown };
+  return requireString(body.token, 'personal admin login returned no session token');
+};
+
+const assertPersistedPersonalSecret = async (origin: string): Promise<void> => {
+  const response = await fetch(`${origin}/api/search-config`, {
+    headers: { 'x-floway-session': await authenticate(origin) },
+  });
+  if (!response.ok) fail(`personal search credential read returned ${response.status}`);
+  const body = await response.json() as { tavily?: { apiKey?: unknown } };
+  if (body.tavily?.apiKey !== PERSONAL_SECRET) fail('valid encrypted restart did not return the persisted Tavily secret');
+};
+
+const seedProtectedUpstream = async (databasePath: string, masterKey: Uint8Array): Promise<void> => {
+  const codec = createAes256GcmStoredSecretCodec(masterKey);
+  const id = 'up_packaged_entry';
+  const config = await codec.seal(
+    '{"baseUrl":"https://provider.example","authStyle":"bearer","apiKey":"packaged-api-key"}',
+    storedSecretContext(`upstream:${id}:config`),
+  );
+  const state = await codec.seal(
+    '{"refreshToken":"packaged-refresh","accessToken":{"token":"packaged-access"}}',
+    storedSecretContext(`upstream:${id}:state`),
+  );
   const database = new DatabaseSync(databasePath);
   try {
-    const row = database.prepare('SELECT tavily_api_key FROM search_config WHERE id = 1').get() as { tavily_api_key: string };
-    const envelope = JSON.parse(row.tavily_api_key) as { $flowayEncrypted: { ciphertext: string } };
-    const first = envelope.$flowayEncrypted.ciphertext[0] ?? fail('stored Tavily ciphertext is empty');
-    envelope.$flowayEncrypted.ciphertext = `${first === 'A' ? 'B' : 'A'}${envelope.$flowayEncrypted.ciphertext.slice(1)}`;
-    database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(JSON.stringify(envelope));
+    database.prepare(
+      `INSERT INTO upstreams (id, provider, name, created_at, updated_at, config_json, state_json, flag_overrides, hue)
+       VALUES (?, 'custom', 'Packaged entry validation', '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z', ?, ?, '{}', 210)`,
+    ).run(id, config, state);
   } finally {
     database.close();
+  }
+};
+
+const tamperEnvelope = (stored: string): string => {
+  const envelope = JSON.parse(stored) as { $flowayEncrypted: { ciphertext: string } };
+  const first = envelope.$flowayEncrypted.ciphertext[0] ?? fail('stored ciphertext is empty');
+  envelope.$flowayEncrypted.ciphertext = `${first === 'A' ? 'B' : 'A'}${envelope.$flowayEncrypted.ciphertext.slice(1)}`;
+  return JSON.stringify(envelope);
+};
+
+const unsupportedEnvelope = (stored: string): string => {
+  const envelope = JSON.parse(stored) as { $flowayEncrypted: { version: number } };
+  envelope.$flowayEncrypted.version = 2;
+  return JSON.stringify(envelope);
+};
+
+const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey: Uint8Array): Promise<void> => {
+  const base = new DatabaseSync(baseDatabasePath, { readOnly: true });
+  const upstream = base.prepare('SELECT config_json, state_json FROM upstreams WHERE id = ?')
+    .get('up_packaged_entry') as { config_json: string; state_json: string };
+  const search = base.prepare('SELECT tavily_api_key FROM search_config WHERE id = 1')
+    .get() as { tavily_api_key: string };
+  base.close();
+  const wrongKey = Uint8Array.from(masterKey, byte => byte ^ 0xff);
+  const wrongCodec = createAes256GcmStoredSecretCodec(wrongKey);
+  const wrongUpstream = await wrongCodec.seal('{"refreshToken":"wrong"}', storedSecretContext('upstream:up_packaged_entry:state'));
+  const wrongSearch = await wrongCodec.seal('wrong', storedSecretContext('web-search:tavily:api-key'));
+
+  const cases: Array<{
+    name: string;
+    expectedChain: readonly string[];
+    mutate(database: DatabaseSync): void;
+  }> = [
+    {
+      name: 'plaintext-upstream',
+      expectedChain: ['Invalid encrypted stored secret format for upstream:up_packaged_entry:config'],
+      mutate: database => { database.prepare('UPDATE upstreams SET config_json = ? WHERE id = ?').run('{"apiKey":"plaintext"}', 'up_packaged_entry'); },
+    },
+    {
+      name: 'plaintext-search',
+      expectedChain: ['Invalid encrypted stored secret format for web-search:tavily:api-key'],
+      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run('plaintext'); },
+    },
+    {
+      name: 'wrong-key-upstream',
+      expectedChain: ['Failed to decrypt stored secret for upstream:up_packaged_entry:state', 'OperationError'],
+      mutate: database => { database.prepare('UPDATE upstreams SET state_json = ? WHERE id = ?').run(wrongUpstream, 'up_packaged_entry'); },
+    },
+    {
+      name: 'wrong-key-search',
+      expectedChain: ['Failed to decrypt stored secret for web-search:tavily:api-key', 'OperationError'],
+      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(wrongSearch); },
+    },
+    {
+      name: 'tampered-upstream',
+      expectedChain: ['Failed to decrypt stored secret for upstream:up_packaged_entry:config', 'OperationError'],
+      mutate: database => { database.prepare('UPDATE upstreams SET config_json = ? WHERE id = ?').run(tamperEnvelope(upstream.config_json), 'up_packaged_entry'); },
+    },
+    {
+      name: 'tampered-search',
+      expectedChain: ['Failed to decrypt stored secret for web-search:tavily:api-key', 'OperationError'],
+      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(tamperEnvelope(search.tavily_api_key)); },
+    },
+    {
+      name: 'malformed-upstream',
+      expectedChain: ['Invalid encrypted stored secret format for upstream:up_packaged_entry:state', 'SyntaxError'],
+      mutate: database => { database.prepare('UPDATE upstreams SET state_json = ? WHERE id = ?').run('{', 'up_packaged_entry'); },
+    },
+    {
+      name: 'malformed-search',
+      expectedChain: ['Invalid encrypted stored secret format for web-search:tavily:api-key', 'SyntaxError'],
+      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run('{'); },
+    },
+    {
+      name: 'unsupported-version-upstream',
+      expectedChain: ['Unsupported encrypted stored secret version 2 for upstream:up_packaged_entry:config'],
+      mutate: database => { database.prepare('UPDATE upstreams SET config_json = ? WHERE id = ?').run(unsupportedEnvelope(upstream.config_json), 'up_packaged_entry'); },
+    },
+    {
+      name: 'unsupported-version-search',
+      expectedChain: ['Unsupported encrypted stored secret version 2 for web-search:tavily:api-key'],
+      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(unsupportedEnvelope(search.tavily_api_key)); },
+    },
+  ];
+
+  for (const entry of cases) {
+    const paths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, `invalid-${entry.name}`) });
+    await mkdir(paths.dataDir, { recursive: true });
+    await copyFile(baseDatabasePath, paths.databasePath);
+    const database = new DatabaseSync(paths.databasePath);
+    try { entry.mutate(database); } finally { database.close(); }
+    await assertPersonalStartupFailure(entry.name, paths, {}, entry.expectedChain);
+  }
+};
+
+const assertPrivatePersonalStorage = async (paths: PersonalRuntimePaths, contentPath: string): Promise<void> => {
+  if (process.platform !== 'win32') {
+    for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
+      if (((await stat(directory)).mode & 0o777) !== 0o700) fail(`personal directory is not mode 0700: ${directory}`);
+    }
+    for (const file of [paths.databasePath, contentPath]) {
+      if (((await stat(file)).mode & 0o777) !== 0o600) fail(`personal file is not mode 0600: ${file}`);
+    }
+    return;
+  }
+
+  const targets = [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath), paths.databasePath, contentPath];
+  for (const target of targets) {
+    await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
+$ErrorActionPreference = 'Stop'
+$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_TARGET')
+$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$Acl = Get-Acl -LiteralPath $Target
+$Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if (-not $Acl.AreAccessRulesProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw "ACL verification failed for $Target" }
+`], { env: { ...process.env, FLOWAY_ACL_VERIFY_TARGET: target } });
   }
 };
 
@@ -453,6 +642,16 @@ try {
   const stopIsolatedLinuxSecretService = await startIsolatedLinuxSecretService();
   try {
     await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
+    if (serverCommand.at(-1) !== 'apps/platform-node/entry.ts') {
+      fail('the packaged server command no longer ends at the production Node entry');
+    }
+    await writeFile(packagedPersonalEntry, `
+import { runNodeEntry } from './entry.ts';
+const source = process.env.FLOWAY_PACKAGED_PERSONAL_PATHS;
+if (source === undefined) throw new Error('Missing packaged personal path fixture');
+const paths = JSON.parse(source);
+await runNodeEntry({ resolvePersonalRuntimePaths: () => paths });
+`);
 
     await Promise.all([
       access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
@@ -476,19 +675,38 @@ try {
       const productionCredential = createOperatingSystemCredential();
       const existingMasterKey = await readCredential(productionCredential);
       try {
-        const personalDatabase = resolve(runtimeRoot, 'personal.db');
-        const personal = await startRuntime(personalDatabase, 'personal');
+        const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'personal-data') });
+        const personal = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
         await persistPersonalSecret(personal.origin);
         await stopRuntime(personal.child);
         const storedMasterKey = await readCredential(productionCredential);
-        if (storedMasterKey?.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
-        assertCiphertextAtRest(personalDatabase);
-        tamperSearchCredential(personalDatabase);
+        const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
+        if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
+        assertCiphertextAtRest(personalPaths.databasePath);
+        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
+
+        const hardener = new PersonalStorageHardener(personalPaths);
+        hardener.initialize();
+        const fileStore = new FsFileStore(personalPaths.filesDir, hardener);
+        const contentPath = join(personalPaths.filesDir, 'packaged', 'body.bin');
+        await fileStore.put('packaged/body.bin', new TextEncoder().encode('private-content'));
+        const restarted = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
+        await assertPersistedPersonalSecret(restarted.origin);
+        await stopRuntime(restarted.child);
+        await assertPrivatePersonalStorage(personalPaths, contentPath);
+        await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);
+
+        const hardeningFailurePaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'hardening-failure') });
+        await mkdir(hardeningFailurePaths.dataDir, { recursive: true });
+        await writeFile(hardeningFailurePaths.filesDir, 'occupied');
         await assertPersonalStartupFailure(
-          'tampered-personal-search-credential',
-          personalDatabase,
+          'personal-storage-hardening',
+          hardeningFailurePaths,
           {},
-          ['Failed to decrypt stored secret for web-search:tavily:api-key'],
+          [
+            `Floway One could not enforce current-user-only access on directory ${hardeningFailurePaths.filesDir}`,
+            'EEXIST',
+          ],
         );
       } finally {
         if (existingMasterKey === null) await deleteCredential(productionCredential);

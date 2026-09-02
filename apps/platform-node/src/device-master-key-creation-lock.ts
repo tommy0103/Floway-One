@@ -1,9 +1,8 @@
 import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
+import { resolvePersonalRuntimePaths } from './personal-runtime.ts';
 
 const LOCK_WAIT_MS = 30_000;
 
@@ -107,15 +106,11 @@ export const createDeviceMasterKeyCreationLock = (
   options: DeviceMasterKeyCreationLockOptions = {},
 ): DeviceMasterKeyCreationLock => {
   // The credential service/account is device-global, so every Floway database
-  // owned by this OS user must contend on the same stable lock. Keeping this
-  // tiny lock database under the user's home directory makes its identity
-  // independent of custom data paths while remaining portable across Node's
-  // supported desktop platforms.
-  const lockDatabasePath = resolve(options.lockDatabasePath ?? join(
-    homedir(),
-    '.floway',
-    DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.creationLockFilename,
-  ));
+  // owned by this OS user contends on the lock resolved from the same stable
+  // platform application-data identity as the personal runtime.
+  const lockDatabasePath = resolve(
+    options.lockDatabasePath ?? resolvePersonalRuntimePaths().credentialLockDatabasePath,
+  );
   return Object.freeze({
     run: async <T>(operation: () => Promise<T>): Promise<T> => await serializeInProcess(
       lockDatabasePath,

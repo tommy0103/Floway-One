@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'vitest';
 
 import { createDeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
+import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
 import { assert, assertEquals } from '@floway-dev/test-utils';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -49,10 +50,12 @@ const spawnChild = (
   databasePath: string,
   credentialPath: string,
   generatedByte: number,
-  lockDatabasePath: string,
+  lockDatabasePath: string | null,
+  extraEnv: NodeJS.ProcessEnv = {},
 ): ChildProcessWithoutNullStreams => {
-  const child = spawn(process.execPath, ['--import', 'tsx', CHILD, mode, databasePath, credentialPath, String(generatedByte), lockDatabasePath], {
+  const child = spawn(process.execPath, ['--import', 'tsx', CHILD, mode, databasePath, credentialPath, String(generatedByte), lockDatabasePath ?? 'default'], {
     cwd: PLATFORM_NODE_ROOT,
+    env: { ...process.env, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -95,16 +98,37 @@ const killAndWait = async (child: ChildProcessWithoutNullStreams): Promise<void>
   children.delete(child);
 };
 
-test('spawned first-launch contenders using two Floway databases return one device-credential winner', () => withTempState(async state => {
-  const workers = [1, 2, 3, 4].map((byte, index) => spawnChild(
+test('production default resolver gives divergent environments and two Floway databases one device-global lock', () => withTempState(async state => {
+  const divergentEnvironment = (name: string): NodeJS.ProcessEnv => ({
+    APPDATA: join(dirname(state.firstDatabasePath), `${name}-appdata`),
+    HOME: join(dirname(state.firstDatabasePath), `${name}-home`),
+    XDG_DATA_HOME: join(dirname(state.firstDatabasePath), `${name}-xdg`),
+  });
+  const owner = spawnChild(
+    'pause-after-write',
+    state.firstDatabasePath,
+    state.credentialPath,
+    1,
+    null,
+    divergentEnvironment('owner'),
+  );
+  const ownerLine = await waitForLine(owner, /^PERSISTED .+$/u);
+  const contenders = [2, 3, 4].map((byte, index) => spawnChild(
     'create',
-    index % 2 === 0 ? state.firstDatabasePath : state.secondDatabasePath,
+    index % 2 === 0 ? state.secondDatabasePath : state.firstDatabasePath,
     state.credentialPath,
     byte,
-    state.lockDatabasePath,
+    null,
+    divergentEnvironment(`contender-${byte}`),
   ));
-  const keys = await Promise.all(workers.map(waitForKey));
+  const contenderLines = await Promise.all(contenders.map(async child => await waitForLine(child, /^ATTEMPTING .+$/u)));
+  const lockPaths = [ownerLine, ...contenderLines].map(line => line.slice(line.indexOf(' ') + 1));
+  assertEquals(new Set(lockPaths).size, 1);
+  assertEquals(lockPaths[0], resolvePersonalRuntimePaths().credentialLockDatabasePath);
 
+  const keyPromises = [owner, ...contenders].map(waitForKey);
+  await writeFile(`${state.credentialPath}.release-1`, 'continue');
+  const keys = await Promise.all(keyPromises);
   assertEquals(new Set(keys).size, 1);
   assertEquals(Buffer.from(await readFile(state.credentialPath)).toString('hex'), keys[0]);
 }));
@@ -127,7 +151,7 @@ test('credential lock state is private to the current OS user', () => withTempSt
 
 test('process death releases the lock without a stale or partial owner record', () => withTempState(async state => {
   const crashed = spawnChild('hold', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
-  await waitForLine(crashed, /^LOCKED$/u);
+  await waitForLine(crashed, /^LOCKED .+$/u);
   await killAndWait(crashed);
 
   const first = await waitForKey(spawnChild('create', state.firstDatabasePath, state.credentialPath, 2, state.lockDatabasePath));
@@ -137,7 +161,7 @@ test('process death releases the lock without a stale or partial owner record', 
 
 test('a crash after persistence recovers the authoritative key', () => withTempState(async state => {
   const crashed = spawnChild('pause-after-write', state.firstDatabasePath, state.credentialPath, 9, state.lockDatabasePath);
-  await waitForLine(crashed, /^PERSISTED$/u);
+  await waitForLine(crashed, /^PERSISTED .+$/u);
   await killAndWait(crashed);
 
   const recovered = await waitForKey(spawnChild('create', state.secondDatabasePath, state.credentialPath, 10, state.lockDatabasePath));
@@ -146,13 +170,13 @@ test('a crash after persistence recovers the authoritative key', () => withTempS
 
 test('a replacement owner survives an ABA schedule while a third process waits', () => withTempState(async state => {
   const staleOwner = spawnChild('hold', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
-  await waitForLine(staleOwner, /^LOCKED$/u);
+  await waitForLine(staleOwner, /^LOCKED .+$/u);
   await killAndWait(staleOwner);
 
   const replacement = spawnChild('pause-after-write', state.firstDatabasePath, state.credentialPath, 11, state.lockDatabasePath);
-  await waitForLine(replacement, /^PERSISTED$/u);
+  await waitForLine(replacement, /^PERSISTED .+$/u);
   const contender = spawnChild('create', state.secondDatabasePath, state.credentialPath, 12, state.lockDatabasePath);
-  await waitForLine(contender, /^ATTEMPTING$/u);
+  await waitForLine(contender, /^ATTEMPTING .+$/u);
   const contenderKeyPromise = waitForKey(contender);
   const probe = new DatabaseSync(state.lockDatabasePath);
   try {

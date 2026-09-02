@@ -4,6 +4,8 @@ import { createNodeExternalResourceFetcher } from './external-resource-fetcher.t
 import { nodeFetch } from './fetch.ts';
 import { FsFileStore } from './fs-file-store.ts';
 import { createNodeSqliteDatabase } from './node-sqlite-database.ts';
+import type { PersonalRuntimePaths } from './personal-runtime.ts';
+import { PersonalStorageHardener } from './personal-storage.ts';
 import { nodeRuntimeRootCAs } from './runtime-root-cas.ts';
 import { createSharpImageProcessor } from './sharp-image-processor.ts';
 import { nodeSocketDial } from './socket-dial.ts';
@@ -26,11 +28,26 @@ import {
   initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
-  type RuntimeProfileMode,
   type SqlDatabase,
 } from '@floway-dev/platform';
 
-export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase; deviceMasterKeyCreationLock: DeviceMasterKeyCreationLock } => {
+interface NodeStoragePaths {
+  readonly databasePath: string;
+  readonly filesDir: string;
+}
+
+export type BootstrapNodePlatformOptions =
+  | { readonly profile: 'personal'; readonly storage: PersonalRuntimePaths }
+  | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
+
+interface BootstrappedNodePlatform {
+  readonly db: SqlDatabase;
+  readonly deviceMasterKeyCreationLock: DeviceMasterKeyCreationLock;
+  readonly personalStorage?: PersonalStorageHardener;
+}
+
+export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): BootstrappedNodePlatform => {
+  const { profile } = options;
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
   initRuntimeProfile(profile);
@@ -38,17 +55,19 @@ export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDat
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
   initFetch(nodeFetch);
 
-  const filesDir = getEnvOptional('FLOWAY_FILES_DIR', './data/files');
-  const dbPath = getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
+  const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
+  const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
+  const personalStorage = profile === 'personal' ? new PersonalStorageHardener(options.storage) : undefined;
+  personalStorage?.initialize();
 
-  const files = new FsFileStore(filesDir);
+  const files = new FsFileStore(filesDir, personalStorage);
   initFileStore(files);
   initSocketDial(nodeSocketDial);
   addTrustedRootCAs(nodeRuntimeRootCAs);
-  const db = createNodeSqliteDatabase(dbPath);
+  const db = createNodeSqliteDatabase(dbPath, { permissions: personalStorage });
   initImageCacheStore(new SqliteImageCacheStore(db, IMAGE_CACHE_POLICY));
   initImageProcessor(createSharpImageProcessor());
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
-  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock() };
+  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock(), personalStorage };
 };

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { serve, upgradeWebSocket } from '@hono/node-server';
@@ -28,6 +29,7 @@ setGlobalDispatcher(new Agent({
 import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
+import { resolvePersonalRuntimePaths } from './src/personal-runtime.ts';
 import { selectNodeRuntimeProfile } from './src/runtime-profile.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.ts';
@@ -51,35 +53,53 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const profile = selectNodeRuntimeProfile(process.argv.slice(2));
-const { db, deviceMasterKeyCreationLock } = bootstrapNodePlatform(profile);
-const port = Number(getEnvOptional('PORT', '8788'));
-
-// Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
-// local instance grants seed-admin access). Refuse to boot the Node
-// target under NODE_ENV=production without ADMIN_KEY so misconfiguration
-// surfaces at start, not at first login. The Cloudflare side gates the
-// same combination per-request via isProductionRequest.
-if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
-  console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
-  process.exit(1);
+interface NodeEntryOverrides {
+  readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
 }
 
-await applyMigrations(db);
-const storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
-initRepo(new SqlRepo(db, { storedSecrets }));
+export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<void> => {
+  const profile = selectNodeRuntimeProfile(process.argv.slice(2));
+  const personalPaths = profile === 'personal'
+    ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
+    : undefined;
+  const { db, deviceMasterKeyCreationLock, personalStorage } = bootstrapNodePlatform(
+    personalPaths === undefined
+      ? { profile: 'server' }
+      : { profile: 'personal', storage: personalPaths },
+  );
+  const port = Number(getEnvOptional('PORT', '8788'));
 
-startScheduledMaintenance();
+  // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
+  // local instance grants seed-admin access). Refuse to boot the Node
+  // target under NODE_ENV=production without ADMIN_KEY so misconfiguration
+  // surfaces at start, not at first login. The Cloudflare side gates the
+  // same combination per-request via isProductionRequest.
+  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
+    console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
+    process.exit(1);
+  }
 
-const localApp = createLocalApp({
-  gatewayFetch: app.fetch,
-  staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),
-});
+  await applyMigrations(db);
+  if (personalPaths !== undefined) personalStorage?.hardenSqliteFiles(personalPaths.databasePath);
+  const storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
+  initRepo(new SqlRepo(db, { storedSecrets }));
 
-serve({
-  fetch: localApp.fetch,
-  port,
-  websocket: { server: new WebSocketServer({ noServer: true }) },
-}, info => {
-  console.log(`Floway listening on http://localhost:${info.port}`);
-});
+  startScheduledMaintenance();
+
+  const localApp = createLocalApp({
+    gatewayFetch: app.fetch,
+    staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),
+  });
+
+  serve({
+    fetch: localApp.fetch,
+    port,
+    websocket: { server: new WebSocketServer({ noServer: true }) },
+  }, info => {
+    console.log(`Floway listening on http://localhost:${info.port}`);
+  });
+};
+
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await runNodeEntry();
+}

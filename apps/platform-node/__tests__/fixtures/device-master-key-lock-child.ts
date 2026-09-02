@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { createDeviceMasterKeyCreationLock } from '../../src/device-master-key-creation-lock.ts';
 import { loadDeviceMasterKey, type DeviceMasterKeyCredential } from '../../src/device-master-key.ts';
+import { resolvePersonalRuntimePaths } from '../../src/personal-runtime.ts';
 
 const [mode, databasePath, credentialPath, generatedByteText, lockDatabasePath] = process.argv.slice(2);
 if (mode === undefined || databasePath === undefined || credentialPath === undefined || generatedByteText === undefined || lockDatabasePath === undefined) {
@@ -23,7 +24,12 @@ const waitForReleaseMarker = async (): Promise<void> => {
 };
 
 process.env.FLOWAY_DB_PATH = databasePath;
-const creationLock = createDeviceMasterKeyCreationLock({ lockDatabasePath });
+const resolvedLockDatabasePath = lockDatabasePath === 'default'
+  ? resolvePersonalRuntimePaths().credentialLockDatabasePath
+  : lockDatabasePath;
+const creationLock = lockDatabasePath === 'default'
+  ? createDeviceMasterKeyCreationLock()
+  : createDeviceMasterKeyCreationLock({ lockDatabasePath });
 if (mode === 'same-process') {
   const secondLock = createDeviceMasterKeyCreationLock({ lockDatabasePath });
   let release!: () => void;
@@ -42,7 +48,7 @@ if (mode === 'same-process') {
 }
 if (mode === 'hold') {
   await creationLock.run(async () => {
-    process.stdout.write('LOCKED\n');
+    process.stdout.write(`LOCKED ${resolvedLockDatabasePath}\n`);
     await waitForInput();
   });
   process.exit(0);
@@ -53,12 +59,12 @@ const credential: DeviceMasterKeyCredential = {
   setSecret: async secret => {
     writeFileSync(credentialPath, secret, { mode: 0o600 });
     if (mode === 'pause-after-write') {
-      process.stdout.write('PERSISTED\n');
+      process.stdout.write(`PERSISTED ${resolvedLockDatabasePath}\n`);
       await waitForReleaseMarker();
     }
   },
 };
-process.stdout.write('ATTEMPTING\n');
+process.stdout.write(`ATTEMPTING ${resolvedLockDatabasePath}\n`);
 const key = await loadDeviceMasterKey(
   creationLock,
   true,
