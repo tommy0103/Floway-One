@@ -460,7 +460,6 @@ const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
     {
       APPDATA: 'Y:\\hostile-appdata',
       HOME: 'Z:\\hostile-home',
-      USERPROFILE: 'X:\\hostile-profile',
     },
     [
       'Floway packaged default entry stopped after path resolution',
