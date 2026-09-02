@@ -15,7 +15,7 @@ const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
 };
 
-const dockerfile = await readFile(resolve(ROOT, 'docker/Dockerfile'), 'utf8');
+const dockerfile = (await readFile(resolve(ROOT, 'docker/Dockerfile'), 'utf8')).replaceAll('\r\n', '\n');
 const expectedAssembly = 'RUN node --experimental-strip-types scripts/generate-node-runtime.ts /server';
 if (!dockerfile.includes(expectedAssembly)) {
   fail(`the server deploy stage must execute ${JSON.stringify(expectedAssembly)}`);
