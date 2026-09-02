@@ -271,7 +271,7 @@ const startRuntime = async (
   child.stderr.on('data', chunk => { combinedOutput += chunk; });
 
   const readyPort = await new Promise<number>((resolveReady, rejectReady) => {
-    const timeout = setTimeout(() => rejectReady(new Error(`startup timed out\n${combinedOutput}`)), 10_000);
+    const timeout = setTimeout(() => rejectReady(new Error(`${profile} startup timed out\n${combinedOutput}`)), 30_000);
     const inspect = () => {
       const port = /Floway listening on http:\/\/localhost:(\d+)/.exec(combinedOutput)?.[1];
       if (port === undefined) return;
