@@ -359,6 +359,30 @@ class SqlUsersRepo implements UsersRepo {
       .run();
   }
 
+  async upsertForImport(user: User): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO users (${USER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           username = excluded.username,
+           password_hash = excluded.password_hash,
+           is_admin = excluded.is_admin,
+           upstream_ids = excluded.upstream_ids,
+           created_at = excluded.created_at,
+           deleted_at = excluded.deleted_at`,
+      )
+      .bind(
+        user.id,
+        user.username,
+        user.passwordHash,
+        user.isAdmin ? 1 : 0,
+        serializeUpstreamIds(user.upstreamIds),
+        user.createdAt,
+        user.deletedAt,
+      )
+      .run();
+  }
+
   async softDelete(id: number): Promise<boolean> {
     const result = await this.db
       .prepare('UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL')

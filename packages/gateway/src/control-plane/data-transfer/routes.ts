@@ -139,6 +139,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
 
   const profileError = runtimeProfileDataError(users, apiKeys);
   if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
+  const preservePersonalOwner = mode === 'replace' && isPersonalRuntimeProfile();
 
   const repo = getRepo();
   // Merge mode needs each key's prior dump policy to identify transitions that
@@ -171,13 +172,16 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
       repo.openaiResponsesSnapshots.deleteAll(),
       repo.openaiResponsesItems.deleteAll(),
     ];
-    if (!isPersonalRuntimeProfile()) deletes.push(repo.users.deleteAll());
+    if (!preservePersonalOwner) deletes.push(repo.users.deleteAll());
     if (performanceIncluded) deletes.push(repo.performance.deleteAll());
     await Promise.all(deletes);
   }
 
   // Users precede their API keys, and proxies precede upstream fallback refs.
-  for (const user of users) await repo.users.save(user);
+  for (const user of users) {
+    if (preservePersonalOwner) await repo.users.upsertForImport(user);
+    else await repo.users.save(user);
+  }
   for (const proxy of proxies) {
     await repo.proxies.save({
       id: proxy.id,
