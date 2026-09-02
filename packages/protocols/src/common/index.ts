@@ -3,6 +3,7 @@ export * from './base-encoding.ts';
 export * from './endpoints.ts';
 export * from './decimal.ts';
 export * from './data-plane-routes.ts';
+export * from './gateway-paths.ts';
 export * from './models.ts';
 export * from './media-type.ts';
 export * from './pricing.ts';

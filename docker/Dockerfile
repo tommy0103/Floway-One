@@ -38,28 +38,6 @@ COPY patches ./patches
 COPY apps ./apps
 COPY packages ./packages
 
-# `--prod` skips every workspace's devDependencies, most importantly
-# `wrangler → miniflare → sharp@0.34.5` at the repo root. That saves a
-# whole redundant sharp/libvips prebuilt on riscv64 — where installing
-# even one prebuilt through QEMU is already the slow step.
-# `--ignore-scripts` bypasses the root `prepare: husky` hook whose binary
-# lives in devDependencies; nothing else in the tree needs an install
-# script (sharp 0.33+ ships prebuilts through optional deps).
-FROM base AS server
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
-
-ENV NODE_ENV=production
-ENV PORT=8788
-ENV FLOWAY_DB_PATH=/data/floway.db
-ENV FLOWAY_FILES_DIR=/data/files
-
-RUN mkdir -p /data/files
-
-VOLUME ["/data"]
-EXPOSE 8788
-
-CMD ["pnpm", "run", "dev:node"]
-
 # The web bundle is platform-independent, while Rolldown and Lightning CSS do
 # not publish riscv64 binaries. This stage therefore starts from a native Node
 # image for BUILDPLATFORM; inheriting `base` would retain its target-platform
@@ -80,6 +58,30 @@ COPY packages ./packages
 
 RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm run build:web
+
+# `--prod` skips every workspace's devDependencies, most importantly
+# `wrangler → miniflare → sharp@0.34.5` at the repo root. That saves a
+# whole redundant sharp/libvips prebuilt on riscv64 — where installing
+# even one prebuilt through QEMU is already the slow step.
+# `--ignore-scripts` bypasses the root `prepare: husky` hook whose binary
+# lives in devDependencies; nothing else in the tree needs an install
+# script (sharp 0.33+ ships prebuilts through optional deps).
+FROM base AS server
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+
+COPY --from=web-build /app/apps/web/dist/client /app/apps/web/dist/client
+
+ENV NODE_ENV=production
+ENV PORT=8788
+ENV FLOWAY_DB_PATH=/data/floway.db
+ENV FLOWAY_FILES_DIR=/data/files
+
+RUN mkdir -p /data/files
+
+VOLUME ["/data"]
+EXPOSE 8788
+
+CMD ["pnpm", "run", "dev:node"]
 
 FROM nginx:1.27-alpine AS web
 

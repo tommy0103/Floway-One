@@ -108,6 +108,9 @@ importers:
       '@floway-dev/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@floway-dev/protocols':
+        specifier: workspace:*
+        version: link:../../packages/protocols
       '@hono/node-server':
         specifier: ^2.0.4
         version: 2.0.4(hono@4.12.22)

@@ -8,16 +8,43 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { createLocalApp } from '../src/local-app.ts';
+import { PUBLIC_DATA_PLANE_ROUTES } from '@floway-dev/protocols/common';
 
 const CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
+const SAMPLE_SEGMENT: Record<string, string> = {
+  modelAction: 'gemini-2.5-pro:generateContent',
+  modelId: 'gemini-2.5-pro',
+};
+const concreteUrl = (path: string) =>
+  path.replaceAll(/:(\w+)(?:\{.*\})?/g, (_, name: string) => {
+    const sample = SAMPLE_SEGMENT[name];
+    if (sample === undefined) throw new Error(`No sample segment for route parameter :${name}`);
+    return sample;
+  });
+
+const gatewayUrls = [
+  ...new Set(Object.values(PUBLIC_DATA_PLANE_ROUTES).flatMap(route => route.paths.map(concreteUrl))),
+  '/api/upstreams',
+  '/auth/login',
+  '/favicon.ico',
+];
+
 let staticRoot: string;
+
+const navigationPaths = [
+  '/',
+  '/dashboard',
+  '/dashboard/settings',
+  '/dashboard/providers/upstreams/:id',
+];
 
 beforeEach(async () => {
   staticRoot = await mkdtemp(join(tmpdir(), 'floway-local-app-'));
   await mkdir(join(staticRoot, 'assets'));
   await Promise.all([
     writeFile(join(staticRoot, 'index.html'), '<main>Floway Dashboard</main>'),
+    writeFile(join(staticRoot, 'dashboard-routes.json'), JSON.stringify(navigationPaths)),
     writeFile(join(staticRoot, 'robots.txt'), 'User-agent: *\nDisallow:'),
     writeFile(join(staticRoot, 'assets', 'app-12345678.js'), 'export {};'),
     writeFile(join(staticRoot, 'assets', 'styles-12345678.css'), 'body {}'),
@@ -40,7 +67,22 @@ describe('local app', () => {
     })).toThrow(/Dashboard index is unavailable/);
   });
 
-  it.each(['/', '/login', '/dashboard', '/dashboard/settings'])('serves the SPA document for %s', async path => {
+  it('fails construction when the Dashboard route manifest is invalid', async () => {
+    await writeFile(join(staticRoot, 'dashboard-routes.json'), JSON.stringify(['/', '/']));
+
+    expect(() => createLocalApp({
+      gatewayFetch: () => new Response(),
+      staticRoot,
+    })).toThrow(/Dashboard routes are unavailable/);
+  });
+
+  it.each([
+    '/',
+    '/dashboard',
+    '/dashboard/',
+    '/dashboard/settings',
+    '/dashboard/providers/upstreams/up_test',
+  ])('serves the SPA document for %s', async path => {
     const gatewayFetch = vi.fn(() => new Response('gateway'));
     const localApp = createLocalApp({ gatewayFetch, staticRoot });
 
@@ -50,6 +92,23 @@ describe('local app', () => {
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(response.headers.get('cache-control')).toBe('no-cache');
     expect(await response.text()).toBe('<main>Floway Dashboard</main>');
+    expect(gatewayFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/login',
+    '/dashboard/not-a-route',
+    '/dashboard/settings/extra',
+    '/dashboard/providers/upstreams/up_test/extra',
+  ])('does not use the SPA document for undeclared path %s', async path => {
+    const gatewayFetch = vi.fn(() => new Response('gateway'));
+    const localApp = createLocalApp({ gatewayFetch, staticRoot });
+    const request = new Request(`http://local.test${path}`);
+
+    const response = await localApp.fetch(request);
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('404 Not Found');
     expect(gatewayFetch).not.toHaveBeenCalled();
   });
 
@@ -91,15 +150,7 @@ describe('local app', () => {
     expect(response.headers.get('cache-control')).toBe('no-cache');
   });
 
-  it.each([
-    '/api/upstreams',
-    '/auth/login',
-    '/v1/responses',
-    '/v2/models',
-    '/v1beta/models/gemini-2.5-pro:generateContent',
-    '/favicon.ico',
-    '/future-gateway-route',
-  ])('routes %s directly to the gateway', path => {
+  it.each(gatewayUrls)('routes %s directly to the gateway', path => {
     const gatewayResponse = new Response('gateway');
     const gatewayFetch = vi.fn(() => gatewayResponse);
     const localApp = createLocalApp({ gatewayFetch, staticRoot });
@@ -109,13 +160,15 @@ describe('local app', () => {
     expect(gatewayFetch).toHaveBeenCalledWith(request);
   });
 
-  it('routes non-navigation methods directly to the gateway', () => {
-    const gatewayResponse = new Response('gateway');
-    const gatewayFetch = vi.fn(() => gatewayResponse);
+  it('returns 404 for non-navigation methods on Dashboard paths', async () => {
+    const gatewayFetch = vi.fn(() => new Response('gateway'));
     const localApp = createLocalApp({ gatewayFetch, staticRoot });
     const request = new Request('http://local.test/dashboard', { method: 'POST' });
 
-    expect(localApp.fetch(request)).toBe(gatewayResponse);
+    const response = await localApp.fetch(request);
+
+    expect(response.status).toBe(404);
+    expect(gatewayFetch).not.toHaveBeenCalled();
   });
 
   it('passes SSE responses through without buffering or replacement', async () => {

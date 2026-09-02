@@ -41,7 +41,7 @@ jobs:
           # one, the image, a deploy — can emit a bundle nobody asserted
           # against.
           - name: build
-            run: pnpm run build:web
+            run: pnpm run build:web && pnpm run test:packaged-node
     name: ${{ matrix.check.name }}
     runs-on: ubuntu-latest
     steps:
