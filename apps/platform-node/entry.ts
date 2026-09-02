@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createAdaptorServer, upgradeWebSocket } from '@hono/node-server';
@@ -29,8 +30,8 @@ import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { listenNodeServer } from './src/node-listener.ts';
-import { installPersonalLogging, runWithPersonalFatalLogging } from './src/personal-logging.ts';
-import { loadPersonalRuntime } from './src/personal-runtime.ts';
+import { installPersonalLogging } from './src/personal-logging.ts';
+import { loadPersonalRuntime, resolvePersonalRuntimePaths } from './src/personal-runtime.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { startNodeRuntime } from './src/start-runtime.ts';
 import {
@@ -52,60 +53,84 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const profileValue = process.env.FLOWAY_PROFILE ?? 'server';
-if (profileValue !== 'personal' && profileValue !== 'server') {
-  throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profileValue)}`);
-}
-const startupWarnings: string[] = [];
-const personalRuntime = profileValue === 'personal'
-  ? loadPersonalRuntime({ warn: warning => startupWarnings.push(warning) })
-  : null;
-const personalLogging = personalRuntime === null ? null : installPersonalLogging(personalRuntime.logsDir);
-if (personalRuntime !== null) {
-  for (const warning of startupWarnings) console.warn(warning);
-}
-const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
-
-// Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
-// local instance grants seed-admin access). Refuse to boot the Node
-// target under NODE_ENV=production without ADMIN_KEY so misconfiguration
-// surfaces at start, not at first login. The Cloudflare side gates the
-// same combination per-request via isProductionRequest.
-if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
-  console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
-  process.exit(1);
+interface NodeEntryInfo {
+  readonly port: number;
 }
 
-const info = await runWithPersonalFatalLogging(personalLogging, async () => await startNodeRuntime({
-  bootstrap: () => bootstrapNodePlatform(personalRuntime === null
-    ? { profile: 'server' }
-    : {
-        profile: 'personal',
-        storage: {
-          databasePath: personalRuntime.databasePath,
-          filesDir: personalRuntime.filesDir,
-        },
-      }),
-  migrate: applyMigrations,
-  listen: async db => {
-    initRepo(new SqlRepo(db));
-    const localApp = createLocalApp({
-      gatewayFetch: app.fetch,
-      staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),
-    });
-    const server = createAdaptorServer({
-      fetch: localApp.fetch,
-      websocket: { server: new WebSocketServer({ noServer: true }) },
-    });
-    const address = await listenNodeServer(server, {
-      displayEndpoint: personalRuntime?.endpoint ?? `http://localhost:${port}`,
-      hostname: personalRuntime?.hostname,
-      port,
-      serviceName: personalRuntime === null ? 'Floway' : 'Floway One',
-    });
-    startScheduledMaintenance();
-    return address;
-  },
-}));
+interface NodeEntryOverrides {
+  readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
+  readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
+  readonly start?: () => Promise<NodeEntryInfo>;
+}
 
-console.log(`Floway listening on ${personalRuntime?.endpoint ?? `http://localhost:${info.port}`}`);
+export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
+  const profileValue = process.env.FLOWAY_PROFILE ?? 'server';
+  if (profileValue !== 'personal' && profileValue !== 'server') {
+    throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profileValue)}`);
+  }
+  const startupWarnings: string[] = [];
+  const personalPaths = profileValue === 'personal'
+    ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
+    : null;
+  if (personalPaths !== null) installPersonalLogging(personalPaths.logsDir);
+  const personalRuntime = personalPaths === null
+    ? null
+    : (overrides.loadPersonalRuntime ?? loadPersonalRuntime)({
+        paths: personalPaths,
+        warn: warning => startupWarnings.push(warning),
+      });
+  if (personalRuntime !== null) {
+    for (const warning of startupWarnings) console.warn(warning);
+  }
+  const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
+
+  // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
+  // local instance grants seed-admin access). Refuse to boot the Node
+  // target under NODE_ENV=production without ADMIN_KEY so misconfiguration
+  // surfaces at start, not at first login. The Cloudflare side gates the
+  // same combination per-request via isProductionRequest.
+  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
+    console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
+    process.exit(1);
+  }
+
+  const start = overrides.start ?? (async () => await startNodeRuntime({
+    bootstrap: () => bootstrapNodePlatform(personalRuntime === null
+      ? { profile: 'server' }
+      : {
+          profile: 'personal',
+          storage: {
+            databasePath: personalRuntime.databasePath,
+            filesDir: personalRuntime.filesDir,
+          },
+        }),
+    migrate: applyMigrations,
+    listen: async db => {
+      initRepo(new SqlRepo(db));
+      const localApp = createLocalApp({
+        gatewayFetch: app.fetch,
+        staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),
+      });
+      const server = createAdaptorServer({
+        fetch: localApp.fetch,
+        websocket: { server: new WebSocketServer({ noServer: true }) },
+      });
+      const address = await listenNodeServer(server, {
+        displayEndpoint: personalRuntime?.endpoint ?? `http://localhost:${port}`,
+        hostname: personalRuntime?.hostname,
+        port,
+        serviceName: personalRuntime === null ? 'Floway' : 'Floway One',
+      });
+      startScheduledMaintenance();
+      return address;
+    },
+  }));
+  const info = await start();
+
+  console.log(`Floway listening on ${personalRuntime?.endpoint ?? `http://localhost:${info.port}`}`);
+  return info;
+};
+
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await runNodeEntry();
+}

@@ -8,6 +8,7 @@ import {
   DEFAULT_PERSONAL_PORT,
   loadPersonalRuntime,
   resolveDefaultPersonalDataDir,
+  resolvePersonalRuntimePaths,
 } from '../src/personal-runtime.ts';
 
 let dataDir: string;
@@ -56,6 +57,19 @@ describe('personal runtime', () => {
       expect((await stat(runtime.logsDir)).mode & 0o777).toBe(0o700);
       expect((await stat(runtime.runtimeStatePath)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('resolves the durable layout without loading or writing runtime state', async () => {
+    const paths = resolvePersonalRuntimePaths({ dataDir, env: { PORT: 'invalid' } });
+
+    expect(paths).toEqual({
+      dataDir,
+      databasePath: join(dataDir, 'floway.db'),
+      filesDir: join(dataDir, 'files'),
+      logsDir: join(dataDir, 'logs'),
+      runtimeStatePath: join(dataDir, 'runtime.json'),
+    });
+    await expect(readFile(paths.runtimeStatePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('persists an explicit port change and warns clients once', () => {

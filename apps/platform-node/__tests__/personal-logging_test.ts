@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const PLATFORM_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CHILD = fileURLToPath(new URL('./fixtures/personal-logging-child.ts', import.meta.url));
 const FAILURE_CHILD = fileURLToPath(new URL('./fixtures/personal-logging-failure-child.ts', import.meta.url));
+const ENTRY_FAILURE_CHILD = fileURLToPath(new URL('./fixtures/personal-entry-failure-child.ts', import.meta.url));
 const MAX_BYTES = 192;
 const MAX_FILES = 3;
 
@@ -75,7 +76,7 @@ test('personal logging persists a fatal startup error chain before native proces
   expect(failure?.stderr).toContain('forced personal startup failure');
 
   const fatalLog = await readFile(join(logsDir, PERSONAL_STDERR_LOG), 'utf8');
-  expect(fatalLog).toContain('FATAL: Floway One runtime failed to start');
+  expect(fatalLog).toContain('FATAL: Floway One runtime failed');
   expect(fatalLog).toContain('Error: forced personal startup failure');
   expect(fatalLog).toContain('Error: forced migration failure');
   expect(fatalLog).toContain('Error: forced storage cause');
@@ -100,4 +101,67 @@ test('personal logging forwards output and fails the runtime when its sink fails
   expect(failure?.stderr).toContain('forwarded before forced sink failure');
   expect(failure?.stderr).toContain('Floway One could not write bounded log');
   expect(failure?.stderr).toContain(PERSONAL_STDERR_LOG);
+  expect(failure?.stderr).toContain("code: 'EISDIR'");
+  expect(failure?.stderr).toContain("syscall: 'open'");
+  expect(failure?.stderr).toContain(join(logsDir, PERSONAL_STDERR_LOG));
+  expect(failure?.stderr.indexOf('forwarded before forced sink failure')).toBeLessThan(
+    failure?.stderr.indexOf('Floway One could not write bounded log') ?? -1,
+  );
 });
+
+test.each([
+  ['corrupt-state', 'runtime state is invalid', 'SyntaxError'],
+  ['invalid-port', 'integer from 1 through 65535', null],
+  ['state-write', 'could not persist runtime state', 'EISDIR'],
+  ['migration', 'forced migration failure', 'forced SQLite cause'],
+])('entry persists fatal personal %s initialization diagnostics', async (mode, expectedFailure, expectedCause) => {
+  const failure = await execFileAsync(process.execPath, [
+    '--import',
+    'tsx',
+    ENTRY_FAILURE_CHILD,
+    mode,
+    logsDir,
+  ], { cwd: PLATFORM_ROOT }).then(
+    () => null,
+    (cause: unknown) => cause as Error & { code: number; stderr: string },
+  );
+
+  expect(failure).not.toBeNull();
+  expect(failure?.code).not.toBe(0);
+  expect(failure?.stderr).toContain(expectedFailure);
+  if (expectedCause !== null) expect(failure?.stderr).toContain(expectedCause);
+  const fatalLog = await readFile(join(logsDir, 'logs', PERSONAL_STDERR_LOG), 'utf8');
+  expect(fatalLog.match(/FATAL: Floway One runtime failed/g)).toHaveLength(1);
+  expect(fatalLog).toContain(expectedFailure);
+  if (expectedCause !== null) {
+    expect(fatalLog).toContain('Caused by:');
+    expect(fatalLog).toContain(expectedCause);
+  }
+  expect(fatalLog).toContain('personal-entry-failure-child.ts');
+});
+
+test.each(['after-listen-server', 'after-listen-rejection'])(
+  'entry persists one %s fatal diagnostic after the listener starts',
+  async mode => {
+    const failure = await execFileAsync(process.execPath, [
+      '--import',
+      'tsx',
+      ENTRY_FAILURE_CHILD,
+      mode,
+      logsDir,
+    ], { cwd: PLATFORM_ROOT }).then(
+      () => null,
+      (cause: unknown) => cause as Error & { code: number; stderr: string },
+    );
+
+    expect(failure).not.toBeNull();
+    expect(failure?.code).not.toBe(0);
+    expect(failure?.stderr).toContain(`forced ${mode} fatal failure`);
+    expect(failure?.stderr).toContain('forced after-listen cause');
+    const fatalLog = await readFile(join(logsDir, 'logs', PERSONAL_STDERR_LOG), 'utf8');
+    expect(fatalLog.match(/FATAL: Floway One runtime failed/g)).toHaveLength(1);
+    expect(fatalLog).toContain(`forced ${mode} fatal failure`);
+    expect(fatalLog).toContain('forced after-listen cause');
+    expect(fatalLog).toContain('personal-entry-failure-child.ts');
+  },
+);

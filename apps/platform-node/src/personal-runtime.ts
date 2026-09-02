@@ -19,11 +19,7 @@ interface PersistedRuntimeState {
   readonly port: number;
 }
 
-export interface PersonalRuntime {
-  readonly profile: 'personal';
-  readonly hostname: typeof PERSONAL_HOSTNAME;
-  readonly port: number;
-  readonly endpoint: string;
+export interface PersonalRuntimePaths {
   readonly dataDir: string;
   readonly databasePath: string;
   readonly filesDir: string;
@@ -31,11 +27,22 @@ export interface PersonalRuntime {
   readonly runtimeStatePath: string;
 }
 
-interface PersonalRuntimeOptions {
+export interface PersonalRuntime extends PersonalRuntimePaths {
+  readonly profile: 'personal';
+  readonly hostname: typeof PERSONAL_HOSTNAME;
+  readonly port: number;
+  readonly endpoint: string;
+}
+
+export interface PersonalRuntimePathOptions {
   readonly dataDir?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
   readonly platform?: NodeJS.Platform;
+}
+
+export interface PersonalRuntimeOptions extends PersonalRuntimePathOptions {
+  readonly paths?: PersonalRuntimePaths;
   readonly warn?: (message: string) => void;
 }
 
@@ -81,6 +88,23 @@ export const resolveDefaultPersonalDataDir = (
   return posix.join(xdgDataHome ?? posix.join(homeDir, '.local', 'share'), 'floway-one');
 };
 
+export const resolvePersonalRuntimePaths = (
+  options: PersonalRuntimePathOptions = {},
+): PersonalRuntimePaths => {
+  const env = options.env ?? process.env;
+  const dataDir = options.dataDir
+    ?? resolveDefaultPersonalDataDir(options.platform, env, options.homeDir);
+  if (!isAbsolute(dataDir)) throw new Error(`Floway One application data directory must be absolute: ${dataDir}`);
+
+  return {
+    dataDir,
+    databasePath: join(dataDir, 'floway.db'),
+    filesDir: join(dataDir, 'files'),
+    logsDir: join(dataDir, 'logs'),
+    runtimeStatePath: join(dataDir, 'runtime.json'),
+  };
+};
+
 const readRuntimeState = (path: string): PersistedRuntimeState | null => {
   let source: string;
   try {
@@ -122,13 +146,8 @@ const writeRuntimeState = (path: string, state: PersistedRuntimeState): void => 
 
 export const loadPersonalRuntime = (options: PersonalRuntimeOptions = {}): PersonalRuntime => {
   const env = options.env ?? process.env;
-  const dataDir = options.dataDir
-    ?? resolveDefaultPersonalDataDir(options.platform, env, options.homeDir);
-  if (!isAbsolute(dataDir)) throw new Error(`Floway One application data directory must be absolute: ${dataDir}`);
-
-  const filesDir = join(dataDir, 'files');
-  const logsDir = join(dataDir, 'logs');
-  const runtimeStatePath = join(dataDir, 'runtime.json');
+  const paths = options.paths ?? resolvePersonalRuntimePaths(options);
+  const { dataDir, filesDir, logsDir, runtimeStatePath } = paths;
   try {
     mkdirSync(filesDir, { recursive: true, mode: 0o700 });
     mkdirSync(logsDir, { recursive: true, mode: 0o700 });
@@ -163,10 +182,6 @@ export const loadPersonalRuntime = (options: PersonalRuntimeOptions = {}): Perso
     hostname: PERSONAL_HOSTNAME,
     port,
     endpoint,
-    dataDir,
-    databasePath: join(dataDir, 'floway.db'),
-    filesDir,
-    logsDir,
-    runtimeStatePath,
+    ...paths,
   };
 };

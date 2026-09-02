@@ -2,6 +2,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  mkdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -23,7 +24,6 @@ interface PersonalLoggingOptions {
 }
 
 export interface InstalledPersonalLogging {
-  writeFatal(cause: unknown): void;
   restore(): void;
 }
 
@@ -118,7 +118,7 @@ const teeStream = (
 };
 
 const formatFatalError = (cause: unknown): string => {
-  const sections = ['FATAL: Floway One runtime failed to start'];
+  const sections = ['FATAL: Floway One runtime failed'];
   const seen = new Set<unknown>();
   let current: unknown = cause;
   let first = true;
@@ -142,9 +142,26 @@ export const installPersonalLogging = (
   const maxBytes = options.maxBytes ?? DEFAULT_LOG_MAX_BYTES;
   const maxFiles = options.maxFiles ?? DEFAULT_LOG_FILE_COUNT;
   try {
+    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') chmodSync(logsDir, 0o700);
     const stdoutSink = new RotatingFileSink(join(logsDir, PERSONAL_STDOUT_LOG), maxBytes, maxFiles);
     const stderrSink = new RotatingFileSink(join(logsDir, PERSONAL_STDERR_LOG), maxBytes, maxFiles);
     let runtimeFailureReported = false;
+    let fatalReported = false;
+    const writeFatalOnce = (cause: unknown): void => {
+      if (fatalReported) return;
+      fatalReported = true;
+      stderrSink.write(formatFatalError(cause));
+    };
+    const monitorFatal = (cause: Error): void => {
+      try {
+        writeFatalOnce(cause);
+      } catch {
+        // The original fatal error still reaches Node's native stderr path.
+        // Throwing here would replace it and change uncaught-exception semantics.
+      }
+    };
+    process.on('uncaughtExceptionMonitor', monitorFatal);
     const reportRuntimeFailure = (error: Error): void => {
       if (runtimeFailureReported) return;
       runtimeFailureReported = true;
@@ -155,37 +172,13 @@ export const installPersonalLogging = (
     const restoreStdout = teeStream(options.stdout ?? process.stdout, stdoutSink, reportRuntimeFailure);
     const restoreStderr = teeStream(options.stderr ?? process.stderr, stderrSink, reportRuntimeFailure);
     return {
-      writeFatal: cause => stderrSink.write(formatFatalError(cause)),
       restore: () => {
+        process.off('uncaughtExceptionMonitor', monitorFatal);
         restoreStderr();
         restoreStdout();
       },
     };
   } catch (cause) {
     throw new Error(`Floway One could not initialize bounded logs in ${logsDir}`, { cause });
-  }
-};
-
-export const runWithPersonalFatalLogging = async <T>(
-  logging: InstalledPersonalLogging | null,
-  start: () => Promise<T>,
-): Promise<T> => {
-  try {
-    return await start();
-  } catch (cause) {
-    if (logging !== null) {
-      try {
-        // Native uncaught-exception output bypasses JavaScript WriteStream.write,
-        // so persist the startup chain directly before restoring Node's fatal path.
-        logging.writeFatal(cause);
-      } catch (loggingCause) {
-        throw new AggregateError(
-          [cause, loggingCause],
-          'Floway One startup failed and its fatal diagnostics could not be persisted',
-          { cause },
-        );
-      }
-    }
-    throw cause;
   }
 };
