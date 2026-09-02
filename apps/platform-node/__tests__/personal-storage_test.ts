@@ -78,7 +78,7 @@ test('personal storage preserves the original hardening failure as its cause', (
 }));
 
 test('Windows hardening applies an owner-only ACL at every storage boundary', () => withTempPaths(async paths => {
-  const calls: Array<{ kind: 'directory' | 'file'; path: string }> = [];
+  const calls: Array<{ kind: 'directory' | 'file' | 'tree'; path: string }> = [];
   const hardener = new PersonalStorageHardener(paths, {
     platform: 'win32',
     applyWindowsAcl: (path, kind) => calls.push({ kind, path }),
@@ -87,7 +87,7 @@ test('Windows hardening applies an owner-only ACL at every storage boundary', ()
   const store = new FsFileStore(paths.filesDir, hardener);
   await store.put('nested/body.bin', new Uint8Array([1]));
 
-  assert(calls.some(call => call.kind === 'directory' && call.path === paths.dataDir));
+  assert(calls.some(call => call.kind === 'tree' && call.path === paths.dataDir));
   assert(calls.some(call => call.kind === 'directory' && call.path.endsWith('nested')));
   assert(calls.some(call => call.kind === 'file' && call.path.endsWith('body.bin')));
 }));
