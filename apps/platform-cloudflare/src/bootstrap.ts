@@ -20,6 +20,7 @@ import {
   initImageCacheStore,
   initImageProcessor,
   initRuntimeKind,
+  initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
   type SqlDatabase,
@@ -56,6 +57,7 @@ export const bootstrapCloudflarePlatform = (env: CloudflareEnv): { db: SqlDataba
     return value;
   });
   initRuntimeKind('cloudflare');
+  initRuntimeProfile('server');
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createCloudflareExternalResourceFetcher());
   initFetch(cloudflareFetch);

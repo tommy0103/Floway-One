@@ -22,14 +22,17 @@ import {
   initImageCacheStore,
   initImageProcessor,
   initRuntimeKind,
+  initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
+  type RuntimeProfileMode,
   type SqlDatabase,
 } from '@floway-dev/platform';
 
-export const bootstrapNodePlatform = (): { db: SqlDatabase } => {
+export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase } => {
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
+  initRuntimeProfile(profile);
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
   initFetch(nodeFetch);

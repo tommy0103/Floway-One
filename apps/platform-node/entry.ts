@@ -46,7 +46,7 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const { db } = bootstrapNodePlatform();
+const { db } = bootstrapNodePlatform('server');
 const port = Number(getEnvOptional('PORT', '8788'));
 
 // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
