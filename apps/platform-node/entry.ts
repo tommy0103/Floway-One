@@ -29,6 +29,7 @@ import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
+import { createNodeStoredSecretCodec } from './src/stored-secrets.ts';
 import {
   app,
   initBackgroundSchedulerResolver,
@@ -49,7 +50,8 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const { db } = bootstrapNodePlatform('server');
+const profile = 'server';
+const { db } = bootstrapNodePlatform(profile);
 const port = Number(getEnvOptional('PORT', '8788'));
 
 // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
@@ -63,7 +65,8 @@ if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
 }
 
 await applyMigrations(db);
-initRepo(new SqlRepo(db));
+const storedSecrets = await createNodeStoredSecretCodec(profile, db);
+initRepo(new SqlRepo(db, { storedSecrets }));
 
 startScheduledMaintenance();
 

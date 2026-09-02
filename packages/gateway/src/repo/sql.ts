@@ -69,7 +69,7 @@ import { bucketForTtftMs, bucketForTpotUs } from '../shared/performance-histogra
 import { parseServerSecret } from '../shared/server-secret.ts';
 import { assertWebSearchProviderName, type WebSearchConfig } from '../shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
-import type { SqlBindValue, SqlDatabase, SqlPreparedStatement } from '@floway-dev/platform';
+import { plaintextStoredSecretCodec, type SqlBindValue, type SqlDatabase, type SqlPreparedStatement, type StoredSecretCodec } from '@floway-dev/platform';
 import { addDecimalStrings, canonicalPricingSelectorKey, parseBillingMetric, parseModelKind, parseNonNegativeDecimalString, parsePricingSelectorKey, type AliasSelection, type AnnouncedMetadata } from '@floway-dev/protocols/common';
 import type { ProxyFallbackEntry, ModelPrefixConfig, UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
 import { normalizeModelPrefix, parsePerformanceOperation, UpstreamGoneError } from '@floway-dev/provider';
@@ -824,7 +824,7 @@ const toWebSearchUsageRecord = (row: { provider: string; key_id: string; action:
 };
 
 class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
-  constructor(private db: SqlDatabase) {}
+  constructor(private db: SqlDatabase, private storedSecrets: StoredSecretCodec) {}
 
   async get(): Promise<unknown | null> {
     const row = await this.db
@@ -833,9 +833,9 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
     if (!row) throw new Error('search_config singleton row missing');
     return {
       provider: row.provider,
-      tavily: { apiKey: row.tavily_api_key },
-      microsoftWebIq: { apiKey: row.microsoft_web_iq_api_key },
-      jina: { apiKey: row.jina_api_key },
+      tavily: { apiKey: await this.openApiKey(row.tavily_api_key, 'tavily') },
+      microsoftWebIq: { apiKey: await this.openApiKey(row.microsoft_web_iq_api_key, 'microsoft-web-iq') },
+      jina: { apiKey: await this.openApiKey(row.jina_api_key, 'jina') },
       passthroughOpenAiSearch: {
         enabled: row.passthrough_openai_search === 1,
         upstreamId: row.alpha_search_upstream_id,
@@ -846,6 +846,11 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 
   async save(config: WebSearchConfig): Promise<void> {
     const { provider, tavily, microsoftWebIq, jina, passthroughOpenAiSearch } = config;
+    const [tavilyApiKey, microsoftWebIqApiKey, jinaApiKey] = await Promise.all([
+      this.sealApiKey(tavily.apiKey, 'tavily'),
+      this.sealApiKey(microsoftWebIq.apiKey, 'microsoft-web-iq'),
+      this.sealApiKey(jina.apiKey, 'jina'),
+    ]);
     await this.db
       .prepare(
         `INSERT INTO search_config (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
@@ -860,8 +865,16 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
            alpha_search_model = excluded.alpha_search_model,
            updated_at = excluded.updated_at`,
       )
-      .bind(provider, tavily.apiKey, microsoftWebIq.apiKey, jina.apiKey, passthroughOpenAiSearch.enabled ? 1 : 0, passthroughOpenAiSearch.upstreamId, passthroughOpenAiSearch.model)
+      .bind(provider, tavilyApiKey, microsoftWebIqApiKey, jinaApiKey, passthroughOpenAiSearch.enabled ? 1 : 0, passthroughOpenAiSearch.upstreamId, passthroughOpenAiSearch.model)
       .run();
+  }
+
+  private sealApiKey(apiKey: string, provider: string): Promise<string> {
+    return apiKey === '' ? Promise.resolve('') : this.storedSecrets.seal(apiKey, `web-search:${provider}:api-key`);
+  }
+
+  private openApiKey(stored: string, provider: string): Promise<string> {
+    return stored === '' ? Promise.resolve('') : this.storedSecrets.open(stored, `web-search:${provider}:api-key`);
   }
 }
 
@@ -872,14 +885,17 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 // declaring the row unwritable, not a derived figure.
 export const UPSTREAM_STATE_WRITE_ATTEMPTS = 4;
 
+const upstreamConfigSecretContext = (id: string): string => `upstream:${id}:config`;
+const upstreamStateSecretContext = (id: string): string => `upstream:${id}:state`;
+
 class SqlUpstreamRepo implements UpstreamRepo {
-  constructor(private db: SqlDatabase) {}
+  constructor(private db: SqlDatabase, private storedSecrets: StoredSecretCodec) {}
 
   async list(): Promise<UpstreamRecord[]> {
     const { results } = await this.db
       .prepare('SELECT id, provider, name, enabled, sort_order, created_at, updated_at, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM upstreams ORDER BY sort_order, created_at')
       .all<UpstreamRow>();
-    return results.map(toUpstreamRecord);
+    return await Promise.all(results.map(row => toUpstreamRecord(row, this.storedSecrets)));
   }
 
   async getById(id: string): Promise<UpstreamRecord | null> {
@@ -887,7 +903,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
       .prepare('SELECT id, provider, name, enabled, sort_order, created_at, updated_at, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM upstreams WHERE id = ?')
       .bind(id)
       .first<UpstreamRow>();
-    return row ? toUpstreamRecord(row) : null;
+    return row ? await toUpstreamRecord(row, this.storedSecrets) : null;
   }
 
   save(upstream: UpstreamRecord): Promise<void> {
@@ -899,6 +915,14 @@ class SqlUpstreamRepo implements UpstreamRepo {
   }
 
   private async saveRecord(upstream: UpstreamRecord, clearModelsCache: boolean): Promise<void> {
+    const configJson = await this.storedSecrets.seal(
+      serializeStoredConfig(upstream.config),
+      upstreamConfigSecretContext(upstream.id),
+    );
+    const statePlaintext = serializeStoredState(upstream.state);
+    const stateJson = statePlaintext === null
+      ? null
+      : await this.storedSecrets.seal(statePlaintext, upstreamStateSecretContext(upstream.id));
     // created_at is deliberately not in the ON CONFLICT update list: the row's first INSERT
     // wins, and re-saves preserve that timestamp regardless of what the caller passes.
     await this.db
@@ -926,8 +950,8 @@ class SqlUpstreamRepo implements UpstreamRepo {
         upstream.sortOrder,
         upstream.createdAt,
         upstream.updatedAt,
-        serializeStoredConfig(upstream.config),
-        serializeStoredState(upstream.state),
+        configJson,
+        stateJson,
         JSON.stringify(normalizeFlagOverrides(upstream.flagOverrides)),
         JSON.stringify(normalizeDisabledPublicModelIds(upstream.disabledPublicModelIds)),
         JSON.stringify(normalizeProxyFallbackList(upstream.proxyFallbackList)),
@@ -980,7 +1004,8 @@ class SqlUpstreamRepo implements UpstreamRepo {
       .bind(id)
       .first<{ updated_at: string; config_json: string }>();
     if (row === null || row.updated_at !== generation.updatedAt) return null;
-    return serializeStoredConfig(JSON.parse(row.config_json)) === serializeStoredConfig(generation.config)
+    const configJson = await this.storedSecrets.open(row.config_json, upstreamConfigSecretContext(id));
+    return serializeStoredConfig(decodeUpstreamConfig(configJson, id)) === serializeStoredConfig(generation.config)
       ? row.config_json
       : null;
   }
@@ -1005,11 +1030,17 @@ class SqlUpstreamRepo implements UpstreamRepo {
         .bind(id)
         .first<{ state_json: string | null }>();
       if (!row) throw new UpstreamGoneError(id);
-      const current = row.state_json === null ? null : decodeUpstreamState(row.state_json, id);
-      const next = serializeStoredState(mutate(current));
+      const currentPlaintext = row.state_json === null
+        ? null
+        : await this.storedSecrets.open(row.state_json, upstreamStateSecretContext(id));
+      const current = currentPlaintext === null ? null : decodeUpstreamState(currentPlaintext, id);
+      const nextPlaintext = serializeStoredState(mutate(current));
       // A mutator that decided there is nothing to do returns what it was
       // given, which serializes back to the stored text.
-      if (next === row.state_json) return;
+      if (nextPlaintext === currentPlaintext) return;
+      const next = nextPlaintext === null
+        ? null
+        : await this.storedSecrets.seal(nextPlaintext, upstreamStateSecretContext(id));
       const result = await this.db
         .prepare('UPDATE upstreams SET state_json = ? WHERE id = ? AND state_json IS ?')
         .bind(next, id, row.state_json)
@@ -1038,9 +1069,13 @@ interface UpstreamRow {
   hue: number;
 }
 
-const toUpstreamRecord = (row: UpstreamRow): UpstreamRecord => {
-  const config = decodeUpstreamConfig(row.config_json, row.id);
-  const state = row.state_json === null ? null : decodeUpstreamState(row.state_json, row.id);
+const toUpstreamRecord = async (row: UpstreamRow, storedSecrets: StoredSecretCodec): Promise<UpstreamRecord> => {
+  const configJson = await storedSecrets.open(row.config_json, upstreamConfigSecretContext(row.id));
+  const stateJson = row.state_json === null
+    ? null
+    : await storedSecrets.open(row.state_json, upstreamStateSecretContext(row.id));
+  const config = decodeUpstreamConfig(configJson, row.id);
+  const state = stateJson === null ? null : decodeUpstreamState(stateJson, row.id);
 
   return {
     id: row.id,
@@ -1591,15 +1626,16 @@ export class SqlRepo implements Repo {
   scheduledMaintenance: ScheduledMaintenanceRepo;
   agentSetup: AgentSetupRepository;
 
-  constructor(db: SqlDatabase) {
+  constructor(db: SqlDatabase, options: { storedSecrets?: StoredSecretCodec } = {}) {
+    const storedSecrets = options.storedSecrets ?? plaintextStoredSecretCodec;
     this.users = new SqlUsersRepo(db);
     this.sessions = new SqlSessionsRepo(db);
     this.apiKeys = new SqlApiKeyRepo(db);
     this.usage = new SqlUsageRepo(db);
     this.webSearchUsage = new SqlWebSearchUsageRepo(db);
     this.performance = new SqlPerformanceRepo(db);
-    this.webSearchConfig = new SqlWebSearchConfigRepo(db);
-    this.upstreams = new SqlUpstreamRepo(db);
+    this.webSearchConfig = new SqlWebSearchConfigRepo(db, storedSecrets);
+    this.upstreams = new SqlUpstreamRepo(db, storedSecrets);
     this.proxies = new SqlProxyRepo(db);
     this.proxyBackoffs = new SqlProxyBackoffRepo(db);
     this.modelAliases = new SqlModelAliasesRepo(db);

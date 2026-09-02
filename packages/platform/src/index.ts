@@ -10,5 +10,6 @@ export * from './runtime-kind.ts';
 export * from './runtime-profile.ts';
 export * from './sha256.ts';
 export * from './socket-dial.ts';
+export * from './stored-secret-codec.ts';
 export * from './sql-database.ts';
 export * from './timing-safe-equal.ts';
