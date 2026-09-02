@@ -102,6 +102,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   private readonly posixUid: number;
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
   private readonly hardenedWindowsPaths = new Map<string, string>();
+  private readonly verifiedWindowsSqlitePaths = new Set<string>();
 
   constructor(
     private readonly paths: PersonalRuntimePaths,
@@ -154,11 +155,14 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
 
   hardenSqliteFiles(databasePath: string): void {
     for (const path of sqliteFiles(databasePath)) {
-      if (!existsSync(path)) {
-        this.hardenedWindowsPaths.delete(path);
-        continue;
-      }
+      if (!existsSync(path)) continue;
+      // The data directory's exact owner-only DACL is inheritable, so a
+      // rollback journal recreated for each transaction is already private.
+      // Verify each SQLite pathname once per process instead of launching a
+      // PowerShell ACL transaction for every journal incarnation.
+      if (this.platform === 'win32' && this.verifiedWindowsSqlitePaths.has(path)) continue;
       this.hardenFile(path);
+      if (this.platform === 'win32') this.verifiedWindowsSqlitePaths.add(path);
     }
   }
 

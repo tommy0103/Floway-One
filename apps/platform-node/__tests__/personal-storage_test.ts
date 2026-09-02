@@ -86,8 +86,14 @@ test('Windows hardening applies an owner-only ACL at every storage boundary', ()
   hardener.initialize();
   const store = new FsFileStore(paths.filesDir, hardener);
   await store.put('nested/body.bin', new Uint8Array([1]));
+  await Promise.all([writeFile(paths.databasePath, ''), writeFile(`${paths.databasePath}-journal`, '')]);
+  hardener.hardenSqliteFiles(paths.databasePath);
+  await rm(`${paths.databasePath}-journal`);
+  await writeFile(`${paths.databasePath}-journal`, 'recreated');
+  hardener.hardenSqliteFiles(paths.databasePath);
 
   assert(calls.some(call => call.kind === 'tree' && call.path === paths.dataDir));
   assert(calls.some(call => call.kind === 'directory' && call.path.endsWith('nested')));
   assert(calls.some(call => call.kind === 'file' && call.path.endsWith('body.bin')));
+  assertEquals(calls.filter(call => call.path === `${paths.databasePath}-journal`).length, 1);
 }));
