@@ -28,6 +28,7 @@ setGlobalDispatcher(new Agent({
 import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
+import { selectNodeRuntimeProfile } from './src/runtime-profile.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.ts';
 import {
@@ -50,7 +51,7 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const profile = 'server';
+const profile = selectNodeRuntimeProfile(process.argv.slice(2));
 const { db } = bootstrapNodePlatform(profile);
 const port = Number(getEnvOptional('PORT', '8788'));
 

@@ -39,14 +39,10 @@ const encodeBase64Url = (bytes: Uint8Array): string => {
 
 const decodeBase64Url = (value: unknown): Uint8Array | null => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]*$/u.test(value)) return null;
-  try {
-    const padded = value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - value.length % 4) % 4);
-    const binary = atob(padded);
-    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-    return encodeBase64Url(bytes) === value ? bytes : null;
-  } catch {
-    return null;
-  }
+  const padded = value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - value.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  return encodeBase64Url(bytes) === value ? bytes : null;
 };
 
 const invalidEnvelope = (context: string, cause?: unknown): Error => cause === undefined
@@ -112,8 +108,14 @@ export const createAes256GcmStoredSecretCodec = (masterKey: Uint8Array | null): 
 
     async open(stored: string, context: string): Promise<string> {
       const envelope = parseEnvelope(stored, context);
-      const nonce = decodeBase64Url(envelope.nonce);
-      const ciphertext = decodeBase64Url(envelope.ciphertext);
+      let nonce: Uint8Array | null;
+      let ciphertext: Uint8Array | null;
+      try {
+        nonce = decodeBase64Url(envelope.nonce);
+        ciphertext = decodeBase64Url(envelope.ciphertext);
+      } catch (cause) {
+        throw invalidEnvelope(context, cause);
+      }
       if (nonce?.byteLength !== AES_GCM_NONCE_BYTES || ciphertext === null) {
         throw invalidEnvelope(context);
       }

@@ -69,3 +69,13 @@ test('stored secret codec rejects missing keys, unsupported versions, and plaint
   );
   assertEquals(plaintextError.message.includes('plaintext'), false);
 });
+
+test('stored secret codec preserves malformed base64 decoding failures', async () => {
+  const codec = createAes256GcmStoredSecretCodec(masterKey);
+  const error = await assertRejects(
+    () => codec.open('{"$flowayEncrypted":{"version":1,"algorithm":"AES-256-GCM","nonce":"A","ciphertext":"A"}}', 'upstream:one:config'),
+    Error,
+    'Invalid encrypted stored secret format for upstream:one:config',
+  );
+  assert(error.cause instanceof Error);
+});

@@ -21,6 +21,6 @@ export const createNodeStoredSecretCodec = async (
     db.prepare(SEARCH_CONFIG_WITH_CREDENTIAL_SQL).first<{ id: number }>(),
   ]);
   const databaseHasProtectedValues = existingUpstream !== null || existingSearchCredential !== null;
-  const masterKey = loadDeviceMasterKey(!databaseHasProtectedValues, credential);
+  const masterKey = await loadDeviceMasterKey(!databaseHasProtectedValues, credential);
   return createAes256GcmStoredSecretCodec(masterKey);
 };
