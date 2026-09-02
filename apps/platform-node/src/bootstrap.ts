@@ -25,20 +25,28 @@ import {
   initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
-  type RuntimeProfileMode,
   type SqlDatabase,
 } from '@floway-dev/platform';
 
-export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase } => {
+interface NodeStoragePaths {
+  readonly databasePath: string;
+  readonly filesDir: string;
+}
+
+export type BootstrapNodePlatformOptions =
+  | { readonly profile: 'personal'; readonly storage: NodeStoragePaths }
+  | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
+
+export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): { db: SqlDatabase } => {
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
-  initRuntimeProfile(profile);
+  initRuntimeProfile(options.profile);
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
   initFetch(nodeFetch);
 
-  const filesDir = getEnvOptional('FLOWAY_FILES_DIR', './data/files');
-  const dbPath = getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
+  const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
+  const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
 
   const files = new FsFileStore(filesDir);
   initFileStore(files);

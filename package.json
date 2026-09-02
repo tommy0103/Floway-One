@@ -7,6 +7,7 @@
     "dev:api": "jiti scripts/require-wrangler-config.ts && wrangler dev --port 8788",
     "dev:web": "pnpm --filter @floway-dev/web run dev",
     "dev:node": "pnpm run build:web && pnpm --filter @floway-dev/platform-node run start",
+    "dev:one": "pnpm run build:web && cross-env FLOWAY_PROFILE=personal pnpm --filter @floway-dev/platform-node run start",
     "build:web": "pnpm --filter @floway-dev/web run build",
     "deploy": "pnpm install --frozen-lockfile && jiti scripts/require-wrangler-config.ts && pnpm run build:web && wrangler deploy --message \"$(git rev-parse HEAD)\"",
     "db:migrate": "jiti scripts/require-wrangler-config.ts && wrangler d1 migrations apply DB",
