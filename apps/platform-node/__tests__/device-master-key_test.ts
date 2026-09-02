@@ -4,32 +4,15 @@ import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creat
 import {
   createOperatingSystemCredential,
   loadDeviceMasterKey,
-  type DeviceMasterKeyCredential,
 } from '../src/device-master-key.ts';
+import { MemoryDeviceMasterKeyCredential } from './support/memory-device-master-key-credential.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
-
-class MemoryCredential implements DeviceMasterKeyCredential {
-  reads = 0;
-  writes: Uint8Array[] = [];
-
-  constructor(private secret: ArrayLike<number> | null) {}
-
-  getSecret(): ArrayLike<number> | null {
-    this.reads++;
-    return this.secret;
-  }
-
-  setSecret(secret: Uint8Array): void {
-    this.secret = [...secret];
-    this.writes.push(new Uint8Array(secret));
-  }
-}
 
 const creationLock: DeviceMasterKeyCreationLock = { run: operation => operation() };
 
 test('device master key reads the existing 256-bit value without rewriting it', async () => {
   const existing = Uint8Array.from({ length: 32 }, (_, index) => index);
-  const credential = new MemoryCredential(existing);
+  const credential = new MemoryDeviceMasterKeyCredential(existing);
 
   const loaded = await loadDeviceMasterKey(creationLock, false, credential);
 
@@ -41,7 +24,7 @@ test('device master key reads the existing 256-bit value without rewriting it', 
 });
 
 test('device master key creates, reads back, and returns the persisted value only for an empty personal database', async () => {
-  const credential = new MemoryCredential(null);
+  const credential = new MemoryDeviceMasterKeyCredential(null);
   const generated = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
 
   const loaded = await loadDeviceMasterKey(creationLock, true, credential, size => {
@@ -56,12 +39,12 @@ test('device master key creates, reads back, and returns the persisted value onl
 
 test('device master key reports missing and malformed credential-store values without exposing bytes', async () => {
   await assertRejects(
-    () => loadDeviceMasterKey(creationLock, false, new MemoryCredential(null)),
+    () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential(null)),
     Error,
     'Floway One device master key is missing from the operating system credential store',
   );
   const error = await assertRejects(
-    () => loadDeviceMasterKey(creationLock, false, new MemoryCredential([1, 2, 3])),
+    () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential([1, 2, 3])),
     Error,
     'Floway One device master key must contain exactly 32 bytes',
   );
@@ -135,4 +118,29 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   assertEquals(secretServiceReads, 3);
   assert(error.cause instanceof Error);
   assertEquals(error.cause.message, 'Failed to verify the Floway One device master key in Linux Secret Service');
+});
+
+test('credential-store failure injection preserves its platform sentinel as the original cause', async () => {
+  const previous = process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
+  process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE = 'Windows Credential Manager unavailable sentinel';
+  try {
+    const error = await assertRejects(
+      async () => createOperatingSystemCredential('Floway test', 'failure-injection', 'win32', {
+        Entry: class {
+          getSecret = () => null;
+          setSecret = () => undefined;
+          setPassword = () => undefined;
+          deleteCredential = () => false;
+        },
+        findCredentials: () => [],
+      }),
+      Error,
+      'Injected operating system credential-store failure for Floway verification',
+    );
+    assert(error.cause instanceof Error);
+    assertEquals(error.cause.message, 'Windows Credential Manager unavailable sentinel');
+  } finally {
+    if (previous === undefined) delete process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
+    else process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE = previous;
+  }
 });

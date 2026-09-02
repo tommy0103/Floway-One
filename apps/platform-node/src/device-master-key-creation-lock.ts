@@ -1,5 +1,9 @@
-import { resolve } from 'node:path';
+import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+
+import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
 
 const LOCK_WAIT_MS = 30_000;
 
@@ -7,20 +11,24 @@ export interface DeviceMasterKeyCreationLock {
   run<T>(operation: () => Promise<T>): Promise<T>;
 }
 
+interface DeviceMasterKeyCreationLockOptions {
+  lockDatabasePath?: string;
+}
+
 const processQueues = new Map<string, Promise<void>>();
 
-const serializeInProcess = async <T>(databasePath: string, operation: () => Promise<T>): Promise<T> => {
-  const predecessor = processQueues.get(databasePath) ?? Promise.resolve();
+const serializeInProcess = async <T>(lockDatabasePath: string, operation: () => Promise<T>): Promise<T> => {
+  const predecessor = processQueues.get(lockDatabasePath) ?? Promise.resolve();
   let release!: () => void;
   const owner = new Promise<void>(resolveOwner => { release = resolveOwner; });
   const tail = predecessor.then(() => owner);
-  processQueues.set(databasePath, tail);
+  processQueues.set(lockDatabasePath, tail);
   await predecessor;
   try {
     return await operation();
   } finally {
     release();
-    if (processQueues.get(databasePath) === tail) processQueues.delete(databasePath);
+    if (processQueues.get(lockDatabasePath) === tail) processQueues.delete(lockDatabasePath);
   }
 };
 
@@ -33,10 +41,22 @@ const rollback = (database: DatabaseSync): unknown => {
   }
 };
 
-const runWithSqliteLock = async <T>(databasePath: string, operation: () => Promise<T>): Promise<T> => {
+const preparePrivateLockDatabase = (lockDatabasePath: string): void => {
+  const directory = dirname(lockDatabasePath);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const descriptor = openSync(lockDatabasePath, 'a', 0o600);
+  closeSync(descriptor);
+  if (process.platform !== 'win32') {
+    chmodSync(directory, 0o700);
+    chmodSync(lockDatabasePath, 0o600);
+  }
+};
+
+const runWithSqliteLock = async <T>(lockDatabasePath: string, operation: () => Promise<T>): Promise<T> => {
   let database: DatabaseSync | undefined;
   try {
-    database = new DatabaseSync(databasePath);
+    preparePrivateLockDatabase(lockDatabasePath);
+    database = new DatabaseSync(lockDatabasePath);
     // A bounded busy timeout lets another Floway process finish its key-store
     // operation instead of turning ordinary launch contention into a failure.
     // https://www.sqlite.org/pragma.html#pragma_busy_timeout
@@ -83,12 +103,23 @@ const runWithSqliteLock = async <T>(databasePath: string, operation: () => Promi
   return result as T;
 };
 
-export const createDeviceMasterKeyCreationLock = (databasePath: string): DeviceMasterKeyCreationLock => {
-  const resolvedPath = resolve(databasePath);
+export const createDeviceMasterKeyCreationLock = (
+  options: DeviceMasterKeyCreationLockOptions = {},
+): DeviceMasterKeyCreationLock => {
+  // The credential service/account is device-global, so every Floway database
+  // owned by this OS user must contend on the same stable lock. Keeping this
+  // tiny lock database under the user's home directory makes its identity
+  // independent of custom data paths while remaining portable across Node's
+  // supported desktop platforms.
+  const lockDatabasePath = resolve(options.lockDatabasePath ?? join(
+    homedir(),
+    '.floway',
+    DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.creationLockFilename,
+  ));
   return Object.freeze({
     run: async <T>(operation: () => Promise<T>): Promise<T> => await serializeInProcess(
-      resolvedPath,
-      () => runWithSqliteLock(resolvedPath, operation),
+      lockDatabasePath,
+      () => runWithSqliteLock(lockDatabasePath, operation),
     ),
   });
 };

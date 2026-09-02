@@ -1,5 +1,6 @@
 import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import { loadDeviceMasterKey, type DeviceMasterKeyCredential } from './device-master-key.ts';
+import { validateStoredSecrets } from '@floway-dev/gateway';
 import {
   createAes256GcmStoredSecretCodec,
   plaintextStoredSecretCodec,
@@ -24,5 +25,7 @@ export const createNodeStoredSecretCodec = async (
   ]);
   const databaseHasProtectedValues = existingUpstream !== null || existingSearchCredential !== null;
   const masterKey = await loadDeviceMasterKey(creationLock, !databaseHasProtectedValues, credential);
-  return createAes256GcmStoredSecretCodec(masterKey);
+  const storedSecrets = createAes256GcmStoredSecretCodec(masterKey);
+  await validateStoredSecrets(db, storedSecrets);
+  return storedSecrets;
 };

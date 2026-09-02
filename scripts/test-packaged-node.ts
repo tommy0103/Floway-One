@@ -342,18 +342,22 @@ const assertCiphertextAtRest = (databasePath: string): void => {
   }
 };
 
-const assertUnavailableLinuxPersonalStartup = async (): Promise<void> => {
-  if (process.platform !== 'linux') return;
+const assertPersonalStartupFailure = async (
+  name: string,
+  databasePath: string,
+  extraEnv: NodeJS.ProcessEnv,
+  expectedChain: readonly string[],
+): Promise<void> => {
   const child = spawn(serverCommand[0]!, [...serverCommand.slice(1), '--profile=personal'], {
     cwd: packageRoot,
     env: {
       ...process.env,
       ADMIN_KEY,
-      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus',
-      FLOWAY_DB_PATH: resolve(runtimeRoot, 'unavailable-secret-service.db'),
-      FLOWAY_FILES_DIR: resolve(runtimeRoot, 'unavailable-secret-service-files'),
+      FLOWAY_DB_PATH: databasePath,
+      FLOWAY_FILES_DIR: resolve(runtimeRoot, `${name}-files`),
       NODE_ENV: 'production',
       PORT: '0',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -363,12 +367,68 @@ const assertUnavailableLinuxPersonalStartup = async (): Promise<void> => {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
-  const [code] = await once(child, 'exit') as [number | null, NodeJS.Signals | null];
+  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+  let timeout: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    exited.then(result => ({ kind: 'exit' as const, result })),
+    new Promise<{ kind: 'timeout' }>(resolveTimeout => {
+      timeout = setTimeout(() => resolveTimeout({ kind: 'timeout' }), 10_000);
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (outcome.kind === 'timeout') {
+    await stopRuntime(child);
+    return fail(`${name} personal runtime did not fail before its startup deadline\n${output}`);
+  }
   children.delete(child);
-  if (code === 0) fail('personal runtime accepted an unavailable Linux Secret Service');
-  if (!output.includes('Failed to read the Floway One device master key from the operating system credential store')
-    || !output.includes('Linux Secret Service is unavailable for the Floway One device master key')) {
-    fail(`personal runtime lost the unavailable Linux Secret Service error chain\n${output}`);
+  const [code] = outcome.result;
+  if (code === 0) fail(`${name} personal runtime unexpectedly exited successfully`);
+  if (output.includes('Floway listening on ')) {
+    fail(`${name} personal runtime opened its listener before reporting startup failure\n${output}`);
+  }
+  let previousIndex = -1;
+  for (const message of expectedChain) {
+    const index = output.indexOf(message);
+    if (index === -1 || index <= previousIndex) {
+      fail(`${name} personal runtime lost or reordered its error chain at ${JSON.stringify(message)}\n${output}`);
+    }
+    previousIndex = index;
+  }
+};
+
+const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
+  const outer = 'Failed to read the Floway One device master key from the operating system credential store';
+  if (process.platform === 'linux') {
+    await assertPersonalStartupFailure(
+      'unavailable-linux-secret-service',
+      resolve(runtimeRoot, 'unavailable-linux-secret-service.db'),
+      { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus' },
+      [outer, 'Linux Secret Service is unavailable for the Floway One device master key'],
+    );
+    return;
+  }
+
+  const sentinel = process.platform === 'darwin'
+    ? 'macOS Keychain locked sentinel'
+    : 'Windows Credential Manager unavailable sentinel';
+  await assertPersonalStartupFailure(
+    `unavailable-${process.platform}-credential-store`,
+    resolve(runtimeRoot, `unavailable-${process.platform}-credential-store.db`),
+    { FLOWAY_TEST_CREDENTIAL_STORE_FAILURE: sentinel },
+    [outer, 'Injected operating system credential-store failure for Floway verification', sentinel],
+  );
+};
+
+const tamperSearchCredential = (databasePath: string): void => {
+  const database = new DatabaseSync(databasePath);
+  try {
+    const row = database.prepare('SELECT tavily_api_key FROM search_config WHERE id = 1').get() as { tavily_api_key: string };
+    const envelope = JSON.parse(row.tavily_api_key) as { $flowayEncrypted: { ciphertext: string } };
+    const first = envelope.$flowayEncrypted.ciphertext[0] ?? fail('stored Tavily ciphertext is empty');
+    envelope.$flowayEncrypted.ciphertext = `${first === 'A' ? 'B' : 'A'}${envelope.$flowayEncrypted.ciphertext.slice(1)}`;
+    database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(JSON.stringify(envelope));
+  } finally {
+    database.close();
   }
 };
 
@@ -406,12 +466,19 @@ try {
         const storedMasterKey = await readCredential(productionCredential);
         if (storedMasterKey?.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
         assertCiphertextAtRest(personalDatabase);
+        tamperSearchCredential(personalDatabase);
+        await assertPersonalStartupFailure(
+          'tampered-personal-search-credential',
+          personalDatabase,
+          {},
+          ['Failed to decrypt stored secret for web-search:tavily:api-key'],
+        );
       } finally {
         if (existingMasterKey === null) await deleteCredential(productionCredential);
       }
     }
 
-    await assertUnavailableLinuxPersonalStartup();
+    await assertUnavailableCredentialStorePersonalStartup();
   } finally {
     await stopIsolatedLinuxSecretService();
   }

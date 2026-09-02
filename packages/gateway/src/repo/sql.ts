@@ -890,6 +890,36 @@ const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSe
 const upstreamConfigSecretContext = (id: string): StoredSecretContext => `upstream:${id}:config` as StoredSecretContext;
 const upstreamStateSecretContext = (id: string): StoredSecretContext => `upstream:${id}:state` as StoredSecretContext;
 
+export const validateStoredSecrets = async (
+  db: SqlDatabase,
+  storedSecrets: StoredSecretCodec,
+): Promise<void> => {
+  const upstreamRows = await db
+    .prepare('SELECT id, config_json, state_json FROM upstreams')
+    .all<{ id: string; config_json: string; state_json: string | null }>();
+  for (const row of upstreamRows.results) {
+    await storedSecrets.open(row.config_json, upstreamConfigSecretContext(row.id));
+    if (row.state_json !== null) {
+      await storedSecrets.open(row.state_json, upstreamStateSecretContext(row.id));
+    }
+  }
+
+  const searchRows = await db
+    .prepare('SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config')
+    .all<{ tavily_api_key: string; microsoft_web_iq_api_key: string; jina_api_key: string }>();
+  for (const row of searchRows.results) {
+    if (row.tavily_api_key !== '') {
+      await storedSecrets.open(row.tavily_api_key, webSearchApiKeySecretContext('tavily'));
+    }
+    if (row.microsoft_web_iq_api_key !== '') {
+      await storedSecrets.open(row.microsoft_web_iq_api_key, webSearchApiKeySecretContext('microsoft-web-iq'));
+    }
+    if (row.jina_api_key !== '') {
+      await storedSecrets.open(row.jina_api_key, webSearchApiKeySecretContext('jina'));
+    }
+  }
+};
+
 class SqlUpstreamRepo implements UpstreamRepo {
   constructor(private db: SqlDatabase, private storedSecrets: StoredSecretCodec) {}
 

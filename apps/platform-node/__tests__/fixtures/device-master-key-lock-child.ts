@@ -3,9 +3,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createDeviceMasterKeyCreationLock } from '../../src/device-master-key-creation-lock.ts';
 import { loadDeviceMasterKey, type DeviceMasterKeyCredential } from '../../src/device-master-key.ts';
 
-const [mode, databasePath, credentialPath, generatedByteText] = process.argv.slice(2);
-if (mode === undefined || databasePath === undefined || credentialPath === undefined || generatedByteText === undefined) {
-  throw new Error('Usage: device-master-key-lock-child <mode> <database> <credential> <generated-byte>');
+const [mode, databasePath, credentialPath, generatedByteText, lockDatabasePath] = process.argv.slice(2);
+if (mode === undefined || databasePath === undefined || credentialPath === undefined || generatedByteText === undefined || lockDatabasePath === undefined) {
+  throw new Error('Usage: device-master-key-lock-child <mode> <database> <credential> <generated-byte> <credential-lock-database>');
 }
 const generatedByte = Number(generatedByteText);
 if (!Number.isInteger(generatedByte) || generatedByte < 0 || generatedByte > 255) {
@@ -22,7 +22,24 @@ const waitForReleaseMarker = async (): Promise<void> => {
   }
 };
 
-const creationLock = createDeviceMasterKeyCreationLock(databasePath);
+process.env.FLOWAY_DB_PATH = databasePath;
+const creationLock = createDeviceMasterKeyCreationLock({ lockDatabasePath });
+if (mode === 'same-process') {
+  const secondLock = createDeviceMasterKeyCreationLock({ lockDatabasePath });
+  let release!: () => void;
+  const released = new Promise<void>(resolveRelease => { release = resolveRelease; });
+  let firstEntered!: () => void;
+  const entered = new Promise<void>(resolveEntered => { firstEntered = resolveEntered; });
+  const first = creationLock.run(async () => {
+    firstEntered();
+    await released;
+  });
+  await entered;
+  setImmediate(release);
+  await Promise.all([first, secondLock.run(async () => undefined)]);
+  process.stdout.write('SAME_PROCESS_SERIALIZED\n');
+  process.exit(0);
+}
 if (mode === 'hold') {
   await creationLock.run(async () => {
     process.stdout.write('LOCKED\n');
@@ -41,6 +58,7 @@ const credential: DeviceMasterKeyCredential = {
     }
   },
 };
+process.stdout.write('ATTEMPTING\n');
 const key = await loadDeviceMasterKey(
   creationLock,
   true,

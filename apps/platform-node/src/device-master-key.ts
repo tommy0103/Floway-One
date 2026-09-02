@@ -3,15 +3,9 @@ import { randomBytes } from 'node:crypto';
 import { Entry, findCredentials, type Credential } from '@napi-rs/keyring';
 
 import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
+import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
 
 const DEVICE_MASTER_KEY_BYTES = 32;
-// The binding maps this service/account entry to macOS Keychain, Windows
-// Credential Manager, and the Linux system keyring backend without writing a
-// key file beside SQLite.
-// https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
-const CREDENTIAL_SERVICE = 'Floway One';
-const CREDENTIAL_ACCOUNT = 'device-master-key-v1';
-
 type Awaitable<T> = T | Promise<T>;
 
 export interface DeviceMasterKeyCredential {
@@ -44,12 +38,25 @@ const decodeLinuxSecret = (stored: string): Uint8Array => {
   return new Uint8Array(decoded);
 };
 
+// The binding maps this service/account entry to macOS Keychain, Windows
+// Credential Manager, and the Linux system keyring backend without writing a
+// key file beside SQLite.
+// https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
 export const createOperatingSystemCredential = (
-  service = CREDENTIAL_SERVICE,
-  account = CREDENTIAL_ACCOUNT,
+  service: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service,
+  account: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account,
   platform: NodeJS.Platform = process.platform,
   bindings: KeyringBindings = defaultKeyringBindings,
 ): DeviceMasterKeyCredential => {
+  // Packaged native-platform jobs use this boundary to force the same startup
+  // failure on hosts where locking the runner's real credential store is not
+  // safe or deterministic.
+  const injectedFailure = process.env.FLOWAY_TEST_CREDENTIAL_STORE_FAILURE;
+  if (injectedFailure !== undefined) {
+    throw new Error('Injected operating system credential-store failure for Floway verification', {
+      cause: new Error(injectedFailure),
+    });
+  }
   if (platform !== 'linux') {
     const entry = new bindings.Entry(service, account);
     return {

@@ -1,26 +1,37 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { test } from 'vitest';
 
-import { assertEquals } from '@floway-dev/test-utils';
+import { createDeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
+import { assert, assertEquals } from '@floway-dev/test-utils';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const PLATFORM_NODE_ROOT = resolve(ROOT, 'apps/platform-node');
 const CHILD = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures/device-master-key-lock-child.ts');
 const children = new Set<ChildProcessWithoutNullStreams>();
 
-const withTempState = async (operation: (state: { databasePath: string; credentialPath: string }) => Promise<void>): Promise<void> => {
+interface TempState {
+  credentialPath: string;
+  firstDatabasePath: string;
+  lockDatabasePath: string;
+  secondDatabasePath: string;
+}
+
+const withTempState = async (operation: (state: TempState) => Promise<void>): Promise<void> => {
   const directory = await mkdtemp(join(tmpdir(), 'floway-device-master-key-lock-'));
   try {
-    const databasePath = join(directory, 'creation-lock.db');
+    const firstDatabasePath = join(directory, 'first-floway.db');
+    const secondDatabasePath = join(directory, 'second-floway.db');
+    const lockDatabasePath = join(directory, 'credential-lock', 'creation-lock.db');
     const credentialPath = join(directory, 'credential');
-    await writeFile(databasePath, '');
-    await operation({ databasePath, credentialPath });
+    await Promise.all([writeFile(firstDatabasePath, ''), writeFile(secondDatabasePath, '')]);
+    await operation({ credentialPath, firstDatabasePath, lockDatabasePath, secondDatabasePath });
   } finally {
     await Promise.all([...children].map(async child => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -34,12 +45,13 @@ const withTempState = async (operation: (state: { databasePath: string; credenti
 };
 
 const spawnChild = (
-  mode: 'create' | 'hold' | 'pause-after-write',
+  mode: 'create' | 'hold' | 'pause-after-write' | 'same-process',
   databasePath: string,
   credentialPath: string,
   generatedByte: number,
+  lockDatabasePath: string,
 ): ChildProcessWithoutNullStreams => {
-  const child = spawn(process.execPath, ['--import', 'tsx', CHILD, mode, databasePath, credentialPath, String(generatedByte)], {
+  const child = spawn(process.execPath, ['--import', 'tsx', CHILD, mode, databasePath, credentialPath, String(generatedByte), lockDatabasePath], {
     cwd: PLATFORM_NODE_ROOT,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -83,47 +95,75 @@ const killAndWait = async (child: ChildProcessWithoutNullStreams): Promise<void>
   children.delete(child);
 };
 
-test('spawned first-launch contenders serialize from an empty lock database and return one persisted key', () => withTempState(async state => {
-  const workers = [1, 2, 3, 4].map(byte => spawnChild('create', state.databasePath, state.credentialPath, byte));
+test('spawned first-launch contenders using two Floway databases return one device-credential winner', () => withTempState(async state => {
+  const workers = [1, 2, 3, 4].map((byte, index) => spawnChild(
+    'create',
+    index % 2 === 0 ? state.firstDatabasePath : state.secondDatabasePath,
+    state.credentialPath,
+    byte,
+    state.lockDatabasePath,
+  ));
   const keys = await Promise.all(workers.map(waitForKey));
 
   assertEquals(new Set(keys).size, 1);
   assertEquals(Buffer.from(await readFile(state.credentialPath)).toString('hex'), keys[0]);
 }));
 
+test('two lock instances in one process serialize without blocking the event loop', () => withTempState(async state => {
+  const child = spawnChild('same-process', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
+  await waitForLine(child, /^SAME_PROCESS_SERIALIZED$/u);
+  await once(child, 'exit');
+  children.delete(child);
+}));
+
+test('credential lock state is private to the current OS user', () => withTempState(async state => {
+  const lock = createDeviceMasterKeyCreationLock({ lockDatabasePath: state.lockDatabasePath });
+  await lock.run(async () => undefined);
+  if (process.platform !== 'win32') {
+    assertEquals((await stat(dirname(state.lockDatabasePath))).mode & 0o777, 0o700);
+    assertEquals((await stat(state.lockDatabasePath)).mode & 0o777, 0o600);
+  }
+}));
+
 test('process death releases the lock without a stale or partial owner record', () => withTempState(async state => {
-  const crashed = spawnChild('hold', state.databasePath, state.credentialPath, 1);
+  const crashed = spawnChild('hold', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
   await waitForLine(crashed, /^LOCKED$/u);
   await killAndWait(crashed);
 
-  const first = await waitForKey(spawnChild('create', state.databasePath, state.credentialPath, 2));
-  const second = await waitForKey(spawnChild('create', state.databasePath, state.credentialPath, 3));
+  const first = await waitForKey(spawnChild('create', state.firstDatabasePath, state.credentialPath, 2, state.lockDatabasePath));
+  const second = await waitForKey(spawnChild('create', state.secondDatabasePath, state.credentialPath, 3, state.lockDatabasePath));
   assertEquals(first, second);
 }));
 
 test('a crash after persistence recovers the authoritative key', () => withTempState(async state => {
-  const crashed = spawnChild('pause-after-write', state.databasePath, state.credentialPath, 9);
+  const crashed = spawnChild('pause-after-write', state.firstDatabasePath, state.credentialPath, 9, state.lockDatabasePath);
   await waitForLine(crashed, /^PERSISTED$/u);
   await killAndWait(crashed);
 
-  const recovered = await waitForKey(spawnChild('create', state.databasePath, state.credentialPath, 10));
+  const recovered = await waitForKey(spawnChild('create', state.secondDatabasePath, state.credentialPath, 10, state.lockDatabasePath));
   assertEquals(recovered, '09'.repeat(32));
 }));
 
 test('a replacement owner survives an ABA schedule while a third process waits', () => withTempState(async state => {
-  const staleOwner = spawnChild('hold', state.databasePath, state.credentialPath, 1);
+  const staleOwner = spawnChild('hold', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
   await waitForLine(staleOwner, /^LOCKED$/u);
   await killAndWait(staleOwner);
 
-  const replacement = spawnChild('pause-after-write', state.databasePath, state.credentialPath, 11);
+  const replacement = spawnChild('pause-after-write', state.firstDatabasePath, state.credentialPath, 11, state.lockDatabasePath);
   await waitForLine(replacement, /^PERSISTED$/u);
-  const contender = spawnChild('create', state.databasePath, state.credentialPath, 12);
+  const contender = spawnChild('create', state.secondDatabasePath, state.credentialPath, 12, state.lockDatabasePath);
+  await waitForLine(contender, /^ATTEMPTING$/u);
   const contenderKeyPromise = waitForKey(contender);
-  const earlyContender = await Promise.race([
-    contenderKeyPromise.then(() => 'completed' as const),
-    new Promise<'waiting'>(resolveWaiting => setTimeout(() => resolveWaiting('waiting'), 150)),
-  ]);
-  assertEquals(earlyContender, 'waiting');
+  const probe = new DatabaseSync(state.lockDatabasePath);
+  try {
+    probe.exec('PRAGMA busy_timeout = 0');
+    let busy: unknown;
+    try { probe.exec('BEGIN IMMEDIATE'); } catch (error) { busy = error; }
+    assert(busy instanceof Error && 'code' in busy && busy.code === 'ERR_SQLITE_ERROR');
+    assertEquals(contender.exitCode, null);
+  } finally {
+    probe.close();
+  }
 
   const replacementKeyPromise = waitForKey(replacement);
   await writeFile(`${state.credentialPath}.release-11`, 'continue');

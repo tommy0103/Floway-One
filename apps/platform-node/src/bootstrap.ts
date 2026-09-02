@@ -50,5 +50,5 @@ export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDat
   initImageProcessor(createSharpImageProcessor());
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
-  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock(dbPath) };
+  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock() };
 };
