@@ -3,8 +3,6 @@ import { cp, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { pnpmCommandForPlatform } from './node-runtime.ts';
-
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputArgument = process.argv[2];
 if (outputArgument === undefined) throw new Error('Usage: generate-node-runtime.ts <output-directory>');
@@ -22,9 +20,11 @@ try {
 
 try {
   await new Promise<void>((resolveRun, rejectRun) => {
-    // Corepack exposes pnpm.cmd on Windows. Match the D1 tooling precedent by
-    // pairing that platform-specific command with spawn rather than execFile.
-    const child = spawn(pnpmCommandForPlatform(process.platform), [
+    const windows = process.platform === 'win32';
+    // A .cmd file is not executable by itself on Windows. Node documents
+    // shell-backed spawn as the supported launch path:
+    // https://nodejs.org/docs/latest-v22.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows
+    const child = spawn(windows ? 'pnpm.cmd' : 'pnpm', [
       '--filter',
       '@floway-dev/platform-node',
       'deploy',
@@ -32,7 +32,7 @@ try {
       '--legacy',
       '--ignore-scripts',
       platformNodeRoot,
-    ], { cwd: ROOT, env: process.env, stdio: 'inherit' });
+    ], { cwd: ROOT, env: process.env, shell: windows, stdio: 'inherit' });
     child.once('error', rejectRun);
     child.once('exit', (code, signal) => {
       if (code === 0) resolveRun();
