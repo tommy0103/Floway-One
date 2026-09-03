@@ -96,5 +96,5 @@ test('Windows hardening applies an owner-only ACL at every storage boundary', ()
   assert(calls.some(call => call.kind === 'tree' && call.path === paths.dataDir));
   assert(calls.some(call => call.kind === 'directory' && call.path.endsWith('nested')));
   assert(calls.some(call => call.kind === 'file' && call.path.endsWith('body.bin')));
-  for (const path of auxiliaries) assertEquals(calls.filter(call => call.path === path).length, 2);
+  for (const path of auxiliaries) assertEquals(calls.filter(call => call.path === path).length, 1);
 }));

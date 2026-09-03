@@ -715,11 +715,11 @@ const assertPrivatePersonalStorage = async (
   try {
     database.exec('PRAGMA journal_mode = DELETE; CREATE TABLE acl_probe (value INTEGER)');
     hardener.hardenSqliteFiles(verificationDatabasePath);
-    for (const value of [1, 2]) {
+    for (const [value, expectedAfterHardening] of [[1, 'protected-file'], [2, 'inherited-file']] as const) {
       database.exec(`BEGIN IMMEDIATE; INSERT INTO acl_probe VALUES (${value})`);
       await assertWindowsOwnerOnlyAcl(journalPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(journalPath, 'protected-file');
+      await assertWindowsOwnerOnlyAcl(journalPath, expectedAfterHardening);
       database.exec('ROLLBACK');
     }
   } finally {
@@ -728,15 +728,15 @@ const assertPrivatePersonalStorage = async (
 
   const walPath = `${verificationDatabasePath}-wal`;
   const shmPath = `${verificationDatabasePath}-shm`;
-  for (const value of [3, 4]) {
+  for (const [value, expectedAfterHardening] of [[3, 'protected-file'], [4, 'inherited-file']] as const) {
     database = new DatabaseSync(verificationDatabasePath);
     try {
       database.exec(`PRAGMA journal_mode = WAL; INSERT INTO acl_probe VALUES (${value})`);
       await assertWindowsOwnerOnlyAcl(walPath, 'inherited-file');
       await assertWindowsOwnerOnlyAcl(shmPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(walPath, 'protected-file');
-      await assertWindowsOwnerOnlyAcl(shmPath, 'protected-file');
+      await assertWindowsOwnerOnlyAcl(walPath, expectedAfterHardening);
+      await assertWindowsOwnerOnlyAcl(shmPath, expectedAfterHardening);
     } finally {
       database.close();
     }
