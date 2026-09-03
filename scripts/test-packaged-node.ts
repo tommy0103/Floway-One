@@ -1,11 +1,10 @@
 import { execFile, spawn, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { type Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -552,22 +551,24 @@ const withUnavailablePackagedKeyring = async (
   sentinel: string,
   operation: () => Promise<void>,
 ): Promise<void> => {
-  const packagedRequire = createRequire(resolve(packageRoot, 'apps/platform-node/package.json'));
-  const keyringModulePath = packagedRequire.resolve('@napi-rs/keyring');
-  const relativeKeyringPath = relative(await realpath(packageRoot), keyringModulePath);
-  if (relativeKeyringPath.startsWith('..') || isAbsolute(relativeKeyringPath)) {
-    fail(`resolved packaged keyring outside the temporary runtime: ${keyringModulePath}`);
-  }
-  const originalKeyringModule = await readFile(keyringModulePath);
+  const deviceMasterKeyPath = resolve(packageRoot, 'apps/platform-node/src/device-master-key.ts');
+  const unavailableKeyringPath = resolve(packageRoot, 'apps/platform-node/src/unavailable-keyring-verification.ts');
+  const originalSource = await readFile(deviceMasterKeyPath, 'utf8');
+  const productionImport = "await import('@napi-rs/keyring')";
+  if (!originalSource.includes(productionImport)) fail('packaged device master key has no dynamic native keyring import');
   try {
-    // Replace only the deployed package's CommonJS entry with a module-load
-    // failure. Server mode must never evaluate it; personal mode must retain
-    // the native-loader failure in its startup cause chain.
-    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L5
-    await writeFile(keyringModulePath, `'use strict';\nthrow new Error(${JSON.stringify(sentinel)});\n`);
+    // Redirect only the temporary deployed source's dynamic import to a
+    // module-load failure. Server mode must never evaluate it; personal mode
+    // must retain the loader failure in its startup cause chain.
+    await writeFile(unavailableKeyringPath, `throw new Error(${JSON.stringify(sentinel)});\n`);
+    await writeFile(deviceMasterKeyPath, originalSource.replace(
+      productionImport,
+      "await import('./unavailable-keyring-verification.ts')",
+    ));
     await operation();
   } finally {
-    await writeFile(keyringModulePath, originalKeyringModule);
+    await writeFile(deviceMasterKeyPath, originalSource);
+    await rm(unavailableKeyringPath, { force: true });
   }
 };
 
