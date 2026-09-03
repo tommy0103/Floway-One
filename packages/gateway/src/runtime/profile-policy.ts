@@ -1,13 +1,39 @@
 import { getRepo } from '../repo/index.ts';
 import { SEED_ADMIN_USER_ID } from '../repo/seed-admin.ts';
 import type { ApiKey, User } from '../repo/types.ts';
-import { getRuntimeProfile } from '@floway-dev/platform';
+import { getRuntimeProfile, type RuntimeProfileMode } from '@floway-dev/platform';
 
 export const PERSONAL_USER_MANAGEMENT_ERROR = 'User management is unavailable in the personal profile.';
 export const PERSONAL_OWNER_ADMIN_ERROR = 'The personal profile owner must remain an administrator.';
 export const PERSONAL_OWNER_UPSTREAMS_ERROR = 'The personal profile owner must have unrestricted upstream access.';
 
+export type RuntimeApiKeyDefaults = Readonly<Pick<
+  ApiKey,
+  'upstreamIds' | 'dumpRetentionSeconds' | 'openaiResponsesRetentionSeconds'
+>>;
+
+// Keep creation defaults at the profile-policy boundary instead of relying on
+// optional request fields to imply them. Personal mode's privacy contract is
+// explicit here: all upstreams are inherited, request capture is off, and
+// durable Stateful OpenAI Responses storage is off. Server mode deliberately
+// retains the same existing defaults.
+const RUNTIME_API_KEY_DEFAULTS = Object.freeze({
+  personal: Object.freeze({
+    upstreamIds: null,
+    dumpRetentionSeconds: null,
+    openaiResponsesRetentionSeconds: 0,
+  }),
+  server: Object.freeze({
+    upstreamIds: null,
+    dumpRetentionSeconds: null,
+    openaiResponsesRetentionSeconds: 0,
+  }),
+}) satisfies Readonly<Record<RuntimeProfileMode, RuntimeApiKeyDefaults>>;
+
 export const isPersonalRuntimeProfile = (): boolean => getRuntimeProfile().mode === 'personal';
+
+export const runtimeApiKeyDefaults = (): RuntimeApiKeyDefaults =>
+  RUNTIME_API_KEY_DEFAULTS[getRuntimeProfile().mode];
 
 export const personalUserCreationError = (): string | null =>
   isPersonalRuntimeProfile() ? PERSONAL_USER_MANAGEMENT_ERROR : null;

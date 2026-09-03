@@ -54,6 +54,98 @@ test('POST /api/keys assigns every personal-profile key to the seed owner', asyn
   }
 });
 
+test('personal profile keeps multiple key lifecycles, routing, capture, and Agent Setup independent', async () => {
+  const { repo, adminSession } = await setupAppTest();
+  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_a', name: 'Personal A' }));
+  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_b', name: 'Personal B' }));
+  initRuntimeProfile('personal');
+
+  type KeyResponse = {
+    id: string;
+    name: string;
+    key: string;
+    upstream_ids: string[] | null;
+    dump_retention_seconds: number | null;
+    responses_retention_seconds: number;
+  };
+  const create = async (body: Record<string, unknown>): Promise<KeyResponse> => {
+    const response = await requestApp('/api/keys', {
+      method: 'POST',
+      headers: { 'x-floway-session': adminSession, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assertEquals(response.status, 201);
+    return (await response.json()) as KeyResponse;
+  };
+
+  try {
+    const codex = await create({ name: 'Codex project' });
+    const claude = await create({
+      name: 'Claude project',
+      upstream_ids: ['up_personal_b', 'up_personal_a'],
+      dump_retention_seconds: 3600,
+    });
+
+    assertEquals(codex.upstream_ids, null);
+    assertEquals(codex.dump_retention_seconds, null);
+    assertEquals(codex.responses_retention_seconds, 0);
+    assertEquals(claude.upstream_ids, ['up_personal_b', 'up_personal_a']);
+    assertEquals(claude.dump_retention_seconds, 3600);
+    assertEquals((await repo.apiKeys.listByUserId(1)).filter(key => [codex.id, claude.id].includes(key.id)).length, 2);
+
+    const renamed = await ownerPatch(codex.id, {
+      name: 'Codex rotated project',
+      upstream_ids: ['up_personal_a'],
+    }, claude.key);
+    assertEquals(renamed.status, 200);
+    assertEquals(((await renamed.json()) as KeyResponse).name, 'Codex rotated project');
+
+    const beforeClaude = await repo.apiKeys.getById(claude.id);
+    assertExists(beforeClaude);
+    const rotated = await requestApp(`/api/keys/${codex.id}/rotate`, {
+      method: 'POST',
+      headers: { 'x-api-key': claude.key, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assertEquals(rotated.status, 200);
+    const rotatedCodex = (await rotated.json()) as KeyResponse;
+    assertEquals(rotatedCodex.id, codex.id);
+    assertEquals(rotatedCodex.name, 'Codex rotated project');
+    assertEquals(rotatedCodex.upstream_ids, ['up_personal_a']);
+    assertEquals(rotatedCodex.dump_retention_seconds, null);
+    if (rotatedCodex.key === codex.key) throw new Error('rotation did not replace the selected API key value');
+    assertEquals(await repo.apiKeys.getById(claude.id), beforeClaude);
+
+    const setup = await requestApp('/api/setup', {
+      method: 'POST',
+      headers: { 'x-api-key': claude.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKeyId: claude.id }),
+    });
+    assertEquals(setup.status, 200);
+    const lease = (await setup.json()) as { scripts: { codex: { sh: string } } };
+    const script = await requestApp(lease.scripts.codex.sh, {});
+    assertEquals(script.status, 200);
+    const scriptText = await script.text();
+    if (!scriptText.includes(claude.key) || !scriptText.includes(claude.name)) {
+      throw new Error('Agent Setup did not render the independently selected personal API key');
+    }
+
+    const deleted = await requestApp(`/api/keys/${codex.id}`, {
+      method: 'DELETE',
+      headers: { 'x-api-key': claude.key },
+    });
+    assertEquals(deleted.status, 200);
+    assertEquals(await repo.apiKeys.getById(codex.id), null);
+    assertEquals(await repo.apiKeys.getById(claude.id), beforeClaude);
+
+    const surviving = await requestApp('/api/keys', { headers: { 'x-api-key': claude.key } });
+    assertEquals(surviving.status, 200);
+    assertEquals(((await surviving.json()) as KeyResponse[]).map(key => key.id), [claude.id]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
 test('PATCH /api/keys/:id changes only the rolling OpenAI Responses duration', async () => {
   const { repo, apiKey } = await setupAppTest();
   const enabled = await ownerPatch(apiKey.id, { responses_retention_seconds: 7 * 24 * 60 * 60 }, apiKey.key);
