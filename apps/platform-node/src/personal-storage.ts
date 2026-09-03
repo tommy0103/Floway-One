@@ -104,7 +104,6 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
   private readonly hardenedWindowsPaths = new Map<string, string>();
   private readonly verifiedWindowsInheritableDirectories = new Set<string>();
-  private readonly verifiedWindowsSqlitePaths = new Set<string>();
 
   constructor(
     private readonly paths: PersonalRuntimePaths,
@@ -161,14 +160,14 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   hardenSqliteFiles(databasePath: string): void {
     for (const path of sqliteFiles(databasePath)) {
       if (!existsSync(path)) continue;
-      // A parent directory whose exact owner-only inheritance flags were
-      // verified makes a recreated SQLite auxiliary private before SQLite can
-      // expose bytes. Cache that pathname only under such a verified parent.
-      if (this.platform === 'win32'
-        && this.verifiedWindowsInheritableDirectories.has(dirname(path))
-        && this.verifiedWindowsSqlitePaths.has(path)) continue;
+      // A verified inheritable parent keeps a new SQLite incarnation private
+      // until this postcondition assigns the current user as its owner. The
+      // file-identity cache in applyPrivateAccess skips only that same verified
+      // incarnation; a recreated journal/WAL/SHM is always hardened again.
+      if (this.platform === 'win32' && !this.verifiedWindowsInheritableDirectories.has(dirname(path))) {
+        throw new Error(`Floway One cannot harden SQLite file beneath an unverified directory: ${path}`);
+      }
       this.hardenFile(path);
-      if (this.platform === 'win32') this.verifiedWindowsSqlitePaths.add(path);
     }
   }
 

@@ -671,10 +671,11 @@ $Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $IsDirectory = $Expectation -eq 'directory'
 $ExpectedProtected = $Expectation -ne 'inherited-file'
 $ExpectedInherited = $Expectation -eq 'inherited-file'
+$ExpectedCurrentOwner = $Expectation -ne 'inherited-file'
 $ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
 $Acl = if ($IsDirectory) { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
 $Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited -ne $ExpectedInherited) {
+if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or ($ExpectedCurrentOwner -and $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid) -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited -ne $ExpectedInherited) {
   throw "ACL verification failed for $Target as $Expectation (owner=$($Acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value), sid=$($Sid.Value), identity=$($Rules[0].IdentityReference.Value), access=$($Rules[0].AccessControlType), rights=$($Rules[0].FileSystemRights), protected=$($Acl.AreAccessRulesProtected), inherited=$($Rules[0].IsInherited), inheritance=$($Rules[0].InheritanceFlags), propagation=$($Rules[0].PropagationFlags), rules=$($Rules.Count))"
 }
 `], {
@@ -714,10 +715,11 @@ const assertPrivatePersonalStorage = async (
   try {
     database.exec('PRAGMA journal_mode = DELETE; CREATE TABLE acl_probe (value INTEGER)');
     hardener.hardenSqliteFiles(verificationDatabasePath);
-    for (const expectation of ['protected-file', 'inherited-file'] as const) {
-      database.exec('BEGIN IMMEDIATE; INSERT INTO acl_probe VALUES (1)');
+    for (const value of [1, 2]) {
+      database.exec(`BEGIN IMMEDIATE; INSERT INTO acl_probe VALUES (${value})`);
+      await assertWindowsOwnerOnlyAcl(journalPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(journalPath, expectation);
+      await assertWindowsOwnerOnlyAcl(journalPath, 'protected-file');
       database.exec('ROLLBACK');
     }
   } finally {
@@ -726,13 +728,15 @@ const assertPrivatePersonalStorage = async (
 
   const walPath = `${verificationDatabasePath}-wal`;
   const shmPath = `${verificationDatabasePath}-shm`;
-  for (const expectation of ['protected-file', 'inherited-file'] as const) {
+  for (const value of [3, 4]) {
     database = new DatabaseSync(verificationDatabasePath);
     try {
-      database.exec('PRAGMA journal_mode = WAL; INSERT INTO acl_probe VALUES (2)');
+      database.exec(`PRAGMA journal_mode = WAL; INSERT INTO acl_probe VALUES (${value})`);
+      await assertWindowsOwnerOnlyAcl(walPath, 'inherited-file');
+      await assertWindowsOwnerOnlyAcl(shmPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(walPath, expectation);
-      await assertWindowsOwnerOnlyAcl(shmPath, expectation);
+      await assertWindowsOwnerOnlyAcl(walPath, 'protected-file');
+      await assertWindowsOwnerOnlyAcl(shmPath, 'protected-file');
     } finally {
       database.close();
     }
