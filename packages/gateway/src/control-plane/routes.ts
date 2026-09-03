@@ -3,13 +3,13 @@ import { Hono, type Next } from 'hono';
 import { AGENT_SETUP_ROUTE_PATH, agentSetupControlRoutes } from './agent-setup.ts';
 import { createKey, deleteKey, listKeys, rotateKey, updateKey } from './api-keys/routes.ts';
 import { authLogin, authLogout, authMe } from './auth/routes.ts';
-import { exportData, importData } from './data-transfer/routes.ts';
+import { createFullBackup, exportData, importData } from './data-transfer/routes.ts';
 import { dumpRoutes } from './dump.ts';
 import { createAlias, deleteAlias, listAliases, updateAlias } from './model-aliases/routes.ts';
 import { controlPlaneModels } from './models/routes.ts';
 import { performanceOverview } from './performance/routes.ts';
 import { createProxy, deleteProxy, listAllBackoffs, listProxies, listProxyBackoffs, resetProxyBackoffs, testProxy, updateProxy } from './proxies/routes.ts';
-import { authLoginBody, changeOwnPasswordBody, claudeCodeOAuthAuthorizeUrlBody, claudeCodeOAuthExchangeBody, claudeCodeOAuthRefreshBody, claudeCodeProbeBody, claudeCodeSetupTokenAuthorizeUrlBody, claudeCodeSetupTokenExchangeBody, codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody, copilotOAuthDeviceLoginPollBody, copilotOAuthDeviceLoginStartBody, copilotQuotaBody, createAliasBody, createKeyBody, createProxyBody, createUpstreamBody, createUserBody, exportQuery, importBody, listModelsBody, modelsQuery, ollamaUsageBody, performanceQuery, resetBackoffBody, rotateKeyBody, webSearchConfigSchema, webSearchUsageQuery, testProxyBody, tokenUsageOverviewQuery, tokenUsageQuery, updateAliasBody, updateKeyBody, updateProxyBody, updateUpstreamBody, updateUserBody } from './schemas.ts';
+import { authLoginBody, changeOwnPasswordBody, claudeCodeOAuthAuthorizeUrlBody, claudeCodeOAuthExchangeBody, claudeCodeOAuthRefreshBody, claudeCodeProbeBody, claudeCodeSetupTokenAuthorizeUrlBody, claudeCodeSetupTokenExchangeBody, codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody, copilotOAuthDeviceLoginPollBody, copilotOAuthDeviceLoginStartBody, copilotQuotaBody, createAliasBody, createKeyBody, createProxyBody, createUpstreamBody, createUserBody, exportQuery, fullBackupBody, importBody, listModelsBody, modelsQuery, ollamaUsageBody, performanceQuery, resetBackoffBody, rotateKeyBody, webSearchConfigSchema, webSearchUsageQuery, testProxyBody, tokenUsageOverviewQuery, tokenUsageQuery, updateAliasBody, updateKeyBody, updateProxyBody, updateUpstreamBody, updateUserBody } from './schemas.ts';
 import { getWebSearchConfigRoute, putWebSearchConfigRoute, testWebSearchConfigRoute } from './search-config/routes.ts';
 import { webSearchUsage } from './search-usage/routes.ts';
 import { tokenUsageOverview } from './token-usage/overview.ts';
@@ -117,4 +117,5 @@ export const controlPlaneRoutes = new Hono<{ Variables: AuthVars }>()
     .put('/search-config', zValidator('json', webSearchConfigSchema), putWebSearchConfigRoute)
     .post('/search-config/test', zValidator('json', webSearchConfigSchema), testWebSearchConfigRoute)
     .get('/export', zValidator('query', exportQuery), exportData)
+    .post('/export', zValidator('json', fullBackupBody), createFullBackup)
     .post('/import', zValidator('json', importBody), importData));

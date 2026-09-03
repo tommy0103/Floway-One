@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BACKUP_FILE_VERSION, parseBackupFile } from '../../../src/components/backup-restore/file';
+import { BACKUP_FILE_VERSION, parseBackupFile, parseEncryptedBackupFile } from '../../../src/components/backup-restore/file';
 
 const data = {
   users: [],
@@ -38,5 +38,21 @@ describe('backup file validation', () => {
     expect(parseBackupFile(backup({ data: { ...data, performance: [] } })).ok).toBe(false);
     expect(parseBackupFile(backup({ data: { ...data, performanceIncluded: true } })).ok).toBe(false);
     expect(parseBackupFile(backup({ data: { ...data, performanceIncluded: true, performance: [] } })).ok).toBe(true);
+  });
+});
+
+describe('encrypted backup file validation', () => {
+  const archive = {
+    format: 'floway-full-backup',
+    version: 1,
+    kdf: { name: 'scrypt', n: 32768, r: 8, p: 1, salt: 'c2FsdA==' },
+    encryption: { name: 'AES-256-GCM', iv: 'aXYtaXYtaXYtaXYt' },
+    ciphertext: 'Y2lwaGVydGV4dA==',
+  };
+
+  it('accepts only the authenticated archive envelope and fixed memory-hard KDF parameters', () => {
+    expect(parseEncryptedBackupFile(JSON.stringify(archive))).toEqual({ ok: true, archive });
+    expect(parseEncryptedBackupFile(JSON.stringify({ ...archive, kdf: { ...archive.kdf, n: 2 } })).ok).toBe(false);
+    expect(parseEncryptedBackupFile(JSON.stringify({ ...archive, plaintext: data })).ok).toBe(false);
   });
 });

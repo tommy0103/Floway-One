@@ -6,7 +6,8 @@ import { errorMessage } from '../../lib/error-message';
 
 // Annotated with the gateway's own literal so a bump there fails this
 // assignment instead of silently rejecting every backup the deployment writes.
-export const BACKUP_FILE_VERSION: InferResponseType<typeof api.api.export.$get, 200>['version'] = 20;
+export const BACKUP_FILE_VERSION = 20 satisfies InferResponseType<typeof api.api.export.$get, 200>['version'];
+export const ENCRYPTED_BACKUP_FILE_VERSION = 1 satisfies InferResponseType<typeof api.api.export.$post, 200>['version'];
 
 const backupFileSchema = z.object({
   version: z.literal(BACKUP_FILE_VERSION),
@@ -15,6 +16,7 @@ const backupFileSchema = z.object({
     users: z.array(z.unknown()),
     apiKeys: z.array(z.unknown()),
     upstreams: z.array(z.unknown()),
+    modelAliases: z.array(z.unknown()).optional().default([]),
     proxies: z.array(z.unknown()),
     usage: z.array(z.unknown()),
     searchUsage: z.array(z.unknown()),
@@ -55,5 +57,41 @@ export const parseBackupFile = (raw: string): ParsedBackupFile => {
   const result = backupFileSchema.safeParse(parsed);
   return result.success
     ? { ok: true, payload: result.data }
+    : { ok: false, message: issueList(result.error) };
+};
+
+const encryptedBackupFileSchema = z.object({
+  format: z.literal('floway-full-backup'),
+  version: z.literal(ENCRYPTED_BACKUP_FILE_VERSION),
+  kdf: z.object({
+    name: z.literal('scrypt'),
+    n: z.literal(32768),
+    r: z.literal(8),
+    p: z.literal(1),
+    salt: z.string().min(1),
+  }).strict(),
+  encryption: z.object({
+    name: z.literal('AES-256-GCM'),
+    iv: z.string().min(1),
+  }).strict(),
+  ciphertext: z.string().min(1),
+}).strict();
+
+export type EncryptedBackupFile = z.infer<typeof encryptedBackupFileSchema>;
+
+export type ParsedEncryptedBackupFile =
+  | { ok: true; archive: EncryptedBackupFile }
+  | { ok: false; message: string };
+
+export const parseEncryptedBackupFile = (raw: string): ParsedEncryptedBackupFile => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return { ok: false, message: errorMessage(error) };
+  }
+  const result = encryptedBackupFileSchema.safeParse(parsed);
+  return result.success
+    ? { ok: true, archive: result.data }
     : { ok: false, message: issueList(result.error) };
 };

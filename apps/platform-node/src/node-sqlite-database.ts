@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
@@ -26,26 +27,31 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
     private readonly stmt: StatementSync,
     private readonly bound: readonly SqlBindValue[] = [],
     private readonly hardenFiles: () => void = () => undefined,
+    private readonly schedule: <T>(operation: () => T | Promise<T>) => Promise<T> = operation => Promise.resolve().then(operation),
   ) {}
 
   bind(...values: SqlBindValue[]): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.stmt, values, this.hardenFiles);
+    return new NodeSqlitePreparedStatement(this.stmt, values, this.hardenFiles, this.schedule);
   }
 
   first<T = Record<string, unknown>>(): Promise<T | null> {
-    const row = withPostcondition(
-      () => this.stmt.get(...(this.bound as never[])),
-      this.hardenFiles,
-    );
-    return Promise.resolve((row as T | undefined) ?? null);
+    return this.schedule(() => {
+      const row = withPostcondition(
+        () => this.stmt.get(...(this.bound as never[])),
+        this.hardenFiles,
+      );
+      return (row as T | undefined) ?? null;
+    });
   }
 
   all<T = Record<string, unknown>>(): Promise<SqlResult<T>> {
-    const rows = withPostcondition(
-      () => this.stmt.all(...(this.bound as never[])) as T[],
-      this.hardenFiles,
-    );
-    return Promise.resolve({ results: rows, success: true, meta: {} });
+    return this.schedule(() => {
+      const rows = withPostcondition(
+        () => this.stmt.all(...(this.bound as never[])) as T[],
+        this.hardenFiles,
+      );
+      return { results: rows, success: true, meta: {} };
+    });
   }
 
   runSync(): SqlResult {
@@ -61,15 +67,25 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
   }
 
   run(): Promise<SqlResult> {
-    return Promise.resolve(this.runSync());
+    return this.schedule(() => this.runSync());
   }
 }
 
 class NodeSqliteDatabase implements SqlDatabase {
+  private readonly transactionContext = new AsyncLocalStorage<boolean>();
+  private operationTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: DatabaseSync, private readonly hardenFiles: () => void) {}
 
+  private readonly schedule = <T>(operation: () => T | Promise<T>): Promise<T> => {
+    if (this.transactionContext.getStore()) return Promise.resolve().then(operation);
+    const pending = this.operationTail.then(operation, operation);
+    this.operationTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+
   prepare(query: string): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], this.hardenFiles);
+    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], this.hardenFiles, this.schedule);
   }
 
   // Wraps the supplied statements in a single transaction so the batch is
@@ -79,34 +95,57 @@ class NodeSqliteDatabase implements SqlDatabase {
   // run while this transaction is still open and trip
   // "cannot start a transaction within a transaction".
   batch(statements: SqlPreparedStatement[]): Promise<SqlResult[]> {
-    this.db.exec('BEGIN');
-    try {
-      const results = statements.map(stmt => {
-        if (!(stmt instanceof NodeSqlitePreparedStatement)) {
-          throw new Error('NodeSqliteDatabase.batch received a statement from a different database adapter');
-        }
-        return stmt.runSync();
-      });
-      this.db.exec('COMMIT');
-      this.hardenFiles();
-      return Promise.resolve(results);
-    } catch (e) {
-      // SQLite auto-rolls-back on a hard error class (SQLITE_FULL,
-      // SQLITE_IOERR, SQLITE_BUSY, SQLITE_NOMEM, SQLITE_INTERRUPT — see
-      // https://www.sqlite.org/lang_transaction.html "Response To Errors
-      // Within A Transaction"); the explicit ROLLBACK then throws
-      // "cannot rollback - no transaction is active" and would replace
-      // the original failure on the way out. Swallow that recovery throw
-      // so `throw e` always wins and the operator sees the real cause.
-      try { this.db.exec('ROLLBACK'); } catch { /* txn already auto-rolled-back */ }
-      try { this.hardenFiles(); } catch { /* preserve the transaction failure */ }
-      throw e;
-    }
+    const runStatements = (): SqlResult[] => statements.map(stmt => {
+      if (!(stmt instanceof NodeSqlitePreparedStatement)) {
+        throw new Error('NodeSqliteDatabase.batch received a statement from a different database adapter');
+      }
+      return stmt.runSync();
+    });
+    // A repository-level batch inside a broader restore transaction is
+    // already protected by that transaction and must not open a nested BEGIN.
+    if (this.transactionContext.getStore()) return this.schedule(runStatements);
+    return this.schedule(() => {
+      this.db.exec('BEGIN');
+      try {
+        const results = runStatements();
+        this.db.exec('COMMIT');
+        this.hardenFiles();
+        return results;
+      } catch (e) {
+        // SQLite auto-rolls-back on a hard error class (SQLITE_FULL,
+        // SQLITE_IOERR, SQLITE_BUSY, SQLITE_NOMEM, SQLITE_INTERRUPT — see
+        // https://www.sqlite.org/lang_transaction.html "Response To Errors
+        // Within A Transaction"); the explicit ROLLBACK then throws
+        // "cannot rollback - no transaction is active" and would replace
+        // the original failure on the way out. Swallow that recovery throw
+        // so `throw e` always wins and the operator sees the real cause.
+        try { this.db.exec('ROLLBACK'); } catch { /* txn already auto-rolled-back */ }
+        try { this.hardenFiles(); } catch { /* preserve the transaction failure */ }
+        throw e;
+      }
+    });
+  }
+
+  transaction<T>(operation: () => Promise<T>): Promise<T> {
+    return this.schedule(() => this.transactionContext.run(true, async () => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await operation();
+        this.db.exec('COMMIT');
+        this.hardenFiles();
+        return result;
+      } catch (cause) {
+        // Preserve the application/storage failure even when SQLite already
+        // ended the transaction or file hardening also fails during cleanup.
+        try { this.db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
+        try { this.hardenFiles(); } catch { /* preserve the original cause */ }
+        throw cause;
+      }
+    }));
   }
 
   exec(sql: string): Promise<unknown> {
-    withPostcondition(() => this.db.exec(sql), this.hardenFiles);
-    return Promise.resolve(undefined);
+    return this.schedule(() => withPostcondition(() => this.db.exec(sql), this.hardenFiles));
   }
 }
 

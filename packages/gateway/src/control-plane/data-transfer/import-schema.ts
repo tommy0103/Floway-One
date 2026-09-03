@@ -6,12 +6,12 @@ import { parseDisabledPublicModelIdsWire } from '../../repo/disabled-public-mode
 import { isOpenAIResponsesRetentionSeconds, OPENAI_RESPONSES_RETENTION_MAX_SECONDS, OPENAI_RESPONSES_RETENTION_MIN_SECONDS } from '../../repo/openai-responses-retention.ts';
 import { isDirectFallbackId, normalizeProxyFallbackList } from '../../repo/proxy-fallback-list.ts';
 import { SEED_ADMIN_USER_ID } from '../../repo/seed-admin.ts';
-import type { ApiKey, PerformanceMetric, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
+import type { ApiKey, ModelAliasRecord, PerformanceMetric, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { PASSWORD_HASH_SCHEME } from '../../shared/passwords.ts';
 import { RETENTION_MAX_SECONDS } from '../../shared/retention.ts';
 import { parseServerSecret } from '../../shared/server-secret.ts';
 import { isWebSearchProviderName } from '../../shared/web-search-providers.ts';
-import { USERNAME_PATTERN } from '../schemas.ts';
+import { createAliasBody, USERNAME_PATTERN } from '../schemas.ts';
 import { isRecord } from '../shared/field-validators.ts';
 import { parseUpstreamIdsValue } from '../shared/upstream-ids.ts';
 import { BILLING_METRICS, canonicalizePricingSelector, type BillingMetric, parseNonNegativeDecimalString, type PricingSelector } from '@floway-dev/protocols/common';
@@ -35,6 +35,7 @@ export interface ParsedImportData {
   users: User[];
   apiKeys: ApiKey[];
   upstreams: UpstreamRecord[];
+  modelAliases: ModelAliasRecord[];
   proxies: SerializedProxy[];
   usage: UsageRecord[];
   searchUsage: WebSearchUsageRecord[];
@@ -187,6 +188,37 @@ const proxySchema = parsedBy((value): SerializedProxy => {
     z.null(),
   ], { error: 'dial_timeout_seconds must be null or a positive integer' }), wire.dial_timeout_seconds);
   return { id, name, url, dial_timeout_seconds: dialTimeoutSeconds };
+});
+
+const modelAliasSchema = parsedBy((value): ModelAliasRecord => {
+  const wire = parseRecord(value, 'record must be an object');
+  const id = parseValue(nonEmptyStringSchema('id'), wire.id);
+  const createdAt = parseValue(nonEmptyStringSchema('createdAt'), wire.createdAt);
+  const updatedAt = parseValue(nonEmptyStringSchema('updatedAt'), wire.updatedAt);
+  const sortOrder = parseValue(z.number({ error: 'sortOrder must be an integer' }).int({ error: 'sortOrder must be an integer' }), wire.sortOrder);
+  const parsed = parseValue(createAliasBody, {
+    name: wire.name,
+    kind: wire.kind,
+    selection: wire.selection,
+    display_name: wire.displayName,
+    visible_in_models_list: wire.visibleInModelsList,
+    targets: wire.targets,
+    announced_metadata: wire.announcedMetadata,
+    sort_order: sortOrder,
+  });
+  return {
+    id,
+    name: parsed.name,
+    kind: parsed.kind,
+    selection: parsed.selection,
+    displayName: parsed.display_name,
+    visibleInModelsList: parsed.visible_in_models_list,
+    targets: parsed.targets,
+    announcedMetadata: parsed.announced_metadata,
+    sortOrder,
+    createdAt,
+    updatedAt,
+  };
 });
 
 const dumpRetentionSchema = parsedBy((value): number | null => {
@@ -487,6 +519,8 @@ export const parseImportData = (value: unknown): ImportDataParseResult => {
   if (usage.type === 'invalid') return usage;
   const upstreams = parseCollection('upstreams', upstreamWireSchema, value.upstreams, { arrayError: 'upstreams must be an array' });
   if (upstreams.type === 'invalid') return upstreams;
+  const modelAliases = parseCollection('modelAliases', modelAliasSchema, value.modelAliases, { arrayError: 'modelAliases must be an array', optional: true });
+  if (modelAliases.type === 'invalid') return modelAliases;
   const proxies = parseCollection('proxies', proxySchema, value.proxies, { arrayError: 'proxies must be an array', optional: true });
   if (proxies.type === 'invalid') return proxies;
   const proxyIds = new Map<string, number>();
@@ -529,6 +563,7 @@ export const parseImportData = (value: unknown): ImportDataParseResult => {
       users: users.records,
       apiKeys: apiKeys.records,
       upstreams: upstreams.records,
+      modelAliases: modelAliases.records,
       proxies: proxies.records,
       usage: usage.records,
       searchUsage: searchUsage.records,

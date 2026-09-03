@@ -11,15 +11,16 @@ vi.mock('../../../src/data-plane/providers/models-cache.ts', () => ({
   fetchUpstreamModelsCached: () => Promise.resolve([]),
 }));
 
-import { exportData, importData } from '../../../src/control-plane/data-transfer/routes.ts';
-import { exportQuery, importBody } from '../../../src/control-plane/schemas.ts';
+import { createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
+import { createFullBackup, exportData, importData } from '../../../src/control-plane/data-transfer/routes.ts';
+import { exportQuery, fullBackupBody, importBody } from '../../../src/control-plane/schemas.ts';
 import { upstreamRecordToFullJson } from '../../../src/control-plane/upstreams/serialize.ts';
 import { DEFAULT_WEB_SEARCH_CONFIG } from '../../../src/data-plane/tools/web-search/config.ts';
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { zValidator } from '../../../src/middleware/zod-validator.ts';
 import { initRepo } from '../../../src/repo/index.ts';
 import { SqlRepo } from '../../../src/repo/sql.ts';
-import type { ApiKey, PerformanceTelemetryRecord, Repo, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
+import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, Repo, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
 import { tokenUsageMetrics } from '../../../src/repo/usage-metrics.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { InMemoryRepo } from '../../repo/memory.ts';
@@ -316,10 +317,25 @@ const PERFORMANCE_2: PerformanceTelemetryRecord = {
   ],
 };
 
+const ROUTING_ALIAS: ModelAliasRecord = {
+  id: 'alias-recovery',
+  name: 'recovery-route',
+  kind: 'chat',
+  selection: 'first-available',
+  displayName: 'Recovery route',
+  visibleInModelsList: true,
+  targets: [{ target_model_id: 'gpt-public', rules: { reasoning: { effort: 'high' } } }],
+  announcedMetadata: { limits: { max_output_tokens: 4096 } },
+  sortOrder: 4,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+};
+
 const setupWithRepo = <T extends Repo>(repo: T) => {
   initRepo(repo);
   const app = new Hono();
   app.get('/export', zValidator('query', exportQuery), exportData);
+  app.post('/export', zValidator('json', fullBackupBody), createFullBackup);
   app.post('/import', zValidator('json', importBody), importData);
   return { repo, app };
 };
@@ -339,6 +355,28 @@ const doImport = async (app: Hono, mode: string, data: unknown, version: unknown
     body: JSON.stringify({ mode, version, data }),
   });
   return { status: resp.status, body: (await resp.json()) as Record<string, any> };
+};
+
+const doEncryptedImport = async (app: Hono, mode: 'merge' | 'replace', data: unknown) => {
+  const password = 'test-backup-password';
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data,
+  }, password);
+  const resp = await app.request('/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, archive, password }),
+  });
+  const responseText = await resp.text();
+  let body: Record<string, any>;
+  try {
+    body = JSON.parse(responseText) as Record<string, any>;
+  } catch {
+    body = { error: responseText };
+  }
+  return { status: resp.status, body };
 };
 
 const latestImportData = (overrides: Record<string, unknown> = {}) => ({
@@ -438,6 +476,197 @@ test('export includes performance only when requested', async () => {
   assertEquals(hasOwn(defaultExport.data, 'performance'), false);
   assertEquals(fullExport.data.performanceIncluded, true);
   assertEquals(fullExport.data.performance, [PERFORMANCE_1, PERFORMANCE_2]);
+});
+
+test('personal full backup encrypts every recovery secret under the supplied password', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.webSearchConfig.save({
+    provider: 'tavily',
+    tavily: { apiKey: 'tavily-recovery-secret' },
+    microsoftWebIq: { apiKey: '' },
+    jina: { apiKey: '' },
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'portable-password' }),
+    });
+    assertEquals(response.status, 200);
+    const archive = await response.json();
+    const serialized = JSON.stringify(archive);
+    expect(serialized).not.toContain(KEY_A.key);
+    expect(serialized).not.toContain(KEY_A.serverSecret);
+    expect(serialized).not.toContain('sk-custom');
+    expect(serialized).not.toContain('tavily-recovery-secret');
+
+    const restored = await openEncryptedBackupArchive(archive, 'portable-password') as Record<string, any>;
+    assertEquals(restored.version, 20);
+    assertEquals(restored.data.apiKeys, [KEY_A]);
+    assertEquals(restored.data.upstreams[0].config.apiKey, 'sk-custom');
+    assertEquals(restored.data.searchConfig.tavily.apiKey, 'tavily-recovery-secret');
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('safe export structurally omits every authentication-bearing field', async () => {
+  const { app, repo } = setup();
+  await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.proxies.save({
+    id: 'proxy-safe-export',
+    name: 'Authenticated proxy',
+    url: 'socks5://proxy-user:proxy-password@127.0.0.1:1080',
+    dialTimeoutSeconds: 9,
+  });
+  await repo.webSearchConfig.save({
+    provider: 'tavily',
+    tavily: { apiKey: 'tavily-safe-export-secret' },
+    microsoftWebIq: { apiKey: 'microsoft-safe-export-secret' },
+    jina: { apiKey: 'jina-safe-export-secret' },
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+
+  const response = await app.request('/export?kind=safe');
+  assertEquals(response.status, 200);
+  const exported = await response.json() as Record<string, any>;
+  assertEquals(exported.format, 'floway-safe-export');
+  assertEquals(exported.version, 1);
+  assertEquals(exported.data.users[0], {
+    id: SEED_ADMIN.id,
+    username: SEED_ADMIN.username,
+    isAdmin: SEED_ADMIN.isAdmin,
+    upstreamIds: SEED_ADMIN.upstreamIds,
+    createdAt: SEED_ADMIN.createdAt,
+    deletedAt: SEED_ADMIN.deletedAt,
+  });
+  assertEquals(exported.data.apiKeys[0].name, KEY_A.name);
+  assertEquals(hasOwn(exported.data.apiKeys[0], 'key'), false);
+  assertEquals(hasOwn(exported.data.apiKeys[0], 'serverSecret'), false);
+  assertEquals(exported.data.upstreams[0].kind, CUSTOM_UPSTREAM.kind);
+  assertEquals(hasOwn(exported.data.upstreams[0], 'config'), false);
+  assertEquals(hasOwn(exported.data.upstreams[0], 'state'), false);
+  assertEquals(exported.data.proxies[0], { id: 'proxy-safe-export', name: 'Authenticated proxy', dial_timeout_seconds: 9 });
+  assertEquals(exported.data.searchConfig, {
+    provider: 'tavily',
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+  const serialized = JSON.stringify(exported);
+  for (const secret of [
+    'password-hash-secret',
+    KEY_A.key,
+    KEY_A.serverSecret,
+    'sk-custom',
+    'proxy-user',
+    'proxy-password',
+    'tavily-safe-export-secret',
+    'microsoft-safe-export-secret',
+    'jina-safe-export-secret',
+  ]) expect(serialized).not.toContain(secret);
+});
+
+test('personal restore authenticates an encrypted full backup before changing live data', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({ apiKeys: [KEY_B] }),
+  }, 'restore-password');
+  const tampered = { ...archive, ciphertext: `${archive.ciphertext.slice(0, -2)}AA` };
+
+  initRuntimeProfile('personal');
+  try {
+    for (const [candidate, password] of [
+      [archive, 'wrong-password'],
+      [tampered, 'restore-password'],
+    ] as const) {
+      const failed = await app.request('/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'replace', archive: candidate, password }),
+      });
+      assertEquals(failed.status, 400);
+      assertEquals(await repo.apiKeys.list(), [KEY_A]);
+    }
+
+    const restored = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive, password: 'restore-password' }),
+    });
+    assertEquals(restored.status, 200);
+    assertEquals(await repo.apiKeys.list(), [KEY_B]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('personal profile refuses legacy plaintext export and import paths', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  initRuntimeProfile('personal');
+  try {
+    const exported = await app.request('/export');
+    assertEquals(exported.status, 400);
+
+    const imported = await doImport(app, 'replace', latestImportData());
+    assertEquals(imported.status, 400);
+    assertEquals(imported.body.error, 'Personal profile restore requires a password-protected full backup.');
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('a personal restore persistence failure rolls back every live-data change and preserves its cause', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  const usersBefore = await repo.users.listIncludingDeleted();
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({
+      apiKeys: [KEY_B],
+      upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+    }),
+  }, 'rollback-password');
+  const persistenceCause = new Error('forced upstream persistence failure');
+  const saveUpstream = vi.spyOn(repo.upstreams, 'save').mockRejectedValueOnce(persistenceCause);
+  let observedFailure: Error | undefined;
+  app.onError((error, c) => {
+    observedFailure = error;
+    return c.json({ error: error.message }, 500);
+  });
+
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive, password: 'rollback-password' }),
+    });
+
+    assertEquals(response.status, 500);
+    assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+    assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+    assertEquals(saveUpstream.mock.calls.length, 1);
+    expect(observedFailure).toBe(persistenceCause);
+  } finally {
+    saveUpstream.mockRestore();
+    initRuntimeProfile('server');
+  }
 });
 
 test('import rejects any version other than the current one before deleting data', async () => {
@@ -1462,7 +1691,7 @@ test('personal profile rejects a multi-user import before mutating stored data',
   await repo.apiKeys.save(KEY_A);
   initRuntimeProfile('personal');
   try {
-    const result = await doImport(app, 'replace', latestImportData({
+    const result = await doEncryptedImport(app, 'replace', latestImportData({
       users: [SEED_ADMIN, USER_BOB],
       apiKeys: [{ ...KEY_B, userId: USER_BOB.id }],
     }));
@@ -1483,11 +1712,7 @@ test('personal replace import preserves the owner when its atomic upsert fails',
   const upsert = vi.spyOn(repo.users, 'upsertForImport').mockRejectedValueOnce(persistenceError);
   initRuntimeProfile('personal');
   try {
-    const response = await app.request('/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'replace', version: 20, data: latestImportData() }),
-    });
+    const response = await doEncryptedImport(app, 'replace', latestImportData());
 
     assertEquals(response.status, 500);
     assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
@@ -1506,7 +1731,7 @@ test('personal replace import restores every owner field in SQLite, including cr
   const { app, repo } = setupWithRepo(new SqlRepo(db));
   initRuntimeProfile('personal');
   try {
-    const result = await doImport(app, 'replace', latestImportData());
+    const result = await doEncryptedImport(app, 'replace', latestImportData());
 
     assertEquals(result.status, 200);
     assertEquals(await repo.users.listIncludingDeleted(), [SEED_ADMIN]);
@@ -1673,6 +1898,7 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
   await repo.upstreams.save(CUSTOM_UPSTREAM);
   await repo.upstreams.save(AZURE_UPSTREAM);
   await repo.upstreams.save(CODEX_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
   await repo.usage.set(USAGE_1);
   await repo.usage.set(USAGE_2);
   await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
@@ -1690,6 +1916,7 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
 
   const exported = await doExport(app, true);
   assertEquals(exported.version, 20);
+  assertEquals(exported.data.modelAliases, [ROUTING_ALIAS]);
 
   // Replace-import the export's own `data`, verbatim. If the export emits any
   // shape the import parser rejects, this 400s — the round trip is the
@@ -1702,6 +1929,7 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
   assertEquals((await repo.upstreams.list()).find(u => u.id === 'up_codex_a')?.state, CODEX_UPSTREAM.state);
   assertEquals((await repo.users.listIncludingDeleted()).find(u => u.id === USER_BOB.id), USER_BOB);
   assertEquals((await repo.apiKeys.findByRawKey(KEY_B.key))?.userId, USER_BOB.id);
+  assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
   const restoredKeyA = await repo.apiKeys.findByRawKey(KEY_A.key);
   if (restoredKeyA === null) throw new Error('restored key A missing');
   assertEquals((await repo.usage.listAll()).find(u => u.keyId === restoredKeyA.id && u.hour === USAGE_1.hour), { ...USAGE_1, keyId: restoredKeyA.id });

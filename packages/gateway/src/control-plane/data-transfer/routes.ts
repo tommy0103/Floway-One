@@ -3,11 +3,11 @@
 // Ephemeral stored OpenAI Responses state is omitted from exports and cleared on
 // replace imports; clients can regenerate it through normal OpenAI Responses use.
 //
-// The export contains all persisted authentication material, including raw API
-// keys and server secrets, user password hashes, provider tokens, and
-// credential-bearing proxy URIs. The endpoint is admin-only; handle the file
-// with the same care as a DB backup.
+// Legacy server exports contain every persisted authentication value. Personal
+// mode disables that plaintext path: full recovery data is password-encrypted,
+// while the safe export structurally omits every credential-bearing field.
 
+import { BackupArchiveAuthenticationError, createEncryptedBackupArchive, InvalidBackupArchiveError, openEncryptedBackupArchive } from './backup-archive.ts';
 import { parseImportData, type SerializedProxy } from './import-schema.ts';
 import { parseWebSearchConfigDefault, parseWebSearchConfigStrict } from '../../data-plane/tools/web-search/config.ts';
 import type { WebSearchConfig } from '../../data-plane/tools/web-search/types.ts';
@@ -15,9 +15,9 @@ import { notifyDisabledBestEffort } from '../../dump/registry.ts';
 import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
-import type { ApiKey, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
+import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
-import { type exportQuery, type importBody } from '../schemas.ts';
+import { type exportQuery, type fullBackupBody, type importBody } from '../schemas.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
 import type { UpstreamRecord } from '@floway-dev/provider';
@@ -29,6 +29,7 @@ interface ExportPayload {
     users: User[];
     apiKeys: ApiKey[];
     upstreams: FullSerializedUpstreamRecord[];
+    modelAliases: ModelAliasRecord[];
     proxies: SerializedProxy[];
     usage: UsageRecord[];
     searchUsage: WebSearchUsageRecord[];
@@ -39,6 +40,64 @@ interface ExportPayload {
 }
 
 const EXPORT_VERSION = 20;
+
+const collectExportPayload = async (includePerformance: boolean): Promise<ExportPayload> => {
+  const repo = getRepo();
+  const [users, apiKeys, usage, webSearchUsage, performance, rawWebSearchConfig, upstreams, modelAliases, proxies] = await Promise.all([
+    repo.users.listIncludingDeleted(),
+    repo.apiKeys.listIncludingDeleted(),
+    repo.usage.listAll(),
+    repo.webSearchUsage.listAll(),
+    includePerformance ? repo.performance.listAll() : Promise.resolve([]),
+    repo.webSearchConfig.get(),
+    repo.upstreams.list(),
+    repo.modelAliases.list(),
+    repo.proxies.list(),
+  ]);
+
+  const payload: ExportPayload = {
+    version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    data: {
+      users,
+      apiKeys,
+      upstreams: upstreams.map(upstreamRecordToFullJson),
+      modelAliases,
+      proxies: proxies.map(proxy => ({ id: proxy.id, name: proxy.name, url: proxy.url, dial_timeout_seconds: proxy.dialTimeoutSeconds })),
+      usage,
+      searchUsage: webSearchUsage,
+      performanceIncluded: includePerformance,
+      searchConfig: rawWebSearchConfig === null ? parseWebSearchConfigDefault() : parseWebSearchConfigStrict(rawWebSearchConfig),
+    },
+  };
+  if (includePerformance) payload.data.performance = performance;
+  return payload;
+};
+
+const safeExport = (payload: ExportPayload) => {
+  const users = payload.data.users.map(({ passwordHash: _passwordHash, ...user }) => user);
+  const apiKeys = payload.data.apiKeys.map(({ key: _key, serverSecret: _serverSecret, ...apiKey }) => apiKey);
+  const upstreams = payload.data.upstreams.map(({ config: _config, state: _state, ...upstream }) => upstream);
+  const proxies = payload.data.proxies.map(({ url: _url, ...proxy }) => proxy);
+  const { provider, passthroughOpenAiSearch } = payload.data.searchConfig;
+  return {
+    format: 'floway-safe-export' as const,
+    version: 1 as const,
+    exportedAt: payload.exportedAt,
+    data: {
+      users,
+      apiKeys,
+      upstreams,
+      modelAliases: payload.data.modelAliases,
+      proxies,
+      usage: payload.data.usage,
+      searchUsage: payload.data.searchUsage,
+      ...(payload.data.performance === undefined ? {} : { performance: payload.data.performance }),
+      performanceIncluded: payload.data.performanceIncluded,
+      searchConfig: { provider, passthroughOpenAiSearch },
+    },
+  };
+};
 
 const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly ApiKey[], mode: 'merge' | 'replace'): string | null => {
   const ids = new Map<string, number>();
@@ -98,44 +157,47 @@ const validateProxyFallbackReferences = (
 };
 
 export const exportData = async (c: CtxWithQuery<typeof exportQuery>) => {
-  const repo = getRepo();
-  const includePerformance = c.req.valid('query').include_performance === '1';
+  const query = c.req.valid('query');
+  if (isPersonalRuntimeProfile() && query.kind !== 'safe') {
+    return c.json({ error: 'Personal profile exports must be either a password-protected full backup or a safe export.' }, 400);
+  }
+  const payload = await collectExportPayload(query.include_performance === '1');
+  return c.json(query.kind === 'safe' ? safeExport(payload) : payload);
+};
 
-  const [users, apiKeys, usage, webSearchUsage, performance, rawWebSearchConfig, upstreams, proxies] = await Promise.all([
-    repo.users.listIncludingDeleted(),
-    repo.apiKeys.listIncludingDeleted(),
-    repo.usage.listAll(),
-    repo.webSearchUsage.listAll(),
-    includePerformance ? repo.performance.listAll() : Promise.resolve([]),
-    repo.webSearchConfig.get(),
-    repo.upstreams.list(),
-    repo.proxies.list(),
-  ]);
-
-  const payload: ExportPayload = {
-    version: EXPORT_VERSION,
-    exportedAt: new Date().toISOString(),
-    data: {
-      users,
-      apiKeys,
-      upstreams: upstreams.map(upstreamRecordToFullJson),
-      proxies: proxies.map(proxy => ({ id: proxy.id, name: proxy.name, url: proxy.url, dial_timeout_seconds: proxy.dialTimeoutSeconds })),
-      usage,
-      searchUsage: webSearchUsage,
-      performanceIncluded: includePerformance,
-      searchConfig: rawWebSearchConfig === null ? parseWebSearchConfigDefault() : parseWebSearchConfigStrict(rawWebSearchConfig),
-    },
-  };
-  if (includePerformance) payload.data.performance = performance;
-
-  return c.json(payload);
+export const createFullBackup = async (c: CtxWithJson<typeof fullBackupBody>) => {
+  const { password, includePerformance = false } = c.req.valid('json');
+  const payload = await collectExportPayload(includePerformance);
+  return c.json(await createEncryptedBackupArchive(payload, password));
 };
 
 export const importData = async (c: CtxWithJson<typeof importBody>) => {
-  const { mode, data: rawData } = c.req.valid('json');
+  const request = c.req.valid('json');
+  const { mode } = request;
+  let rawData: unknown;
+  if (request.archive !== undefined) {
+    let opened: unknown;
+    try {
+      opened = await openEncryptedBackupArchive(request.archive, request.password ?? '');
+    } catch (cause) {
+      if (cause instanceof BackupArchiveAuthenticationError || cause instanceof InvalidBackupArchiveError) {
+        return c.json({ error: cause.message }, 400);
+      }
+      throw cause;
+    }
+    if (typeof opened !== 'object' || opened === null || !('version' in opened) || opened.version !== EXPORT_VERSION || !('data' in opened)) {
+      return c.json({ error: 'The encrypted backup payload is not a current Floway full backup.' }, 400);
+    }
+    rawData = opened.data;
+  } else {
+    if (isPersonalRuntimeProfile()) {
+      return c.json({ error: 'Personal profile restore requires a password-protected full backup.' }, 400);
+    }
+    rawData = request.data;
+  }
   const parsed = parseImportData(rawData);
   if (parsed.type === 'invalid') return c.json({ error: parsed.error }, 400);
-  const { users, apiKeys, upstreams, proxies, usage, searchUsage, performance, performanceIncluded, searchConfig } = parsed.data;
+  const { users, apiKeys, upstreams, modelAliases, proxies, usage, searchUsage, performance, performanceIncluded, searchConfig } = parsed.data;
 
   const profileError = runtimeProfileDataError(users, apiKeys);
   if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
@@ -153,57 +215,73 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   const fallbackRefError = validateProxyFallbackReferences(upstreams, proxies, existingProxyIdsForRefs);
   if (fallbackRefError) return c.json({ error: `invalid upstreams: ${fallbackRefError}` }, 400);
 
+  const applyImport = async (): Promise<void> => {
+    if (mode === 'replace') {
+      // D1 does not expose a transaction spanning these repositories. Complete
+      // validation therefore happens before this delete wave. Personal Node
+      // restore additionally executes the whole wave and every replacement
+      // write inside the runtime's SQLite transaction boundary.
+      const deletes: Promise<unknown>[] = [
+        repo.sessions.deleteAll(),
+        repo.apiKeys.deleteAll(),
+        repo.usage.deleteAll(),
+        repo.webSearchUsage.deleteAll(),
+        repo.upstreams.deleteAll(),
+        repo.modelAliases.deleteAll(),
+        repo.proxies.deleteAll(),
+        repo.proxyBackoffs.deleteAll(),
+        repo.openaiResponsesSnapshots.deleteAll(),
+        repo.openaiResponsesItems.deleteAll(),
+      ];
+      if (!preservePersonalOwner) deletes.push(repo.users.deleteAll());
+      if (performanceIncluded) deletes.push(repo.performance.deleteAll());
+      await Promise.all(deletes);
+    }
+
+    // Users precede their API keys, and proxies precede upstream fallback refs.
+    for (const user of users) {
+      if (preservePersonalOwner) await repo.users.upsertForImport(user);
+      else await repo.users.save(user);
+    }
+    for (const proxy of proxies) {
+      await repo.proxies.save({
+        id: proxy.id,
+        name: proxy.name,
+        url: proxy.url,
+        dialTimeoutSeconds: proxy.dial_timeout_seconds,
+      });
+    }
+    for (const key of apiKeys) await repo.apiKeys.save(key);
+    for (const record of usage) await repo.usage.set(record);
+    for (const record of searchUsage) await repo.webSearchUsage.set(record);
+    for (const upstream of upstreams) await repo.upstreams.save(upstream);
+    for (const alias of modelAliases) {
+      if (await repo.modelAliases.getById(alias.id)) await repo.modelAliases.update(alias);
+      else await repo.modelAliases.insert(alias);
+    }
+    for (const record of performance) await repo.performance.set(record);
+    await repo.webSearchConfig.save(searchConfig);
+    await assertRuntimeProfileData();
+  };
+
+  if (isPersonalRuntimeProfile()) {
+    if (!repo.transaction) throw new Error('Personal profile restore requires an atomic storage transaction');
+    await repo.transaction(applyImport);
+  } else {
+    await applyImport();
+  }
+
   if (mode === 'replace') {
     for (const key of preImportKeys) await notifyDisabledBestEffort(key.id, 'replace-mode import');
-
-    // D1 does not expose a transaction spanning these repositories. Complete
-    // validation therefore happens before this delete wave; a storage failure
-    // after it begins can still leave a partially restored deployment. A
-    // personal import keeps its only owner in place until the atomic user
-    // upsert below succeeds, so a failed write cannot leave it ownerless.
-    const deletes: Promise<unknown>[] = [
-      repo.sessions.deleteAll(),
-      repo.apiKeys.deleteAll(),
-      repo.usage.deleteAll(),
-      repo.webSearchUsage.deleteAll(),
-      repo.upstreams.deleteAll(),
-      repo.proxies.deleteAll(),
-      repo.proxyBackoffs.deleteAll(),
-      repo.openaiResponsesSnapshots.deleteAll(),
-      repo.openaiResponsesItems.deleteAll(),
-    ];
-    if (!preservePersonalOwner) deletes.push(repo.users.deleteAll());
-    if (performanceIncluded) deletes.push(repo.performance.deleteAll());
-    await Promise.all(deletes);
-  }
-
-  // Users precede their API keys, and proxies precede upstream fallback refs.
-  for (const user of users) {
-    if (preservePersonalOwner) await repo.users.upsertForImport(user);
-    else await repo.users.save(user);
-  }
-  for (const proxy of proxies) {
-    await repo.proxies.save({
-      id: proxy.id,
-      name: proxy.name,
-      url: proxy.url,
-      dialTimeoutSeconds: proxy.dial_timeout_seconds,
-    });
-  }
-  for (const key of apiKeys) {
-    const previous = preImportRetentionById.get(key.id) ?? null;
-    await repo.apiKeys.save(key);
-    if (mode === 'merge' && key.dumpRetentionSeconds === null && previous !== null) {
-      await notifyDisabledBestEffort(key.id, 'merge-mode retention disable');
+  } else {
+    for (const key of apiKeys) {
+      const previous = preImportRetentionById.get(key.id) ?? null;
+      if (key.dumpRetentionSeconds === null && previous !== null) {
+        await notifyDisabledBestEffort(key.id, 'merge-mode retention disable');
+      }
     }
   }
-  for (const record of usage) await repo.usage.set(record);
-  for (const record of searchUsage) await repo.webSearchUsage.set(record);
-  for (const upstream of upstreams) await repo.upstreams.save(upstream);
-  await Promise.all(upstreams.map(upstream => warmModelsCache(upstream, c)));
-  for (const record of performance) await repo.performance.set(record);
-  await repo.webSearchConfig.save(searchConfig);
-  await assertRuntimeProfileData();
+  await Promise.allSettled(upstreams.map(upstream => warmModelsCache(upstream, c)));
 
   return c.json({
     ok: true,

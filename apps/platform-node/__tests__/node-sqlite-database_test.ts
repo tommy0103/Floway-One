@@ -88,6 +88,86 @@ test('batch rolls back on mid-batch failure', () => withTempDb(async path => {
   assertEquals(rows.results, [{ id: 1 }]);
 }));
 
+test('interactive transaction rolls back awaited writes and rethrows the original failure', () => withTempDb(async path => {
+  const db = createNodeSqliteDatabase(path);
+  assert(db.transaction !== undefined, 'transaction must be implemented');
+  await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
+  await db.prepare('INSERT INTO t (id) VALUES (?)').bind(1).run();
+  const failure = new Error('forced restore write failure');
+
+  let observed: unknown;
+  try {
+    await db.transaction(async () => {
+      await db.prepare('DELETE FROM t').run();
+      await db.prepare('INSERT INTO t (id) VALUES (?)').bind(2).run();
+      throw failure;
+    });
+  } catch (cause) {
+    observed = cause;
+  }
+
+  assertEquals(observed, failure);
+  const rows = await db.prepare('SELECT id FROM t ORDER BY id').all<{ id: number }>();
+  assertEquals(rows.results, [{ id: 1 }]);
+}));
+
+test('ordinary database work cannot interleave with an awaited transaction', () => withTempDb(async path => {
+  const db = createNodeSqliteDatabase(path);
+  assert(db.transaction !== undefined, 'transaction must be implemented');
+  await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
+  await db.prepare('INSERT INTO t (id) VALUES (?)').bind(1).run();
+
+  let enterTransaction!: () => void;
+  const transactionEntered = new Promise<void>(resolve => { enterTransaction = resolve; });
+  let releaseTransaction!: () => void;
+  const transactionRelease = new Promise<void>(resolve => { releaseTransaction = resolve; });
+  const failure = new Error('forced transaction rollback');
+  const transaction = db.transaction(async () => {
+    await db.prepare('DELETE FROM t').run();
+    enterTransaction();
+    await transactionRelease;
+    throw failure;
+  });
+
+  await transactionEntered;
+  const outsideWrite = db.prepare('INSERT INTO t (id) VALUES (?)').bind(3).run();
+  releaseTransaction();
+  await assertRejects(() => transaction);
+  await outsideWrite;
+
+  const rows = await db.prepare('SELECT id FROM t ORDER BY id').all<{ id: number }>();
+  assertEquals(rows.results, [{ id: 1 }, { id: 3 }]);
+}));
+
+test('an atomic repository batch participates in its enclosing restore transaction', () => withTempDb(async path => {
+  const db = createNodeSqliteDatabase(path);
+  assert(db.transaction !== undefined, 'transaction must be implemented');
+  assert(db.batch !== undefined, 'batch must be implemented');
+  await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
+  await db.prepare('INSERT INTO t (id) VALUES (?)').bind(1).run();
+  const failure = new Error('forced failure after nested batch');
+  let batchCompleted = false;
+  let observed: unknown;
+
+  try {
+    await db.transaction!(async () => {
+      await db.batch!([
+        db.prepare('DELETE FROM t'),
+        db.prepare('INSERT INTO t (id) VALUES (?)').bind(2),
+      ]);
+      batchCompleted = true;
+      throw failure;
+    });
+  } catch (cause) {
+    observed = cause;
+  }
+
+  assertEquals(batchCompleted, true);
+  assertEquals(observed, failure);
+  const rows = await db.prepare('SELECT id FROM t ORDER BY id').all<{ id: number }>();
+  assertEquals(rows.results, [{ id: 1 }]);
+}));
+
 test('concurrent batch calls do not interleave transactions', () => withTempDb(async path => {
   // Regression: an `await` between BEGIN and COMMIT used to yield a microtask,
   // letting a second batch call's BEGIN run while the first transaction was

@@ -1,9 +1,10 @@
 import { ArrowDownloadRegular, ArrowUploadRegular } from '@fluentui/react-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { Route } from './+types/dashboard-admin-backup-restore';
 import { requireDashboardAdmin } from './guards';
 import { api, callApi } from '../api/client';
-import { BACKUP_FILE_VERSION, parseBackupFile, type BackupFile } from '../components/backup-restore/file';
+import { BACKUP_FILE_VERSION, parseBackupFile, parseEncryptedBackupFile, type BackupFile, type EncryptedBackupFile } from '../components/backup-restore/file';
 import { BackupFilePicker, BackupFileStats, BackupFileSummary } from '../components/backup-restore/file-picker';
 import { countRecords, PREVIEW_LABEL_KEYS, recordSummary } from '../components/backup-restore/summary';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -23,25 +24,46 @@ const {
   Button,
   Checkbox,
   Field,
+  Input,
   Spinner,
 } = fluentComponents;
 
 export async function clientLoader() {
   await requireDashboardAdmin();
-  return null;
+  const runtime = await callApi(() => api.api['runtime-info'].$get());
+  return { personal: runtime.data?.profile.mode === 'personal' };
 }
 
-export default function DashboardAdminBackupRestore() {
+type ImportSelection =
+  | { kind: 'encrypted'; archive: EncryptedBackupFile }
+  | { kind: 'legacy'; payload: BackupFile };
+
+const downloadJson = (data: unknown, name: string): void => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+};
+
+export default function DashboardAdminBackupRestore({ loaderData }: Route.ComponentProps) {
   const { t } = useTranslation();
   const locale = useLocale();
   const toasts = useOutcomeToasts();
+  const personal = loaderData.personal;
 
   const [includePerformance, setIncludePerformance] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [backupPassword, setBackupPassword] = useState('');
 
   const [importFile, setImportFile] = useState<File | null>(null);
-  const [importParsedData, setImportParsedData] = useState<BackupFile | null>(null);
+  const [importSelection, setImportSelection] = useState<ImportSelection | null>(null);
+  const [restorePassword, setRestorePassword] = useState('');
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -51,14 +73,21 @@ export default function DashboardAdminBackupRestore() {
 
   const confirmDialog = useDialogInvocation<void>();
 
-  const handleExport = useCallback(async () => {
+  const handleExport = useCallback(async (kind: 'full' | 'legacy' | 'safe') => {
     setExporting(true);
     setExportError(null);
 
     const handle = toasts.start(t('dashboard.backupRestore.export.pending'));
-    const result = await callApi(() => api.api.export.$get({
-      query: includePerformance ? { include_performance: '1' } : {},
-    }));
+    const result = kind === 'full'
+      ? await callApi(() => api.api.export.$post({
+          json: { password: backupPassword, includePerformance },
+        }))
+      : await callApi(() => api.api.export.$get({
+          query: {
+            ...(includePerformance ? { include_performance: '1' } : {}),
+            ...(kind === 'safe' ? { kind: 'safe' as const } : {}),
+          },
+        }));
 
     if (result.error) {
       handle.settle();
@@ -67,21 +96,20 @@ export default function DashboardAdminBackupRestore() {
       return;
     }
 
-    const json = JSON.stringify(result.data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    const date = result.data.exportedAt.slice(0, 10);
-    anchor.download = `floway-export-${date}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
+    const date = 'exportedAt' in result.data
+      ? result.data.exportedAt.slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const name = kind === 'full'
+      ? `floway-full-backup-${date}.json`
+      : kind === 'safe'
+        ? `floway-safe-export-${date}.json`
+        : `floway-export-${date}.json`;
+    downloadJson(result.data, name);
 
     setExporting(false);
-    handle.succeed(t('dashboard.backupRestore.export.success', { name: anchor.download }));
-  }, [includePerformance, t, toasts]);
+    if (kind === 'full') setBackupPassword('');
+    handle.succeed(t('dashboard.backupRestore.export.success', { name }));
+  }, [backupPassword, includePerformance, t, toasts]);
 
   // Without aborting, a second file dropped mid-read leaves two reads racing and
   // the later-finishing one wins. `abort()` raises neither `load` nor `error`,
@@ -98,15 +126,28 @@ export default function DashboardAdminBackupRestore() {
       readerRef.current = reader;
       reader.onload = () => {
         readerRef.current = null;
-        const result = parseBackupFile(reader.result as string);
+        const raw = reader.result as string;
+        if (personal) {
+          const result = parseEncryptedBackupFile(raw);
+          if (!result.ok) {
+            setImportError(t('dashboard.backupRestore.import.errorInvalidFile', { message: result.message }));
+            setImportFile(null);
+            setImportSelection(null);
+            return;
+          }
+          setImportFile(file);
+          setImportSelection({ kind: 'encrypted', archive: result.archive });
+          return;
+        }
+        const result = parseBackupFile(raw);
         if (!result.ok) {
           setImportError(t('dashboard.backupRestore.import.errorInvalidFile', { message: result.message }));
           setImportFile(null);
-          setImportParsedData(null);
+          setImportSelection(null);
           return;
         }
         setImportFile(file);
-        setImportParsedData(result.payload);
+        setImportSelection({ kind: 'legacy', payload: result.payload });
       };
       reader.onerror = () => {
         readerRef.current = null;
@@ -114,7 +155,7 @@ export default function DashboardAdminBackupRestore() {
       };
       reader.readAsText(file);
     },
-    [t],
+    [personal, t],
   );
 
   const handleFileSelect = useCallback(
@@ -153,24 +194,25 @@ export default function DashboardAdminBackupRestore() {
 
   const handleChangeFile = useCallback(() => {
     setImportFile(null);
-    setImportParsedData(null);
+    setImportSelection(null);
     setImportError(null);
     fileInputRef.current?.click();
   }, []);
 
   const doImport = useCallback(async () => {
-    if (!importParsedData) return;
+    if (!importSelection) return;
     setImporting(true);
     setImportError(null);
 
     const handle = toasts.start(t('dashboard.backupRestore.import.pending'));
-    const result = await callApi(() => api.api.import.$post({
-      json: {
-        version: BACKUP_FILE_VERSION,
-        mode: replaceExisting ? 'replace' : 'merge',
-        data: importParsedData.data,
-      },
-    }));
+    const mode = replaceExisting ? 'replace' as const : 'merge' as const;
+    const result = importSelection.kind === 'encrypted'
+      ? await callApi(() => api.api.import.$post({
+          json: { mode, archive: importSelection.archive, password: restorePassword },
+        }))
+      : await callApi(() => api.api.import.$post({
+          json: { version: BACKUP_FILE_VERSION, mode, data: importSelection.payload.data },
+        }));
 
     if (result.error) {
       handle.settle();
@@ -180,29 +222,47 @@ export default function DashboardAdminBackupRestore() {
     }
 
     setImportFile(null);
-    setImportParsedData(null);
+    setImportSelection(null);
+    setRestorePassword('');
     setImporting(false);
     const summary = recordSummary(result.data.imported, t, locale);
     handle.succeed(summary
       ? t('dashboard.backupRestore.import.success', { summary })
       : t('dashboard.backupRestore.import.successEmpty'));
-  }, [importParsedData, locale, replaceExisting, t, toasts]);
+  }, [importSelection, locale, replaceExisting, restorePassword, t, toasts]);
 
   const handleImportClick = useCallback(() => {
-    if (!importParsedData) return;
+    if (!importSelection) return;
     if (replaceExisting) {
       confirmDialog.open();
       return;
     }
     void doImport();
-  }, [confirmDialog, doImport, importParsedData, replaceExisting]);
+  }, [confirmDialog, doImport, importSelection, replaceExisting]);
 
   return (
     <section className="dashboard-page max-w-[960px]">
       <DashboardPageHeader description={t('dashboard.pages.backupRestore')} title={t('dashboard.nav.backupRestore')} />
 
       <Panel className={PANEL_STACK_CLASS}>
-        <SectionHeader description={t('dashboard.backupRestore.export.description')} level={2} title={t('dashboard.backupRestore.export.heading')} />
+        <SectionHeader
+          description={t(personal ? 'dashboard.backupRestore.export.personalDescription' : 'dashboard.backupRestore.export.description')}
+          level={2}
+          title={t('dashboard.backupRestore.export.heading')}
+        />
+
+        {personal && <Field
+          hint={t('dashboard.backupRestore.export.passwordHint')}
+          label={t('dashboard.backupRestore.export.password')}
+        >
+          <Input
+            autoComplete="new-password"
+            maxLength={1024}
+            onChange={(_, data) => setBackupPassword(data.value)}
+            type="password"
+            value={backupPassword}
+          />
+        </Field>}
 
         {/* A check box rather than a switch, because nothing is exported until
             the command below is pressed: "Use a checkbox when the user has to
@@ -221,19 +281,33 @@ export default function DashboardAdminBackupRestore() {
         )}
 
         <div className="pt-1">
-          <Button
-            appearance="primary"
-            disabledFocusable={exporting}
-            icon={exporting ? <Spinner size="tiny" /> : <ArrowDownloadRegular />}
-            onClick={() => void handleExport()}
-          >
-            {t('dashboard.backupRestore.export.button')}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              appearance="primary"
+              disabled={personal && backupPassword.length === 0}
+              disabledFocusable={exporting}
+              icon={exporting ? <Spinner size="tiny" /> : <ArrowDownloadRegular />}
+              onClick={() => void handleExport(personal ? 'full' : 'legacy')}
+            >
+              {t(personal ? 'dashboard.backupRestore.export.fullButton' : 'dashboard.backupRestore.export.button')}
+            </Button>
+            {personal && <Button
+              disabledFocusable={exporting}
+              icon={<ArrowDownloadRegular />}
+              onClick={() => void handleExport('safe')}
+            >
+              {t('dashboard.backupRestore.export.safeButton')}
+            </Button>}
+          </div>
         </div>
       </Panel>
 
       <Panel className={PANEL_STACK_CLASS}>
-        <SectionHeader description={t('dashboard.backupRestore.import.description')} level={2} title={t('dashboard.backupRestore.import.heading')} />
+        <SectionHeader
+          description={t(personal ? 'dashboard.backupRestore.import.personalDescription' : 'dashboard.backupRestore.import.description')}
+          level={2}
+          title={t('dashboard.backupRestore.import.heading')}
+        />
 
         <input
           ref={fileInputRef}
@@ -243,7 +317,7 @@ export default function DashboardAdminBackupRestore() {
           onChange={handleFileSelect}
         />
 
-        {importParsedData && importFile
+        {importSelection && importFile
           ? <BackupFileSummary
               accepting={dragOver}
               action={<Button disabled={importing} onClick={handleChangeFile}>
@@ -265,13 +339,29 @@ export default function DashboardAdminBackupRestore() {
                 : t('dashboard.backupRestore.import.dropzone')}
             />}
 
-        {importParsedData && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
+        {importSelection?.kind === 'legacy' && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
           key,
           label: t(`dashboard.backupRestore.import.previewLabel.${key}`),
-          value: formatCount(countRecords(importParsedData.data)[key], locale),
+          value: formatCount(countRecords(importSelection.payload.data)[key], locale),
         }))} />}
 
-        {importParsedData && <Field hint={t('dashboard.backupRestore.import.replaceHint')}>
+        {importSelection?.kind === 'encrypted' && <Field
+          hint={t('dashboard.backupRestore.import.passwordHint')}
+          label={t('dashboard.backupRestore.import.password')}
+        >
+          <Input
+            autoComplete="current-password"
+            disabled={importing}
+            maxLength={1024}
+            onChange={(_, data) => setRestorePassword(data.value)}
+            type="password"
+            value={restorePassword}
+          />
+        </Field>}
+
+        {importSelection && <Field hint={t(personal
+          ? 'dashboard.backupRestore.import.replaceHintPersonal'
+          : 'dashboard.backupRestore.import.replaceHint')}>
           <Checkbox
             checked={replaceExisting}
             disabled={importing}
@@ -280,9 +370,11 @@ export default function DashboardAdminBackupRestore() {
           />
         </Field>}
 
-        {importParsedData && replaceExisting && (
+        {importSelection && replaceExisting && (
           <OutcomeMessageBar intent="warning">
-            {t('dashboard.backupRestore.import.replaceWarning')}
+            {t(personal
+              ? 'dashboard.backupRestore.import.replaceWarningPersonal'
+              : 'dashboard.backupRestore.import.replaceWarning')}
           </OutcomeMessageBar>
         )}
 
@@ -298,7 +390,7 @@ export default function DashboardAdminBackupRestore() {
         <div className="pt-1">
           <Button
             appearance="primary"
-            disabled={!importParsedData}
+            disabled={!importSelection || (importSelection.kind === 'encrypted' && restorePassword.length === 0)}
             disabledFocusable={importing}
             icon={importing ? <Spinner size="tiny" /> : <ArrowUploadRegular />}
             onClick={handleImportClick}
@@ -314,7 +406,7 @@ export default function DashboardAdminBackupRestore() {
         actionIntent="primary"
         busy={importing}
         key={confirmDialog.invocation.key}
-        message={t('dashboard.backupRestore.confirmMessage')}
+        message={t(personal ? 'dashboard.backupRestore.confirmMessagePersonal' : 'dashboard.backupRestore.confirmMessage')}
         onConfirm={() => {
           confirmDialog.close();
           void doImport();

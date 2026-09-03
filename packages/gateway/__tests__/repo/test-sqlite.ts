@@ -181,6 +181,18 @@ class SqlJsSqlDatabase implements SqlDatabase {
     return new SqlJsPreparedStatement(this.db, query);
   }
 
+  async transaction<T>(operation: () => Promise<T>): Promise<T> {
+    this.db.run('BEGIN IMMEDIATE');
+    try {
+      const result = await operation();
+      this.db.run('COMMIT');
+      return result;
+    } catch (cause) {
+      try { this.db.run('ROLLBACK'); } catch { /* preserve the original cause */ }
+      throw cause;
+    }
+  }
+
   exec(sql: string): Promise<unknown> {
     this.db.exec(sql);
     return Promise.resolve(undefined);

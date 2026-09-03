@@ -701,13 +701,32 @@ export const updateAliasBody = aliasBodyCore.superRefine(aliasBodyRulesRefinemen
 // --- data transfer ---
 
 export const importBody = z.object({
-  version: z.literal(20, { error: 'version must be 20 — older export formats are not supported; re-export from the current deployment' }),
+  version: z.literal(20, { error: 'version must be 20 — older export formats are not supported; re-export from the current deployment' }).optional(),
   mode: z.enum(['merge', 'replace'], { error: "mode must be 'merge' or 'replace'" }),
   data: z.unknown().optional(),
+  archive: z.unknown().optional(),
+  password: passwordSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.archive !== undefined) {
+    if (value.password === undefined) ctx.addIssue({ code: 'custom', message: 'password is required for an encrypted backup' });
+    if (value.data !== undefined || value.version !== undefined) {
+      ctx.addIssue({ code: 'custom', message: 'archive imports must not include plaintext data or a plaintext version' });
+    }
+    return;
+  }
+  if (value.version !== 20) {
+    ctx.addIssue({ code: 'custom', message: 'version must be 20 — older export formats are not supported; re-export from the current deployment' });
+  }
 });
 
 export const exportQuery = z.object({
   include_performance: z.string().optional(),
+  kind: z.literal('safe').optional(),
+});
+
+export const fullBackupBody = z.object({
+  password: passwordSchema,
+  includePerformance: z.boolean().optional(),
 });
 
 // --- query strings (token-usage, search-usage, performance) ---

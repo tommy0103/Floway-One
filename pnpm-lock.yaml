@@ -375,6 +375,9 @@ importers:
       '@hono/zod-validator':
         specifier: ^0.8.0
         version: 0.8.0(hono@4.12.22)(zod@4.4.3)
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       es-toolkit:
         specifier: ^1.49.0
         version: 1.49.0

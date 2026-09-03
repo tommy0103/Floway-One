@@ -1657,6 +1657,7 @@ class SqlAgentSetupRepo implements AgentSetupRepository {
 }
 
 export class SqlRepo implements Repo {
+  transaction?: <T>(operation: () => Promise<T>) => Promise<T>;
   users: UsersRepo;
   sessions: SessionsRepo;
   apiKeys: ApiKeyRepo;
@@ -1694,5 +1695,6 @@ export class SqlRepo implements Repo {
     this.expirationSweeps = new SqlExpirationSweepsRepo(db);
     this.scheduledMaintenance = new SqlScheduledMaintenanceRepo(db);
     this.agentSetup = new SqlAgentSetupRepo(db);
+    if (db.transaction) this.transaction = operation => db.transaction!(operation);
   }
 }

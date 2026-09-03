@@ -1482,6 +1482,13 @@ export class InMemoryRepo implements Repo {
   scheduledMaintenance: ScheduledMaintenanceRepo;
   agentSetup: AgentSetupRepository;
 
+  // Production personal restore uses the SQLite transaction boundary. Tests
+  // that do not inject persistence failures use this synchronous in-memory
+  // stand-in so they exercise the same public route contract.
+  transaction<T>(operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
+
   constructor() {
     this.users = new MemoryUsersRepo();
     this.sessions = new MemorySessionsRepo();

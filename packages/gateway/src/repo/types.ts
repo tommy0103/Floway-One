@@ -545,6 +545,7 @@ export interface ScheduledMaintenanceRepo {
 export type { AgentSetupMutation, AgentSetupRecord, AgentSetupRenewal, AgentSetupRepository } from '@floway-dev/agent-setup';
 
 export interface Repo {
+  transaction?<T>(operation: () => Promise<T>): Promise<T>;
   apiKeys: ApiKeyRepo;
   users: UsersRepo;
   sessions: SessionsRepo;
