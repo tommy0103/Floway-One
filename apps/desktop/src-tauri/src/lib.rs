@@ -190,7 +190,6 @@ clearTimeout(watchdog);
             .spawn()?;
         println!("Floway package verification sidecar pid {}", child.pid());
         app.manage(Mutex::new(child));
-        let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
             let mut command_error = None;
             while let Some(event) = events.recv().await {
@@ -211,7 +210,7 @@ clearTimeout(watchdog);
                     CommandEvent::Terminated(payload) => {
                         if payload.code == Some(0) && command_error.is_none() {
                             println!("Floway package verification succeeded");
-                            handle.exit(0);
+                            std::process::exit(0);
                         } else {
                             if let Some(error) = command_error {
                                 eprintln!("Floway package verification sidecar error: {error}");
@@ -220,15 +219,14 @@ clearTimeout(watchdog);
                                 "Floway package verification sidecar exited with code {:?} signal {:?}",
                                 payload.code, payload.signal
                             );
-                            handle.exit(1);
+                            std::process::exit(1);
                         }
-                        return;
                     }
                     _ => {}
                 }
             }
             eprintln!("Floway package verification sidecar event stream ended before exit");
-            handle.exit(1);
+            std::process::exit(1);
         });
         Ok(())
     }
