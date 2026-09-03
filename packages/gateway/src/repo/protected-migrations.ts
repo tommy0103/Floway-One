@@ -38,6 +38,7 @@ const LEGACY_SEARCH_SECRET_COLUMNS = {
 const identityTransform = (plaintext: string): string => plaintext;
 const PERSONAL_OMIT_BEGIN = '-- floway-personal-omit-begin';
 const PERSONAL_OMIT_END = '-- floway-personal-omit-end';
+const canonicalMigrationSource = (source: string): string => source.replaceAll('\r\n', '\n');
 
 // The checked migration file owns the complete server schema and remains
 // directly executable by D1. Personal mode compiles the same source while
@@ -47,7 +48,7 @@ const compileProtectedStructuralSql = (source: string, runtime: 'personal' | 'se
   const output: string[] = [];
   let omitting = false;
   let blocks = 0;
-  for (const line of source.split('\n')) {
+  for (const line of canonicalMigrationSource(source).split('\n')) {
     const marker = line.trim();
     if (marker === PERSONAL_OMIT_BEGIN) {
       if (omitting) throw new Error('Nested personal-omit blocks in protected migration content');
@@ -149,7 +150,7 @@ export const planProtectedMigration = async (
     throw new Error(`Missing checked-in protected migration plan for ${file}`);
   }
   if (plan !== null) {
-    const sourceSha256 = await sha256Hex(new TextEncoder().encode(sql));
+    const sourceSha256 = await sha256Hex(new TextEncoder().encode(canonicalMigrationSource(sql)));
     if (sourceSha256 !== plan.sourceSha256) {
       throw new Error(`Protected migration ${file} does not match its checked content`);
     }

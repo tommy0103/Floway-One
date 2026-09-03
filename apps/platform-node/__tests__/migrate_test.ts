@@ -170,6 +170,11 @@ test('server 0084 uses the same schema as personal without personal cleanup stat
       .bind('0083_canonical_protocol_names.sql')
       .run();
   }
+  const serverMigrationPath = join(server.migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION);
+  await writeFile(
+    serverMigrationPath,
+    (await readFile(serverMigrationPath, 'utf8')).replaceAll('\n', '\r\n'),
+  );
   await server.db.exec('PRAGMA secure_delete = OFF');
 
   await applyMigrations(server.db, server.migrationDir);
