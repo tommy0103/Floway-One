@@ -130,9 +130,6 @@ await import('@floway-dev/gateway');
 await import('./entry.js');
 clearTimeout(watchdog);
 "#;
-    // Keyring's loader exclusively tries this override when it is present.
-    // https://github.com/Brooooooklyn/keyring-node/blob/f3449416a1b4bf11b0570f0a49395aacc84c8608/index.js#L63-L70
-    const KEYRING_NATIVE_LIBRARY_OVERRIDE: &str = "NAPI_RS_NATIVE_LIBRARY_PATH";
 
     #[derive(Debug)]
     struct StartupAuthorityError {
@@ -175,21 +172,13 @@ clearTimeout(watchdog);
     fn start_package_verification(
         app: &mut tauri::App,
         runtime: super::RuntimeBundle,
-        keyring_fault: bool,
     ) -> Result<(), Box<dyn Error>> {
-        let platform_node = runtime.root.join("apps/platform-node");
-        let mut command = app
+        let (mut events, child) = app
             .shell()
             .sidecar(NODE_SIDECAR_NAME)?
             .args(["--input-type=module", "--eval", PACKAGE_VERIFICATION_SCRIPT])
-            .current_dir(&platform_node);
-        if keyring_fault {
-            command = command.env(
-                KEYRING_NATIVE_LIBRARY_OVERRIDE,
-                platform_node.join("missing-keyring.node"),
-            );
-        }
-        let (mut events, child) = command.spawn()?;
+            .current_dir(runtime.root.join("apps/platform-node"))
+            .spawn()?;
         println!("Floway package verification sidecar pid {}", child.pid());
         app.manage(Mutex::new(child));
         let handle = app.handle().clone();
@@ -237,15 +226,13 @@ clearTimeout(watchdog);
 
     fn try_run() -> Result<(), Box<dyn Error>> {
         let package_verification = std::env::args().any(|argument| argument == "--verify-package");
-        let keyring_fault = package_verification
-            && std::env::args().any(|argument| argument == "--verify-broken-keyring");
         tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
             .setup(move |app| {
                 let resource_dir = app.path().resource_dir()?;
                 let runtime = resolve_runtime_bundle(&resource_dir)?;
                 if package_verification {
-                    return start_package_verification(app, runtime, keyring_fault);
+                    return start_package_verification(app, runtime);
                 }
                 let admin_key = ephemeral_admin_key()?;
                 let (mut events, child) = app
