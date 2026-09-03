@@ -162,12 +162,12 @@ test('personal profile reports a lost OS-held key for existing upstream or web s
   await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway One device master key is missing from the operating system credential store',
+    'Floway device master key is missing from the operating system credential store',
   );
   await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false, true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway One device master key is missing from the operating system credential store',
+    'Floway device master key is missing from the operating system credential store',
   );
 });
 
@@ -186,12 +186,12 @@ test('personal startup rejects a successful Linux keyutils fallback mutation wit
   const error = await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential),
     Error,
-    'Failed to save the Floway One device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the operating system credential store',
   );
   assertEquals(fallbackMutationSucceeded, true);
   assertEquals(
     (error.cause as Error).message,
-    'Failed to verify the Floway One device master key in Linux Secret Service',
+    'Failed to verify the Floway device master key in Linux Secret Service',
   );
 });
 

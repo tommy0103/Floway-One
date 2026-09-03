@@ -494,7 +494,7 @@ const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
       undefined,
       {},
       [
-        'Floway One could not resolve the Windows Roaming AppData Known Folder',
+        'Floway could not resolve the Windows Roaming AppData Known Folder',
         WINDOWS_MISSING_KNOWN_FOLDER_HRESULT,
       ],
       packagedDefaultPersonalEntry,
@@ -530,14 +530,14 @@ const withUnavailablePackagedKeyring = async (
 };
 
 const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
-  const outer = 'Failed to read the Floway One device master key from the operating system credential store';
+  const outer = 'Failed to read the Floway device master key from the operating system credential store';
   const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'unavailable-credential-store') });
   if (process.platform === 'linux') {
     await assertPersonalStartupFailure(
       'unavailable-linux-secret-service',
       personalPaths,
       { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus' },
-      [outer, 'Linux Secret Service is unavailable for the Floway One device master key'],
+      [outer, 'Linux Secret Service is unavailable for the Floway device master key'],
     );
     return;
   }
@@ -901,7 +901,7 @@ await runNodeEntry({
           hardeningFailurePaths,
           {},
           [
-            `Floway One could not enforce current-user-only access on directory ${hardeningFailurePaths.filesDir}`,
+            `Floway could not enforce current-user-only access on directory ${hardeningFailurePaths.filesDir}`,
             'EEXIST',
           ],
         );

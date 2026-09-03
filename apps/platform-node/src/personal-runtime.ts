@@ -126,7 +126,7 @@ const resolveWindowsPersonalDataDir = (knownFolders: WindowsKnownFolderBoundary)
       throw new Error(`Windows returned a non-absolute Roaming AppData Known Folder: ${result.path ?? ''}`);
     }
   } catch (cause) {
-    throw new Error('Floway One could not resolve the Windows Roaming AppData Known Folder', { cause });
+    throw new Error('Floway could not resolve the Windows Roaming AppData Known Folder', { cause });
   }
 
   // FOLDERID_RoamingAppData is the redirectable per-user application-data root.
@@ -152,7 +152,7 @@ const resolvePersonalRuntimeRoots = (
   }
 
   const userHome = options.stableUserHome ?? stableUserHome();
-  if (!posix.isAbsolute(userHome)) throw new Error('Floway One requires an absolute operating-system user home directory');
+  if (!posix.isAbsolute(userHome)) throw new Error('Floway requires an absolute operating-system user home directory');
   const normalizedHome = posix.normalize(userHome);
   if (platform === 'darwin') {
     // Application Support is the macOS location for app-created support files.
@@ -185,7 +185,7 @@ export const resolvePersonalRuntimePaths = (
   const path = platform === 'win32' ? win32 : posix;
   const roots = resolvePersonalRuntimeRoots(options);
   const dataDir = options.dataDir === undefined ? roots.dataDir : path.normalize(options.dataDir);
-  if (!path.isAbsolute(dataDir)) throw new Error(`Floway One application data directory must be absolute: ${dataDir}`);
+  if (!path.isAbsolute(dataDir)) throw new Error(`Floway application data directory must be absolute: ${dataDir}`);
 
   return Object.freeze({
     dataDir,

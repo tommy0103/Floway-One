@@ -66,7 +66,7 @@ test('Windows Known Folder lookup failures preserve the operating-system cause',
   }
 
   assert(error instanceof Error);
-  assertEquals(error.message, 'Floway One could not resolve the Windows Roaming AppData Known Folder');
+  assertEquals(error.message, 'Floway could not resolve the Windows Roaming AppData Known Folder');
   assertEquals(observedHresult, unavailable.hresult);
   assert(error.cause === unavailable);
 });

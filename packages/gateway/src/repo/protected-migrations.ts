@@ -4,7 +4,7 @@ import {
   type StoredSecretSqlLocation,
   WEB_SEARCH_STORED_SECRET_FIELDS,
 } from './stored-secret-fields.ts';
-import type { SqlDatabase } from '@floway-dev/platform';
+import { sha256Hex, type SqlDatabase } from '@floway-dev/platform';
 
 export const PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION = '0084_protected_search_secret_columns.sql';
 export const LEGACY_PLAINTEXT_SCHEMA_MIGRATION = '0083_canonical_protocol_names.sql';
@@ -25,7 +25,8 @@ export interface ProtectedMigrationPlan {
   readonly name: string;
   readonly fields: readonly ProtectedMigrationFieldPlan[];
   readonly inputMode: 'ciphertext' | 'legacy-plaintext';
-  readonly persistentSql: string;
+  readonly sourceSha256: string;
+  structuralSql(source: string, runtime: 'personal' | 'server'): string;
 }
 
 const LEGACY_SEARCH_SECRET_COLUMNS = {
@@ -35,32 +36,42 @@ const LEGACY_SEARCH_SECRET_COLUMNS = {
 } as const;
 
 const identityTransform = (plaintext: string): string => plaintext;
+const PERSONAL_OMIT_BEGIN = '-- floway-personal-omit-begin';
+const PERSONAL_OMIT_END = '-- floway-personal-omit-end';
 
-const PERSONAL_PROTECTED_SEARCH_REBUILD_SQL = `
-CREATE TABLE search_config_protected (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  provider TEXT NOT NULL,
-  protected_tavily_api_key TEXT NOT NULL DEFAULT '',
-  protected_microsoft_web_iq_api_key TEXT NOT NULL DEFAULT '',
-  protected_jina_api_key TEXT NOT NULL DEFAULT '',
-  passthrough_openai_search INTEGER NOT NULL DEFAULT 0 CHECK (passthrough_openai_search IN (0, 1)),
-  alpha_search_upstream_id TEXT NOT NULL DEFAULT '',
-  alpha_search_model TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL
-);
-INSERT INTO search_config_protected
-  (id, provider, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
-SELECT id, provider, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at
-FROM search_config;
-DROP TABLE search_config;
-ALTER TABLE search_config_protected RENAME TO search_config;
-`;
+// The checked migration file owns the complete server schema and remains
+// directly executable by D1. Personal mode compiles the same source while
+// omitting only the marked plaintext-copy expressions, then restores sealed
+// values through the field plan. The source digest rejects drift before SQL.
+const compileProtectedStructuralSql = (source: string, runtime: 'personal' | 'server'): string => {
+  const output: string[] = [];
+  let omitting = false;
+  let blocks = 0;
+  for (const line of source.split('\n')) {
+    const marker = line.trim();
+    if (marker === PERSONAL_OMIT_BEGIN) {
+      if (omitting) throw new Error('Nested personal-omit blocks in protected migration content');
+      omitting = true;
+      blocks++;
+      continue;
+    }
+    if (marker === PERSONAL_OMIT_END) {
+      if (!omitting) throw new Error('Unmatched personal-omit end marker in protected migration content');
+      omitting = false;
+      continue;
+    }
+    if (!omitting || runtime === 'server') output.push(line);
+  }
+  if (omitting || blocks !== 2) throw new Error('Protected migration content must contain two complete personal-omit blocks');
+  return output.join('\n');
+};
 
 export const PROTECTED_MIGRATION_PLANS: readonly ProtectedMigrationPlan[] = Object.freeze([
   Object.freeze({
     name: PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
     inputMode: 'legacy-plaintext',
-    persistentSql: PERSONAL_PROTECTED_SEARCH_REBUILD_SQL,
+    sourceSha256: 'bf86256c15bf76f24d6c059a7bca16b61690254b00e732fc494cee091f15e193',
+    structuralSql: compileProtectedStructuralSql,
     fields: Object.freeze(PROTECTED_STORED_SECRET_FIELDS.map(field => Object.freeze({
       field,
       before: WEB_SEARCH_STORED_SECRET_FIELDS.includes(field as (typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number])
@@ -96,6 +107,8 @@ const checkedPlans = (): ReadonlyMap<string, ProtectedMigrationPlan> => {
 
 const migrationPlans = checkedPlans();
 
+export const hasProtectedMigrationPlan = (file: string): boolean => migrationPlans.has(file);
+
 export const protectedStorageLayout = (
   appliedMigrations: ReadonlySet<string>,
 ): readonly ProtectedStorageFieldLocation[] => {
@@ -125,17 +138,21 @@ const touchesProtectedStorage = (
 ): boolean => layout.some(({ location }) => [location.table, location.column].some(identifier =>
   new RegExp(`\\b${escapedIdentifierPattern(identifier)}\\b`, 'iu').test(sql)));
 
-export const planProtectedMigration = (
+export const planProtectedMigration = async (
   file: string,
   sql: string,
   appliedMigrations: ReadonlySet<string>,
-): ProtectedMigrationPlan | null => {
+): Promise<ProtectedMigrationPlan | null> => {
   const layout = protectedStorageLayout(appliedMigrations);
   const plan = migrationPlans.get(file) ?? null;
   if (plan === null && touchesProtectedStorage(sql, layout)) {
     throw new Error(`Missing checked-in protected migration plan for ${file}`);
   }
   if (plan !== null) {
+    const sourceSha256 = await sha256Hex(new TextEncoder().encode(sql));
+    if (sourceSha256 !== plan.sourceSha256) {
+      throw new Error(`Protected migration ${file} does not match its checked content`);
+    }
     for (const transition of plan.fields) {
       const current = layout.find(entry => entry.field === transition.field)?.location;
       if (current === undefined
@@ -155,7 +172,7 @@ export const databaseHasProtectedValues = async (db: SqlDatabase): Promise<boole
   try {
     layout = protectedStorageLayout(new Set(applied.results.map(row => row.name)));
   } catch (cause) {
-    throw new Error('Floway One could not resolve its protected migration history', { cause });
+    throw new Error('Floway could not resolve its protected migration history', { cause });
   }
   for (const { field, location } of layout) {
     const nonEmpty = field.plaintextEmpty ? ` AND ${location.column} <> ''` : '';
@@ -166,7 +183,7 @@ export const databaseHasProtectedValues = async (db: SqlDatabase): Promise<boole
       if (row !== null) return true;
     } catch (cause) {
       throw new Error(
-        `Floway One could not inspect protected field ${field.id} at ${location.table}.${location.column}`,
+        `Floway could not inspect protected field ${field.id} at ${location.table}.${location.column}`,
         { cause },
       );
     }
@@ -185,7 +202,7 @@ export const inspectProtectedStorage = async (db: SqlDatabase): Promise<Protecte
   if (!names.has(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)) {
     if (!names.has(LEGACY_PLAINTEXT_SCHEMA_MIGRATION)) {
       throw new Error(
-        `Floway One cannot adopt protected storage before ${LEGACY_PLAINTEXT_SCHEMA_MIGRATION}`,
+        `Floway cannot adopt protected storage before ${LEGACY_PLAINTEXT_SCHEMA_MIGRATION}`,
       );
     }
     return { hasProtectedValues: true, inputMode: 'legacy-plaintext' };

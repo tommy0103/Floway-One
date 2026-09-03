@@ -71,7 +71,7 @@ test('personal storage preserves the original hardening failure as its cause', (
   const error = await assertRejects(
     async () => new PersonalStorageHardener(paths).initialize(),
     Error,
-    `Floway One could not enforce current-user-only access on directory ${paths.filesDir}`,
+    `Floway could not enforce current-user-only access on directory ${paths.filesDir}`,
   );
   assert(error.cause instanceof Error);
   assertEquals((error.cause as NodeJS.ErrnoException).code, 'EEXIST');

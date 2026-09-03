@@ -158,6 +158,67 @@ const assertPlaintextAbsentFromSqliteFiles = async (databasePath: string, sentin
   }
 };
 
+test('server 0084 uses the same schema as personal without personal cleanup state', () => withTemp(async dir => {
+  const serverDir = join(dir, 'server');
+  const personalDir = join(dir, 'personal');
+  await Promise.all([mkdir(serverDir), mkdir(personalDir)]);
+  const server = await prepareProtectedMigration(serverDir, 'DELETE', 'server-transition');
+  const personal = await prepareProtectedMigration(personalDir, 'DELETE', 'personal-transition');
+  for (const setup of [server, personal]) {
+    await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
+    await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)')
+      .bind('0083_canonical_protocol_names.sql')
+      .run();
+  }
+  await server.db.exec('PRAGMA secure_delete = OFF');
+
+  await applyMigrations(server.db, server.migrationDir);
+  await applyMigrations(personal.db, personal.migrationDir, personal.codec);
+
+  assertEquals(
+    await server.db.prepare('PRAGMA table_info(search_config)').all(),
+    await personal.db.prepare('PRAGMA table_info(search_config)').all(),
+  );
+  assertEquals(
+    await server.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_protected_storage_cleanup'").first(),
+    null,
+  );
+  assertEquals(await server.db.prepare('PRAGMA secure_delete').first(), { secure_delete: 0 });
+  assertEquals(
+    await server.db.prepare('SELECT protected_tavily_api_key FROM search_config').first(),
+    { protected_tavily_api_key: 'server-transition-tavily' },
+  );
+}));
+
+test('server rejects changed content under the checked 0084 migration name', () => withTemp(async dir => {
+  const setup = await prepareProtectedMigration(dir, 'DELETE', 'marker-mismatch');
+  await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
+  await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)')
+    .bind('0083_canonical_protocol_names.sql')
+    .run();
+  await writeFile(
+    join(setup.migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION),
+    `${await readFile(join(setup.migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION), 'utf8')}\n-- changed content\n`,
+  );
+
+  const error = await assertRejects(
+    () => applyMigrations(setup.db, setup.migrationDir),
+    Error,
+    `Floway could not plan protected migration ${PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION}`,
+  );
+  assert(error.cause instanceof Error);
+  assertEquals(
+    error.cause.message,
+    `Protected migration ${PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION} does not match its checked content`,
+  );
+  assertEquals(
+    await setup.db.prepare('SELECT name FROM _migrations WHERE name = ?')
+      .bind(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)
+      .first(),
+    null,
+  );
+}));
+
 for (const journalMode of ['DELETE', 'WAL'] as const) {
   test(`personal ${journalMode} migration keeps opened values out of every SQLite file`, () => withTemp(async dir => {
     const sentinel = `raw-migration-sentinel-${journalMode.toLowerCase()}`;
@@ -228,7 +289,7 @@ test('personal migration rejects protected SQL without a checked-in plan and pre
   const error = await assertRejects(
     () => applyMigrations(setup.db, setup.migrationDir, setup.codec),
     Error,
-    `Floway One could not plan protected migration ${migrationName}`,
+    `Floway could not plan protected migration ${migrationName}`,
   );
   assert(error.cause instanceof Error);
   assertEquals((error.cause as Error).message, `Missing checked-in protected migration plan for ${migrationName}`);
@@ -327,7 +388,7 @@ test('reader-blocked final cleanup checkpoint keeps the gate until a clean resta
   await assertRejects(
     () => applyMigrations(database, setup.migrationDir, setup.codec),
     Error,
-    'Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation',
+    'Floway protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation',
   );
   assertEquals(
     await setup.db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first(),

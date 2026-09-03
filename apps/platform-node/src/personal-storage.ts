@@ -54,7 +54,7 @@ function Protect-FlowayPath([string] $Target, [bool] $IsDirectory) {
   $Rules = @($Verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
   $ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
   if (-not $Verified.AreAccessRulesProtected -or $Verified.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited) {
-    throw "Floway One failed to verify the owner-only ACL for $Target"
+    throw "Floway failed to verify the owner-only ACL for $Target"
   }
 }
 if ($Kind -eq 'tree') {
@@ -124,7 +124,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
       try {
         this.applyWindowsAcl(this.paths.dataDir, 'tree');
       } catch (cause) {
-        throw new Error(`Floway One could not enforce current-user-only access on directory ${this.paths.dataDir}`, { cause });
+        throw new Error(`Floway could not enforce current-user-only access on directory ${this.paths.dataDir}`, { cause });
       }
       for (const entry of entries) {
         this.hardenedWindowsPaths.set(entry.path, entry.identity);
@@ -146,7 +146,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
       mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
       this.applyPrivateAccess(path, 'directory');
     } catch (cause) {
-      throw new Error(`Floway One could not enforce current-user-only access on directory ${path}`, { cause });
+      throw new Error(`Floway could not enforce current-user-only access on directory ${path}`, { cause });
     }
   }
 
@@ -154,7 +154,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     try {
       this.applyPrivateAccess(path, 'file');
     } catch (cause) {
-      throw new Error(`Floway One could not enforce current-user-only access on file ${path}`, { cause });
+      throw new Error(`Floway could not enforce current-user-only access on file ${path}`, { cause });
     }
   }
 
@@ -179,7 +179,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     try {
       mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     } catch (cause) {
-      throw new Error(`Floway One could not enforce current-user-only access on directory ${path}`, { cause });
+      throw new Error(`Floway could not enforce current-user-only access on directory ${path}`, { cause });
     }
   }
 
@@ -187,7 +187,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     const entries: Array<{ identity: string; isDirectory: boolean; path: string }> = [];
     const visit = (path: string): void => {
       const metadata = lstatSync(path);
-      if (metadata.isSymbolicLink()) throw new Error(`Floway One personal storage cannot contain symbolic links: ${path}`);
+      if (metadata.isSymbolicLink()) throw new Error(`Floway personal storage cannot contain symbolic links: ${path}`);
       entries.push({ identity: this.fileIdentity(metadata), isDirectory: metadata.isDirectory(), path });
       if (metadata.isDirectory()) {
         for (const child of readdirSync(path)) visit(join(path, child));
@@ -201,7 +201,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       const child = join(path, entry.name);
       if (entry.isSymbolicLink()) {
-        throw new Error(`Floway One personal storage cannot contain symbolic links: ${child}`);
+        throw new Error(`Floway personal storage cannot contain symbolic links: ${child}`);
       }
       if (entry.isDirectory()) {
         this.ensureDirectory(child);
@@ -214,9 +214,9 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
 
   private applyPrivateAccess(path: string, kind: 'directory' | 'file'): void {
     const metadata = lstatSync(path);
-    if (metadata.isSymbolicLink()) throw new Error(`Floway One personal storage path is a symbolic link: ${path}`);
+    if (metadata.isSymbolicLink()) throw new Error(`Floway personal storage path is a symbolic link: ${path}`);
     if (kind === 'directory' ? !metadata.isDirectory() : !metadata.isFile()) {
-      throw new Error(`Floway One personal storage path is not a ${kind}: ${path}`);
+      throw new Error(`Floway personal storage path is not a ${kind}: ${path}`);
     }
     if (this.platform === 'win32') {
       const identity = this.fileIdentity(metadata);
@@ -231,7 +231,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     chmodSync(path, expectedMode);
     const verified = statSync(path);
     if (verified.uid !== this.posixUid || (verified.mode & 0o777) !== expectedMode) {
-      throw new Error(`Floway One could not verify current-user-only access on ${path}`);
+      throw new Error(`Floway could not verify current-user-only access on ${path}`);
     }
   }
 

@@ -36,7 +36,7 @@ const encodeLinuxSecret = (secret: Uint8Array): string => Buffer.from(secret).to
 const decodeLinuxSecret = (stored: string): Uint8Array => {
   const decoded = Buffer.from(stored, 'base64');
   if (decoded.toString('base64') !== stored) {
-    throw new Error('Floway One device master key in Linux Secret Service is not canonical base64');
+    throw new Error('Floway device master key in Linux Secret Service is not canonical base64');
   }
   return new Uint8Array(decoded);
 };
@@ -72,13 +72,13 @@ export const createOperatingSystemCredential = async (
     try {
       return resolvedBindings.findCredentials(service);
     } catch (cause) {
-      throw new Error('Linux Secret Service is unavailable for the Floway One device master key', { cause });
+      throw new Error('Linux Secret Service is unavailable for the Floway device master key', { cause });
     }
   };
   const readPassword = (): string | null => {
     const matches = listFromSecretService().filter(credential => credential.account === account);
     if (matches.length > 1) {
-      throw new Error('Linux Secret Service contains ambiguous Floway One device master key entries');
+      throw new Error('Linux Secret Service contains ambiguous Floway device master key entries');
     }
     return matches[0]?.password ?? null;
   };
@@ -94,13 +94,13 @@ export const createOperatingSystemCredential = async (
       const encoded = encodeLinuxSecret(secret);
       entry.setPassword(encoded);
       if (readPassword() !== encoded) {
-        throw new Error('Failed to verify the Floway One device master key in Linux Secret Service');
+        throw new Error('Failed to verify the Floway device master key in Linux Secret Service');
       }
     },
     deleteSecret: () => {
       const deleted = entry.deleteCredential();
       if (readPassword() !== null) {
-        throw new Error('Failed to delete the Floway One device master key from Linux Secret Service');
+        throw new Error('Failed to delete the Floway device master key from Linux Secret Service');
       }
       return deleted;
     },
@@ -110,7 +110,7 @@ export const createOperatingSystemCredential = async (
 const validateMasterKey = (stored: ArrayLike<number>): Uint8Array => {
   const bytes = Array.from(stored);
   if (bytes.length !== DEVICE_MASTER_KEY_BYTES || bytes.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
-    throw new Error(`Floway One device master key must contain exactly ${DEVICE_MASTER_KEY_BYTES} bytes`);
+    throw new Error(`Floway device master key must contain exactly ${DEVICE_MASTER_KEY_BYTES} bytes`);
   }
   return Uint8Array.from(bytes);
 };
@@ -127,28 +127,28 @@ export const loadDeviceMasterKey = async (
     resolvedCredential = credential ?? await createOperatingSystemCredential();
     stored = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw new Error('Failed to read the Floway One device master key from the operating system credential store', { cause });
+    throw new Error('Failed to read the Floway device master key from the operating system credential store', { cause });
   }
   if (stored !== null) return validateMasterKey(stored);
   if (!createIfMissing) {
-    throw new Error('Floway One device master key is missing from the operating system credential store');
+    throw new Error('Floway device master key is missing from the operating system credential store');
   }
 
   const generated = validateMasterKey(generate(DEVICE_MASTER_KEY_BYTES));
   try {
     await resolvedCredential.setSecret(generated);
   } catch (cause) {
-    throw new Error('Failed to save the Floway One device master key in the operating system credential store', { cause });
+    throw new Error('Failed to save the Floway device master key in the operating system credential store', { cause });
   }
 
   let authoritative: ArrayLike<number> | null;
   try {
     authoritative = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw new Error('Failed to read back the Floway One device master key from the operating system credential store', { cause });
+    throw new Error('Failed to read back the Floway device master key from the operating system credential store', { cause });
   }
   if (authoritative === null) {
-    throw new Error('Floway One device master key was not persisted by the operating system credential store');
+    throw new Error('Floway device master key was not persisted by the operating system credential store');
   }
   return validateMasterKey(authoritative);
 });

@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  hasProtectedMigrationPlan,
   planProtectedMigration,
-  PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
   type ProtectedMigrationFieldPlan,
   type ProtectedMigrationPlan,
 } from '@floway-dev/gateway';
@@ -43,14 +43,14 @@ const openMigrationValues = async (
       ).all<{ identity: string | number; value: string | null }>();
     } catch (cause) {
       throw new Error(
-        `Floway One migration ${file} could not read protected migration field ${transition.field.id} at ${table}.${column}`,
+        `Floway migration ${file} could not read protected migration field ${transition.field.id} at ${table}.${column}`,
         { cause },
       );
     }
     for (const row of rows.results) {
       if (row.value === null) {
         if (!transition.field.nullable) {
-          throw new Error(`Floway One migration ${file} found NULL in protected field ${transition.field.id}`);
+          throw new Error(`Floway migration ${file} found NULL in protected field ${transition.field.id}`);
         }
         continue;
       }
@@ -85,12 +85,12 @@ const sealAndRestoreProtectedValues = async (
       ).bind(ciphertext, value.identity).run();
       if (result.meta.changes !== 1) {
         throw new Error(
-          `Floway One migration ${file} could not uniquely restore protected field ${transition.field.id} for identity ${String(value.identity)}`,
+          `Floway migration ${file} could not uniquely restore protected field ${transition.field.id} for identity ${String(value.identity)}`,
         );
       }
     } catch (cause) {
       throw new Error(
-        `Floway One migration ${file} could not restore protected field ${transition.field.id} at ${table}.${column}`,
+        `Floway migration ${file} could not restore protected field ${transition.field.id} at ${table}.${column}`,
         { cause },
       );
     }
@@ -125,11 +125,11 @@ export const applyMigrations = async (
     }
     const sql = await readFile(join(dir, file), 'utf8');
     let plan: ProtectedMigrationPlan | null = null;
-    if (storedSecrets !== undefined) {
+    if (storedSecrets !== undefined || hasProtectedMigrationPlan(file)) {
       try {
-        plan = planProtectedMigration(file, sql, applied);
+        plan = await planProtectedMigration(file, sql, applied);
       } catch (cause) {
-        throw new Error(`Floway One could not plan protected migration ${file}`, { cause });
+        throw new Error(`Floway could not plan protected migration ${file}`, { cause });
       }
     }
 
@@ -144,7 +144,7 @@ export const applyMigrations = async (
         if (options.through === file) break;
         continue;
       }
-      const adoptThisMigration = plan?.inputMode === 'legacy-plaintext';
+      const adoptThisMigration = storedSecrets !== undefined && plan?.inputMode === 'legacy-plaintext';
       if (adoptThisMigration) {
         // secure_delete overwrites deleted content with zeros so the legacy
         // plaintext consumed by this checked migration plan cannot remain in
@@ -165,11 +165,11 @@ export const applyMigrations = async (
                   transition.field.contextFor(identity),
                 ),
           );
-      await db.exec(plan?.persistentSql ?? sql);
+      await db.exec(plan?.structuralSql(sql, storedSecrets === undefined ? 'server' : 'personal') ?? sql);
       if (plan !== null && storedSecrets !== undefined) {
         await sealAndRestoreProtectedValues(db, storedSecrets, file, opened);
       }
-      if (file === PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION) {
+      if (adoptThisMigration) {
         await db.exec('CREATE TABLE IF NOT EXISTS _protected_storage_cleanup (id INTEGER PRIMARY KEY CHECK (id = 1))');
         await db.exec('INSERT OR IGNORE INTO _protected_storage_cleanup (id) VALUES (1)');
       }
@@ -184,6 +184,7 @@ export const applyMigrations = async (
       throw error;
     }
   }
+  if (storedSecrets === undefined) return;
   const cleanupTable = await db.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_protected_storage_cleanup'",
   ).first<{ name: string }>();
@@ -196,7 +197,7 @@ export const applyMigrations = async (
     const checkpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
       .first<{ busy: number; checkpointed: number; log: number }>();
     if (checkpoint?.busy !== 0) {
-      throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented WAL truncation');
+      throw new Error('Floway protected-storage cleanup is pending because SQLite readers prevented WAL truncation');
     }
     // VACUUM rebuilds the database into a minimal file, removing free pages
     // that could retain the adopted plaintext after the secure-delete pass.
@@ -205,7 +206,7 @@ export const applyMigrations = async (
     const finalCheckpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
       .first<{ busy: number; checkpointed: number; log: number }>();
     if (finalCheckpoint?.busy !== 0) {
-      throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation');
+      throw new Error('Floway protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation');
     }
     await db.exec('DELETE FROM _protected_storage_cleanup WHERE id = 1');
   }

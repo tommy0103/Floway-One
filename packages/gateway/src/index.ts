@@ -18,6 +18,7 @@ export {
 } from './repo/stored-secret-fields.ts';
 export {
   databaseHasProtectedValues,
+  hasProtectedMigrationPlan,
   inspectProtectedStorage,
   planProtectedMigration,
   protectedStorageLayout,

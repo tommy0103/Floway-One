@@ -1,3 +1,4 @@
+-- floway-protected-migration-plan: protected-search-secret-columns-v1
 -- Rebuild search configuration so protected-value columns are named for
 -- their ciphertext-at-rest contract. Personal migration opens and reseals
 -- values in memory through the checked-in protected migration plan; this SQL
@@ -18,9 +19,11 @@ CREATE TABLE search_config_protected (
 INSERT INTO search_config_protected (
   id,
   provider,
+  -- floway-personal-omit-begin
   protected_tavily_api_key,
   protected_microsoft_web_iq_api_key,
   protected_jina_api_key,
+  -- floway-personal-omit-end
   passthrough_openai_search,
   alpha_search_upstream_id,
   alpha_search_model,
@@ -29,9 +32,11 @@ INSERT INTO search_config_protected (
 SELECT
   id,
   provider,
+  -- floway-personal-omit-begin
   tavily_api_key,
   microsoft_web_iq_api_key,
   jina_api_key,
+  -- floway-personal-omit-end
   passthrough_openai_search,
   alpha_search_upstream_id,
   alpha_search_model,

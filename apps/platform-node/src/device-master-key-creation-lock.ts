@@ -69,7 +69,7 @@ const runWithSqliteLock = async <T>(lockDatabasePath: string, operation: () => P
     database.exec('BEGIN IMMEDIATE');
   } catch (cause) {
     try { database?.close(); } catch { /* the acquisition error remains authoritative */ }
-    throw new Error('Failed to acquire the Floway One device master key creation lock', { cause });
+    throw new Error('Failed to acquire the Floway device master key creation lock', { cause });
   }
 
   let result: T | undefined;
@@ -80,7 +80,7 @@ const runWithSqliteLock = async <T>(lockDatabasePath: string, operation: () => P
     try {
       database.exec('COMMIT');
     } catch (cause) {
-      throw new Error('Failed to release the Floway One device master key creation lock', { cause });
+      throw new Error('Failed to release the Floway device master key creation lock', { cause });
     }
     transactionOpen = false;
   } catch (cause) {
@@ -92,12 +92,12 @@ const runWithSqliteLock = async <T>(lockDatabasePath: string, operation: () => P
     database.close();
   } catch (cause) {
     if (failure === undefined && cleanupFailure === undefined) {
-      throw new Error('Failed to close the Floway One device master key creation lock database', { cause });
+      throw new Error('Failed to close the Floway device master key creation lock database', { cause });
     }
   }
   if (failure !== undefined) throw failure;
   if (cleanupFailure !== undefined) {
-    throw new Error('Failed to release the Floway One device master key creation lock', { cause: cleanupFailure });
+    throw new Error('Failed to release the Floway device master key creation lock', { cause: cleanupFailure });
   }
   return result as T;
 };

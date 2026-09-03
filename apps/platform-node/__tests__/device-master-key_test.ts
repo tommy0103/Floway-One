@@ -41,12 +41,12 @@ test('device master key reports missing and malformed credential-store values wi
   await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway One device master key is missing from the operating system credential store',
+    'Floway device master key is missing from the operating system credential store',
   );
   const error = await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential([1, 2, 3])),
     Error,
-    'Floway One device master key must contain exactly 32 bytes',
+    'Floway device master key must contain exactly 32 bytes',
   );
   assertEquals(error.message.includes('1,2,3'), false);
 });
@@ -59,7 +59,7 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw new Error('unexpected write'); },
     }),
     Error,
-    'Failed to read the Floway One device master key from the operating system credential store',
+    'Failed to read the Floway device master key from the operating system credential store',
   );
   assert(readError.cause === readFailure);
 
@@ -70,7 +70,7 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw writeFailure; },
     }),
     Error,
-    'Failed to save the Floway One device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the operating system credential store',
   );
   assert(writeError.cause === writeFailure);
 });
@@ -88,7 +88,7 @@ test('Linux requires Secret Service and preserves its unavailable error as the o
       findCredentials: () => { throw unavailable; },
     }),
     Error,
-    'Linux Secret Service is unavailable for the Floway One device master key',
+    'Linux Secret Service is unavailable for the Floway device master key',
   );
   assert(credentialError.cause === unavailable);
 });
@@ -112,10 +112,10 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   const error = await assertRejects(
     () => loadDeviceMasterKey(creationLock, true, credential, () => new Uint8Array(32).fill(7)),
     Error,
-    'Failed to save the Floway One device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the operating system credential store',
   );
   assert(fallbackPassword !== null, 'the vendor fallback mutation must report success before rejection');
   assertEquals(secretServiceReads, 3);
   assert(error.cause instanceof Error);
-  assertEquals(error.cause.message, 'Failed to verify the Floway One device master key in Linux Secret Service');
+  assertEquals(error.cause.message, 'Failed to verify the Floway device master key in Linux Secret Service');
 });
