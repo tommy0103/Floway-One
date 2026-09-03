@@ -29,6 +29,12 @@ import {
   type SqlDatabase,
 } from '@floway-dev/platform';
 
+export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
+  const profile = value ?? 'server';
+  if (profile === 'personal' || profile === 'server') return profile;
+  throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profile)}`);
+};
+
 export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase } => {
   initEnv(name => process.env[name]);
   initRuntimeKind('node');

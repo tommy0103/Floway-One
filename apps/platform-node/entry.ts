@@ -25,12 +25,13 @@ setGlobalDispatcher(new Agent({
   },
 }));
 
-import { bootstrapNodePlatform } from './src/bootstrap.ts';
+import { bootstrapNodePlatform, resolveNodeRuntimeProfile } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import {
   app,
+  assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
@@ -49,7 +50,7 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const { db } = bootstrapNodePlatform('server');
+const { db } = bootstrapNodePlatform(resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE));
 const port = Number(getEnvOptional('PORT', '8788'));
 
 // Passwordless admin login is a dev-only shortcut (empty ADMIN_KEY on a
@@ -64,6 +65,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
 
 await applyMigrations(db);
 initRepo(new SqlRepo(db));
+await assertRuntimeProfileData();
 
 startScheduledMaintenance();
 

@@ -3,6 +3,7 @@ import { type AuthedContext, userFromContext, userUpstreamIdsFromContext } from 
 import { type CtxWithJson } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import type { ApiKey } from '../../repo/types.ts';
+import { personalApiKeyOwnerId } from '../../runtime/profile-policy.ts';
 import { CUSTOM_API_KEY_MAX_LENGTH, generateApiKeyToken, type KeySource } from '../../shared/api-key-tokens.ts';
 import { generateServerSecret } from '../../shared/server-secret.ts';
 import type { createKeyBody, rotateKeyBody, updateKeyBody } from '../schemas.ts';
@@ -127,7 +128,7 @@ export const listKeys = async (c: AuthedContext) => {
 };
 
 export const createKey = async (c: CtxWithJson<typeof createKeyBody>) => {
-  const userId = userFromContext(c).id;
+  const userId = personalApiKeyOwnerId(userFromContext(c).id);
   const body = c.req.valid('json');
 
   const knownUpstreamIds = await loadKnownUpstreamIds();

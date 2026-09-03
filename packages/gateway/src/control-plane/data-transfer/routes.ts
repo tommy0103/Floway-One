@@ -16,6 +16,7 @@ import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-valida
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
 import type { ApiKey, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
+import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type importBody } from '../schemas.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
@@ -136,6 +137,10 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   if (parsed.type === 'invalid') return c.json({ error: parsed.error }, 400);
   const { users, apiKeys, upstreams, proxies, usage, searchUsage, performance, performanceIncluded, searchConfig } = parsed.data;
 
+  const profileError = runtimeProfileDataError(users, apiKeys);
+  if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
+  const preservePersonalOwner = mode === 'replace' && isPersonalRuntimeProfile();
+
   const repo = getRepo();
   // Merge mode needs each key's prior dump policy to identify transitions that
   // must disconnect live subscribers after the replacement row is stored.
@@ -153,7 +158,9 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
 
     // D1 does not expose a transaction spanning these repositories. Complete
     // validation therefore happens before this delete wave; a storage failure
-    // after it begins can still leave a partially restored deployment.
+    // after it begins can still leave a partially restored deployment. A
+    // personal import keeps its only owner in place until the atomic user
+    // upsert below succeeds, so a failed write cannot leave it ownerless.
     const deletes: Promise<unknown>[] = [
       repo.sessions.deleteAll(),
       repo.apiKeys.deleteAll(),
@@ -164,14 +171,17 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
       repo.proxyBackoffs.deleteAll(),
       repo.openaiResponsesSnapshots.deleteAll(),
       repo.openaiResponsesItems.deleteAll(),
-      repo.users.deleteAll(),
     ];
+    if (!preservePersonalOwner) deletes.push(repo.users.deleteAll());
     if (performanceIncluded) deletes.push(repo.performance.deleteAll());
     await Promise.all(deletes);
   }
 
   // Users precede their API keys, and proxies precede upstream fallback refs.
-  for (const user of users) await repo.users.save(user);
+  for (const user of users) {
+    if (preservePersonalOwner) await repo.users.upsertForImport(user);
+    else await repo.users.save(user);
+  }
   for (const proxy of proxies) {
     await repo.proxies.save({
       id: proxy.id,
@@ -193,6 +203,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   await Promise.all(upstreams.map(upstream => warmModelsCache(upstream, c)));
   for (const record of performance) await repo.performance.set(record);
   await repo.webSearchConfig.save(searchConfig);
+  await assertRuntimeProfileData();
 
   return c.json({
     ok: true,

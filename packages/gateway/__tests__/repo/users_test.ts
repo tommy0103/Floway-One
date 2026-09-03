@@ -90,3 +90,36 @@ describe.each(backends)('UsersRepo (%s)', (_label, makeRepo) => {
     expect(await repo.users.findByUsername('alice')).toBeNull();
   });
 });
+
+test('SQL user writes share every field while applying mode-specific createdAt behavior', async () => {
+  const repo = await makeSqlRepo();
+  const original = sampleUser({ id: 2, username: 'original' });
+  await repo.users.save(original);
+
+  const saved = sampleUser({
+    id: original.id,
+    username: 'saved',
+    passwordHash: null,
+    isAdmin: true,
+    upstreamIds: ['up_saved'],
+    createdAt: '2026-07-01T00:00:00.000Z',
+    deletedAt: '2026-07-02T00:00:00.000Z',
+  });
+  await repo.users.save(saved);
+  expect((await repo.users.listIncludingDeleted()).find(user => user.id === original.id)).toEqual({
+    ...saved,
+    createdAt: original.createdAt,
+  });
+
+  const imported = sampleUser({
+    id: original.id,
+    username: 'imported',
+    passwordHash: 'imported-password-hash',
+    isAdmin: false,
+    upstreamIds: ['up_imported_a', 'up_imported_b'],
+    createdAt: '2025-01-01T00:00:00.000Z',
+    deletedAt: null,
+  });
+  await repo.users.upsertForImport(imported);
+  expect(await repo.users.getById(original.id)).toEqual(imported);
+});
