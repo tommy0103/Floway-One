@@ -124,5 +124,7 @@ test('malformed stored secret envelopes retain SyntaxError classification withou
   );
 
   assert(error.cause instanceof SyntaxError);
+  assert(error.cause.stack?.includes('at JSON.parse'));
+  assert(error.cause.stack?.includes('stored-secret-codec.ts'));
   assertEquals(`${error.stack}\n${error.cause.stack}`.includes(sentinel), false);
 });

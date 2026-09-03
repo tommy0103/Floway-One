@@ -21,7 +21,7 @@ import {
   SqlRepo,
   validateStoredSecrets,
 } from '@floway-dev/gateway';
-import { getEnvOptional } from '@floway-dev/platform';
+import { getEnvOptional, type RuntimeProfileMode } from '@floway-dev/platform';
 
 // Copilot data-plane hosts close their keep-alive socket right after each
 // response; reusing it surfaces as UND_ERR_SOCKET or
@@ -51,10 +51,29 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
+const startNodeListener = (profile: RuntimeProfileMode, port: number): void => {
+  const localApp = createLocalApp({
+    gatewayFetch: app.fetch,
+    staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
+  });
+  const personalHostname = profile === 'personal' ? '127.0.0.1' : undefined;
+  serve({
+    fetch: localApp.fetch,
+    ...(personalHostname === undefined ? {} : { hostname: personalHostname }),
+    port,
+    websocket: { server: new WebSocketServer({ noServer: true }) },
+  }, info => {
+    const displayedHostname = personalHostname === undefined ? 'localhost' : info.address;
+    console.log(`Floway listening on http://${displayedHostname}:${info.port}`);
+  });
+};
+
 export interface NodeEntryOverrides {
+  readonly assertRuntimeProfileData?: (repo: SqlRepo) => Promise<void>;
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
+  readonly startNodeListener?: typeof startNodeListener;
 }
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<void> => {
@@ -100,24 +119,11 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
   }
   if (personalPaths !== undefined) personalStorage?.hardenSqliteFiles(personalPaths.databasePath);
-  initRepo(new SqlRepo(db, { storedSecrets }));
-  await assertRuntimeProfileData();
+  const repo = new SqlRepo(db, { storedSecrets });
+  initRepo(repo);
+  if (overrides.assertRuntimeProfileData === undefined) await assertRuntimeProfileData();
+  else await overrides.assertRuntimeProfileData(repo);
 
   startScheduledMaintenance();
-
-  const localApp = createLocalApp({
-    gatewayFetch: app.fetch,
-    staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
-  });
-
-  const personalHostname = profile === 'personal' ? '127.0.0.1' : undefined;
-  serve({
-    fetch: localApp.fetch,
-    ...(personalHostname === undefined ? {} : { hostname: personalHostname }),
-    port,
-    websocket: { server: new WebSocketServer({ noServer: true }) },
-  }, info => {
-    const displayedHostname = personalHostname === undefined ? 'localhost' : info.address;
-    console.log(`Floway listening on http://${displayedHostname}:${info.port}`);
-  });
+  (overrides.startNodeListener ?? startNodeListener)(profile, port);
 };
