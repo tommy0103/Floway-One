@@ -4,7 +4,7 @@ import { serve, upgradeWebSocket } from '@hono/node-server';
 import { Agent, Pool, setGlobalDispatcher } from 'undici';
 import { WebSocketServer } from 'ws';
 
-import { bootstrapNodePlatform } from './bootstrap.ts';
+import { bootstrapNodePlatform, resolveNodeRuntimeProfile } from './bootstrap.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { resolvePersonalRuntimePaths } from './personal-runtime.ts';
@@ -14,6 +14,7 @@ import { createNodeStoredSecretCodec } from './stored-secrets.ts';
 import {
   LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
   app,
+  assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
@@ -52,11 +53,15 @@ initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
 
 export interface NodeEntryOverrides {
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
+  readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
 }
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<void> => {
-  const profile = selectNodeRuntimeProfile(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  const profile = args.length === 0
+    ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
+    : selectNodeRuntimeProfile(args);
   const personalPaths = profile === 'personal'
     ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
     : undefined;
@@ -77,10 +82,11 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const hasExistingMigrationState = profile === 'personal'
     && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'")
       .first<{ name: string }>() !== null;
+  const createStoredSecrets = overrides.createNodeStoredSecretCodec ?? createNodeStoredSecretCodec;
   let storedSecrets;
   if (hasExistingMigrationState) {
     await applyMigrations(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
-    storedSecrets = await createNodeStoredSecretCodec(
+    storedSecrets = await createStoredSecrets(
       'personal',
       db,
       deviceMasterKeyCreationLock,
@@ -91,10 +97,11 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     await validateStoredSecrets(db, storedSecrets);
   } else {
     await applyMigrations(db);
-    storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
+    storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
   }
   if (personalPaths !== undefined) personalStorage?.hardenSqliteFiles(personalPaths.databasePath);
   initRepo(new SqlRepo(db, { storedSecrets }));
+  await assertRuntimeProfileData();
 
   startScheduledMaintenance();
 

@@ -9,12 +9,15 @@ import { test } from 'vitest';
 import { applyMigrations } from '../src/migrate.ts';
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import {
+  assertRuntimeProfileData,
+  initRepo,
   PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
+  SqlRepo,
   upstreamConfigSecretContext,
   WEB_SEARCH_STORED_SECRET_FIELDS,
 } from '@floway-dev/gateway';
 import { migrationsDir } from '@floway-dev/gateway/migrations-dir';
-import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretCodec } from '@floway-dev/platform';
+import { createAes256GcmStoredSecretCodec, initRuntimeProfile, type SqlDatabase, type StoredSecretCodec } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const withTemp = async (fn: (dir: string) => Promise<void>): Promise<void> => {
@@ -40,6 +43,25 @@ test('applies all real migration files against a fresh sqlite', () => withTemp(a
   // Every migration was recorded.
   const recorded = await db.prepare('SELECT COUNT(*) AS n FROM _migrations').first<{ n: number }>();
   assertEquals(recorded !== null && recorded.n > 0, true);
+}));
+
+test('fresh migrated personal database has exactly the seed owner', () => withTemp(async dir => {
+  const db = createNodeSqliteDatabase(join(dir, 'personal.db'));
+  await applyMigrations(db);
+  initRepo(new SqlRepo(db));
+  initRuntimeProfile('personal');
+  try {
+    await assertRuntimeProfileData();
+    const users = await db.prepare('SELECT id, is_admin, upstream_ids, deleted_at FROM users ORDER BY id').all<{
+      id: number;
+      is_admin: number;
+      upstream_ids: string | null;
+      deleted_at: string | null;
+    }>();
+    assertEquals(users.results, [{ id: 1, is_admin: 1, upstream_ids: null, deleted_at: null }]);
+  } finally {
+    initRuntimeProfile('server');
+  }
 }));
 
 test('rerun is a no-op once all migrations are applied', () => withTemp(async dir => {

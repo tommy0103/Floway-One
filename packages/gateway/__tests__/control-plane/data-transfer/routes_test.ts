@@ -18,10 +18,13 @@ import { DEFAULT_WEB_SEARCH_CONFIG } from '../../../src/data-plane/tools/web-sea
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { zValidator } from '../../../src/middleware/zod-validator.ts';
 import { initRepo } from '../../../src/repo/index.ts';
-import type { ApiKey, PerformanceTelemetryRecord, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
+import { SqlRepo } from '../../../src/repo/sql.ts';
+import type { ApiKey, PerformanceTelemetryRecord, Repo, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
 import { tokenUsageMetrics } from '../../../src/repo/usage-metrics.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { InMemoryRepo } from '../../repo/memory.ts';
+import { createSqliteTestDb } from '../../repo/test-sqlite.ts';
+import { initRuntimeProfile } from '@floway-dev/platform';
 import { ALL_PROVIDER_KINDS, type UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals } from '@floway-dev/test-utils';
 
@@ -313,14 +316,15 @@ const PERFORMANCE_2: PerformanceTelemetryRecord = {
   ],
 };
 
-const setup = () => {
-  const repo = new InMemoryRepo();
+const setupWithRepo = <T extends Repo>(repo: T) => {
   initRepo(repo);
   const app = new Hono();
   app.get('/export', zValidator('query', exportQuery), exportData);
   app.post('/import', zValidator('json', importBody), importData);
   return { repo, app };
 };
+
+const setup = () => setupWithRepo(new InMemoryRepo());
 
 const doExport = async (app: Hono, includePerformance = false) => {
   const resp = await app.request(includePerformance ? '/export?include_performance=1' : '/export');
@@ -1451,6 +1455,74 @@ test('v20 export/import round-trips users and per-key user_id', async () => {
   assertEquals(restoredUsers.find(u => u.id === USER_BOB.id)?.passwordHash, USER_BOB.passwordHash);
   const restoredKey = await repo.apiKeys.findByRawKey(KEY_B.key);
   assertEquals(restoredKey?.userId, USER_BOB.id);
+});
+
+test('personal profile rejects a multi-user import before mutating stored data', async () => {
+  const { app, repo } = setup();
+  await repo.apiKeys.save(KEY_A);
+  initRuntimeProfile('personal');
+  try {
+    const result = await doImport(app, 'replace', latestImportData({
+      users: [SEED_ADMIN, USER_BOB],
+      apiKeys: [{ ...KEY_B, userId: USER_BOB.id }],
+    }));
+
+    assertEquals(result.status, 400);
+    assertEquals(result.body.error, 'invalid personal profile data: expected exactly the seed owner (user 1); found user ids: 1, 2');
+    assertEquals(await repo.apiKeys.list(), [KEY_A]);
+    assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [SEED_ADMIN.id]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('personal replace import preserves the owner when its atomic upsert fails', async () => {
+  const { app, repo } = setup();
+  const usersBefore = await repo.users.listIncludingDeleted();
+  const persistenceError = new Error('simulated owner persistence failure');
+  const upsert = vi.spyOn(repo.users, 'upsertForImport').mockRejectedValueOnce(persistenceError);
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', version: 20, data: latestImportData() }),
+    });
+
+    assertEquals(response.status, 500);
+    assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
+    assertEquals(upsert.mock.calls, [[SEED_ADMIN]]);
+  } finally {
+    upsert.mockRestore();
+    initRuntimeProfile('server');
+  }
+});
+
+test('personal replace import restores every owner field in SQLite, including createdAt', async () => {
+  const db = await createSqliteTestDb();
+  await db.prepare('UPDATE users SET created_at = ? WHERE id = ?')
+    .bind('2025-01-01T00:00:00.000Z', SEED_ADMIN.id)
+    .run();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  initRuntimeProfile('personal');
+  try {
+    const result = await doImport(app, 'replace', latestImportData());
+
+    assertEquals(result.status, 200);
+    assertEquals(await repo.users.listIncludingDeleted(), [SEED_ADMIN]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('server replace import still removes users absent from the payload', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(USER_BOB);
+
+  const result = await doImport(app, 'replace', latestImportData());
+
+  assertEquals(result.status, 200);
+  assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [SEED_ADMIN.id]);
 });
 
 test('v20 import rejects api_keys whose user_id does not appear in the payload', async () => {

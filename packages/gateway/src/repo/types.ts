@@ -276,6 +276,9 @@ export interface UsersRepo {
   // Throws when the username is already taken by another active row, so
   // duplicate-username races surface instead of silently overwriting state.
   save(user: User): Promise<void>;
+  // Import-only full-row upsert. Unlike ordinary edits, replacement restore
+  // must reproduce every serialized field, including the original createdAt.
+  upsertForImport(user: User): Promise<void>;
   softDelete(id: number): Promise<boolean>;
   deleteAll(): Promise<void>;
 }

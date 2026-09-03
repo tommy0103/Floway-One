@@ -128,6 +128,10 @@ class MemoryUsersRepo implements UsersRepo {
     else this.users.push({ ...user });
   }
 
+  async upsertForImport(user: User): Promise<void> {
+    await this.save(user);
+  }
+
   async softDelete(id: number): Promise<boolean> {
     const i = this.users.findIndex(u => u.id === id && u.deletedAt === null);
     if (i < 0) return false;

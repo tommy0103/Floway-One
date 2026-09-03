@@ -28,6 +28,7 @@ import {
   initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
+  type RuntimeProfileMode,
   type SqlDatabase,
 } from '@floway-dev/platform';
 
@@ -49,6 +50,12 @@ interface BootstrappedNodePlatform {
   readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
   readonly personalStorage?: PersonalStorageHardener;
 }
+
+export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
+  const profile = value ?? 'server';
+  if (profile === 'personal' || profile === 'server') return profile;
+  throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profile)}`);
+};
 
 export const bootstrapNodePlatform = (
   options: BootstrapNodePlatformOptions,
