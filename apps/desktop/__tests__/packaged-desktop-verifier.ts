@@ -352,6 +352,9 @@ if (launchSupported) {
     if (!launched.stdout.includes('Floway package verification succeeded')) {
       throw new Error(`Installed application verification omitted success\n${launched.stdout}\n${launched.stderr}`);
     }
+    if (!launched.stderr.includes('Floway package verification is importing its packaged Keyring binding')) {
+      throw new Error(`Installed application verification omitted the Keyring import instrument\n${launched.stderr}`);
+    }
     const successfulPid = readSidecarPid(launched.stdout);
     if (successfulPid === null) throw new Error('Installed application did not report its verification sidecar PID');
     await waitForProcessStopped(successfulPid);
@@ -384,7 +387,10 @@ if (launchSupported) {
       await keyringFile.read(originalKeyringHeader, 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.sync();
-      const output = await runExpectedFailure(installedExecutable, ['keyring', 'verification sidecar exited']);
+      const output = await runExpectedFailure(installedExecutable, [
+        'Floway package verification is importing its packaged Keyring binding',
+        'verification sidecar exited',
+      ]);
       const failedPid = readSidecarPid(output);
       if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
       await waitForProcessStopped(failedPid);

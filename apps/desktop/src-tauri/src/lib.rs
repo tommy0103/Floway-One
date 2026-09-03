@@ -127,6 +127,7 @@ const watchdog = setTimeout(() => {
   console.error('Floway package verification sidecar timed out');
   process.exit(70);
 }, 10_000);
+const { writeSync } = await import('node:fs');
 const { access } = await import('node:fs/promises');
 let blockUntilKilled = false;
 try {
@@ -135,6 +136,7 @@ try {
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }
+writeSync(process.stderr.fd, 'Floway package verification is importing its packaged Keyring binding\n');
 const keyring = await import('@napi-rs/keyring');
 if (typeof keyring.Entry !== 'function') throw new Error('Floway package verification could not load the Keyring native entry');
 await import('@floway-dev/gateway');
