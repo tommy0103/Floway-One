@@ -25,6 +25,7 @@ import {
   initRuntimeProfile,
   initSocketDial,
   initTimingSafeEqual,
+  type RuntimeProfileMode,
   type SqlDatabase,
 } from '@floway-dev/platform';
 
@@ -36,6 +37,12 @@ interface NodeStoragePaths {
 export type BootstrapNodePlatformOptions =
   | { readonly profile: 'personal'; readonly storage: NodeStoragePaths }
   | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
+
+export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
+  const profile = value ?? 'server';
+  if (profile === 'personal' || profile === 'server') return profile;
+  throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profile)}`);
+};
 
 export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): { db: SqlDatabase } => {
   initEnv(name => process.env[name]);

@@ -3,6 +3,7 @@ import { test, vi } from 'vitest';
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { buildCustomUpstreamRecord, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { initRuntimeProfile } from '@floway-dev/platform';
 import { assertEquals, assertExists } from '@floway-dev/test-utils';
 
 const ownerPatch = (id: string, body: unknown, rawKey: string) =>
@@ -34,6 +35,23 @@ test('POST /api/keys defaults durable OpenAI Responses persistence off', async (
   const body = (await response.json()) as { id: string; responses_retention_seconds: number };
   assertEquals(body.responses_retention_seconds, 0);
   assertEquals((await repo.apiKeys.getById(body.id))?.openaiResponsesRetentionSeconds, 0);
+});
+
+test('POST /api/keys assigns every personal-profile key to the seed owner', async () => {
+  const { repo, apiKey } = await setupAppTest();
+  initRuntimeProfile('personal');
+  try {
+    const response = await requestApp('/api/keys', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'personal-key' }),
+    });
+    assertEquals(response.status, 201);
+    const body = (await response.json()) as { id: string };
+    assertEquals((await repo.apiKeys.getById(body.id))?.userId, 1);
+  } finally {
+    initRuntimeProfile('server');
+  }
 });
 
 test('PATCH /api/keys/:id changes only the rolling OpenAI Responses duration', async () => {

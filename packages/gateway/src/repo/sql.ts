@@ -280,6 +280,35 @@ const toUser = (row: UserRow): User => ({
   deletedAt: row.deleted_at,
 });
 
+type UserWriteMode = 'preserve-created-at' | 'replace-created-at';
+
+const writeUser = async (db: SqlDatabase, user: User, mode: UserWriteMode): Promise<void> => {
+  const conflictUpdates = [
+    'username = excluded.username',
+    'password_hash = excluded.password_hash',
+    'is_admin = excluded.is_admin',
+    'upstream_ids = excluded.upstream_ids',
+    ...(mode === 'replace-created-at' ? ['created_at = excluded.created_at'] : []),
+    'deleted_at = excluded.deleted_at',
+  ].join(',\n           ');
+  await db
+    .prepare(
+      `INSERT INTO users (${USER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         ${conflictUpdates}`,
+    )
+    .bind(
+      user.id,
+      user.username,
+      user.passwordHash,
+      user.isAdmin ? 1 : 0,
+      serializeUpstreamIds(user.upstreamIds),
+      user.createdAt,
+      user.deletedAt,
+    )
+    .run();
+};
+
 class SqlUsersRepo implements UsersRepo {
   constructor(private db: SqlDatabase) {}
 
@@ -337,26 +366,11 @@ class SqlUsersRepo implements UsersRepo {
   }
 
   async save(user: User): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT INTO users (${USER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-           username = excluded.username,
-           password_hash = excluded.password_hash,
-           is_admin = excluded.is_admin,
-           upstream_ids = excluded.upstream_ids,
-           deleted_at = excluded.deleted_at`,
-      )
-      .bind(
-        user.id,
-        user.username,
-        user.passwordHash,
-        user.isAdmin ? 1 : 0,
-        serializeUpstreamIds(user.upstreamIds),
-        user.createdAt,
-        user.deletedAt,
-      )
-      .run();
+    await writeUser(this.db, user, 'preserve-created-at');
+  }
+
+  async upsertForImport(user: User): Promise<void> {
+    await writeUser(this.db, user, 'replace-created-at');
   }
 
   async softDelete(id: number): Promise<boolean> {

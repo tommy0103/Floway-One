@@ -26,7 +26,7 @@ setGlobalDispatcher(new Agent({
   },
 }));
 
-import { bootstrapNodePlatform } from './src/bootstrap.ts';
+import { bootstrapNodePlatform, resolveNodeRuntimeProfile } from './src/bootstrap.ts';
 import { createLocalApp } from './src/local-app.ts';
 import { applyMigrations } from './src/migrate.ts';
 import { listenNodeServer } from './src/node-listener.ts';
@@ -36,6 +36,7 @@ import { startScheduledMaintenance } from './src/scheduled-maintenance.ts';
 import { startNodeRuntime } from './src/start-runtime.ts';
 import {
   app,
+  assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
@@ -64,10 +65,7 @@ interface NodeEntryOverrides {
 }
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
-  const profileValue = process.env.FLOWAY_PROFILE ?? 'server';
-  if (profileValue !== 'personal' && profileValue !== 'server') {
-    throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profileValue)}`);
-  }
+  const profileValue = resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE);
   const startupWarnings: string[] = [];
   const personalPaths = profileValue === 'personal'
     ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
@@ -107,6 +105,7 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     migrate: applyMigrations,
     listen: async db => {
       initRepo(new SqlRepo(db));
+      await assertRuntimeProfileData();
       const localApp = createLocalApp({
         gatewayFetch: app.fetch,
         staticRoot: fileURLToPath(new URL('../web/dist/client', import.meta.url)),

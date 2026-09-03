@@ -5,6 +5,7 @@ import { type CtxWithJson } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { SEED_ADMIN_USER_ID } from '../../repo/seed-admin.ts';
 import type { ApiKey, User } from '../../repo/types.ts';
+import { personalUserCreationError, personalUserDeletionError, personalUserUpdateError } from '../../runtime/profile-policy.ts';
 import { generateApiKeyToken } from '../../shared/api-key-tokens.ts';
 import { hashPassword, verifyPassword } from '../../shared/passwords.ts';
 import { generateServerSecret } from '../../shared/server-secret.ts';
@@ -22,6 +23,8 @@ export const listUsers = async (c: AuthedContext) => {
 };
 
 export const createUser = async (c: CtxWithJson<typeof createUserBody>) => {
+  const profileError = personalUserCreationError();
+  if (profileError) return c.json({ error: profileError }, 400);
   const body = c.req.valid('json');
   const repo = getRepo();
 
@@ -64,6 +67,8 @@ export const updateUser = async (c: CtxWithJson<typeof updateUserBody>) => {
   const id = parseUserId(c.req.param('id')!);
   if (id === null) return c.json({ error: 'invalid user id' }, 400);
   const body = c.req.valid('json');
+  const profileError = personalUserUpdateError(id, body);
+  if (profileError) return c.json({ error: profileError }, 400);
   const actorId = userFromContext(c).id;
   const repo = getRepo();
 
@@ -104,6 +109,8 @@ export const updateUser = async (c: CtxWithJson<typeof updateUserBody>) => {
 export const deleteUser = async (c: AuthedContext) => {
   const id = parseUserId(c.req.param('id')!);
   if (id === null) return c.json({ error: 'invalid user id' }, 400);
+  const profileError = personalUserDeletionError();
+  if (profileError) return c.json({ error: profileError }, 400);
   const actorId = userFromContext(c).id;
   if (id === SEED_ADMIN_USER_ID) return c.json({ error: 'user 1 cannot be deleted' }, 400);
   if (id === actorId) return c.json({ error: 'cannot delete yourself' }, 400);

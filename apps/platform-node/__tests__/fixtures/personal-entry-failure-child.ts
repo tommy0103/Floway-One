@@ -9,7 +9,7 @@ const [mode, dataDir] = process.argv.slice(2);
 if (mode === undefined || dataDir === undefined) throw new Error('Expected a failure mode and data directory');
 
 process.env.FLOWAY_PROFILE = 'personal';
-delete process.env.NODE_ENV;
+if (mode !== 'profile-invariant') delete process.env.NODE_ENV;
 
 const paths: PersonalRuntimePaths = {
   dataDir,
@@ -63,6 +63,10 @@ if (mode === 'corrupt-state' || mode === 'invalid-port' || mode === 'state-write
       });
       return address;
     },
+  });
+} else if (mode === 'profile-invariant') {
+  await runNodeEntry({
+    resolvePersonalRuntimePaths: () => paths,
   });
 } else {
   throw new Error(`Unsupported failure mode: ${mode}`);

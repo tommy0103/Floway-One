@@ -4,6 +4,7 @@ import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { hashPassword } from '../../../src/shared/passwords.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { buildCustomUpstreamRecord, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { initRuntimeProfile } from '@floway-dev/platform';
 import { assertEquals, assertExists } from '@floway-dev/test-utils';
 
 const adminPost = (sessionId: string, body: unknown) => requestApp('/api/users', {
@@ -40,6 +41,28 @@ test('POST /api/users creates the user and provisions a Default key', async () =
   assertEquals(stored.length, 1);
   assertEquals(stored[0].name, 'Default');
   assertEquals(/^[0-9a-f]{64}$/.test(stored[0].serverSecret), true);
+});
+
+test('personal profile rejects user creation, deletion, demotion, and owner upstream limits', async () => {
+  const { adminSession } = await setupAppTest();
+  initRuntimeProfile('personal');
+  try {
+    const create = await adminPost(adminSession, { username: 'alice', password: 'hunter22' });
+    const remove = await adminDelete(adminSession, 1);
+    const demote = await adminPatch(adminSession, 1, { isAdmin: false });
+    const limit = await adminPatch(adminSession, 1, { upstreamIds: ['up_any'] });
+
+    for (const response of [create, remove]) {
+      assertEquals(response.status, 400);
+      assertEquals(await response.json(), { error: 'User management is unavailable in the personal profile.' });
+    }
+    assertEquals(demote.status, 400);
+    assertEquals(await demote.json(), { error: 'The personal profile owner must remain an administrator.' });
+    assertEquals(limit.status, 400);
+    assertEquals(await limit.json(), { error: 'The personal profile owner must have unrestricted upstream access.' });
+  } finally {
+    initRuntimeProfile('server');
+  }
 });
 
 test('POST /api/users rejects duplicate username + unknown upstream id', async () => {
