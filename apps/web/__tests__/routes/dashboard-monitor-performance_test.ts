@@ -17,7 +17,11 @@ const gatewayForOperator = (input: RequestInfo | URL) => {
   const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
   if (path === '/api/upstreams') return Promise.resolve(Response.json({ error: 'Admin privileges required' }, { status: 403 }));
   if (path === '/api/upstream-options') return Promise.resolve(Response.json([{ id: 'up-1', name: 'Copilot seat', kind: 'copilot', enabled: true, hue: 210, cachedModelCount: 3 }]));
-  if (path === '/api/runtime-info') return Promise.resolve(Response.json({ kind: 'node', runtimeLocation: 'LOCAL' }));
+  if (path === '/api/runtime-info') return Promise.resolve(Response.json({
+    kind: 'node',
+    profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+    runtimeLocation: 'LOCAL',
+  }));
   return Promise.resolve(Response.json({
     series: [], axes: { none: [], model: [], upstream: [], operation: [], runtimeLocation: [], keyId: [], userId: [] },
     dimensionValues: { models: [], upstreams: [], operations: [], runtimeLocations: [], userIds: [], keyIds: [] },
@@ -62,7 +66,7 @@ describe('where the performance page reads upstream names from', () => {
     expect(data.regionAvailable).toBe(false);
     expect(data.state.groupBy).toBe('model');
     expect(data.state.filters.runtimeLocation).toEqual([]);
-    expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(2);
+    expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
   });
 
   it('keeps Region state on Cloudflare', async () => {
@@ -70,7 +74,11 @@ describe('where the performance page reads upstream names from', () => {
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
       return path === '/api/runtime-info'
-        ? Promise.resolve(Response.json({ kind: 'cloudflare', runtimeLocation: 'SIN' }))
+        ? Promise.resolve(Response.json({
+            kind: 'cloudflare',
+            profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+            runtimeLocation: 'SIN',
+          }))
         : gatewayForOperator(input);
     });
     vi.stubGlobal('fetch', fetch);
@@ -100,5 +108,30 @@ describe('where the performance page reads upstream names from', () => {
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(data.error?.message).toBe('Unavailable');
     expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
+  });
+
+  it('removes personal user state before requesting performance', async () => {
+    useAuthStore.getState().primeFromLogin({ token: 'owner-session', user: { id: 1, username: 'admin', isAdmin: true, upstreamIds: null } });
+    const performanceQueries: URL[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
+      if (url.pathname === '/api/runtime-info') return Promise.resolve(Response.json({
+        kind: 'node',
+        profile: { mode: 'personal', capabilities: { userManagement: false, remoteAccess: false, desktopIntegration: true } },
+        runtimeLocation: 'LOCAL',
+      }));
+      if (url.pathname === '/api/performance/overview') performanceQueries.push(url);
+      return gatewayForOperator(input);
+    }));
+
+    const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=userId&fusr=2') } as never);
+
+    expect(data.userDimensionAvailable).toBe(false);
+    expect(data.view).toBe('self-by-key');
+    expect(data.state.groupBy).toBe('model');
+    expect(data.state.filters.userId).toEqual([]);
+    expect(performanceQueries).toHaveLength(1);
+    expect(performanceQueries[0].searchParams.get('group_by')).toBe('model');
+    expect(performanceQueries[0].searchParams.getAll('filter_user_id')).toEqual([]);
   });
 });

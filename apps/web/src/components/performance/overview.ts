@@ -1,6 +1,6 @@
 import { oneOf, repeatedValues } from '../../lib/search-params';
 import { dashboardRangeQuery, type DashboardRange } from '../charts/dashboard-time';
-import { clearGroupedTelemetryFilters } from '../telemetry/filter-state';
+import { clearGroupedTelemetryFilters, scopeTelemetryIdentity } from '../telemetry/filter-state';
 import { parseHiddenSeries, serializeHiddenSeries } from '../telemetry/hidden-series-url';
 
 export type PerformanceView = 'all-by-user' | 'self-by-key';
@@ -176,4 +176,38 @@ export const normalizePerformanceDimensionsForRuntime = <State extends Performan
       hidden: groupedByRegion ? [] : state.hidden,
     },
   };
+};
+
+export const normalizePerformanceDimensionsForCapabilities = <State extends PerformanceDimensionState>(
+  state: State,
+  capabilities: {
+    currentUserId: string;
+    regionAvailable: boolean;
+    userDimensionAvailable: boolean;
+  },
+): NormalizedPerformanceDimensions<State> => {
+  const runtime = normalizePerformanceDimensionsForRuntime(state, capabilities.regionAvailable);
+  const identity = scopeTelemetryIdentity(runtime.state.groupBy, runtime.state.filters, {
+    currentUserId: capabilities.currentUserId,
+    fallbackGroup: 'model',
+    userDimensionAvailable: capabilities.userDimensionAvailable,
+  });
+  const userFiltersChanged = identity.filters.userId.length !== runtime.state.filters.userId.length
+    || identity.filters.userId.some((value, index) => value !== runtime.state.filters.userId[index]);
+  const keyFiltersChanged = identity.filters.keyId.length !== runtime.state.filters.keyId.length
+    || identity.filters.keyId.some((value, index) => value !== runtime.state.filters.keyId[index]);
+  const changed = runtime.changed
+    || identity.groupBy !== runtime.state.groupBy
+    || userFiltersChanged
+    || keyFiltersChanged;
+  return changed
+    ? {
+        changed,
+        state: {
+          ...runtime.state,
+          ...identity,
+          hidden: identity.groupBy === runtime.state.groupBy ? runtime.state.hidden : [],
+        },
+      }
+    : { changed, state };
 };

@@ -7,6 +7,7 @@ import type { Route } from './+types/dashboard-monitor-usage';
 import { requireDashboardUser } from './guards';
 import { revalidateOnPathnameChange } from './revalidation';
 import type { GlobalError } from '../api/client';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { SEARCH_PROVIDER_LABEL_KEYS } from '../components/search/provider';
 import {
   TelemetryFilterFields,
@@ -40,9 +41,9 @@ const { Button, Tooltip } = fluentComponents;
 
 type LoaderData = Awaited<ReturnType<typeof loadUsagePageData>> & {
   currentUserId: string;
-  isAdmin: boolean;
   loadedAt: number;
   state: UsageUrlState;
+  userDimensionAvailable: boolean;
 };
 
 const requiredLabel = (labels: ReadonlyMap<string, string>, value: string, dimension: string) => {
@@ -53,19 +54,21 @@ const requiredLabel = (labels: ReadonlyMap<string, string>, value: string, dimen
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
   const user = await requireDashboardUser();
+  const runtime = await loadRuntimeInfo();
+  const userDimensionAvailable = user.isAdmin && runtime.profile.capabilities.userManagement;
   const parsed = parseUsageUrlState(new URL(request.url).searchParams);
   const scoped = scopeTelemetryIdentity(parsed.groupBy, parsed.filters, {
     currentUserId: String(user.id),
     fallbackGroup: 'model',
-    userDimensionAvailable: user.isAdmin,
+    userDimensionAvailable,
   });
   const loadedAt = Date.now();
   return {
-    ...await loadUsagePageData(user.isAdmin, parsed.range, scoped.groupBy, scoped.filters, loadedAt),
+    ...await loadUsagePageData(userDimensionAvailable, parsed.range, scoped.groupBy, scoped.filters, loadedAt),
     currentUserId: String(user.id),
-    isAdmin: user.isAdmin,
     loadedAt,
     state: { ...parsed, ...scoped },
+    userDimensionAvailable,
   };
 }
 
@@ -92,12 +95,12 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   const identityContext = {
     currentUserId: loaderData.currentUserId,
     fallbackGroup: 'model' as const,
-    userDimensionAvailable: loaderData.isAdmin,
+    userDimensionAvailable: loaderData.userDimensionAvailable,
   };
 
   const reload = useCallback(async (signal: AbortSignal, { background, requestedAt }: { background: boolean; requestedAt: number }) => {
     if (!background) setError(null);
-    const next = await loadUsagePageData(loaderData.isAdmin, query.range, query.groupBy, query.filters, requestedAt, signal);
+    const next = await loadUsagePageData(loaderData.userDimensionAvailable, query.range, query.groupBy, query.filters, requestedAt, signal);
     if (signal.aborted) return false;
     if (next.usage === null) {
       setError(next.error);
@@ -108,7 +111,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
     setUpstreams(next.upstreams);
     setError(next.error);
     return true;
-  }, [loaderData.isAdmin, query]);
+  }, [loaderData.userDimensionAvailable, query]);
 
   const onQueryCommit = useCallback((previous: typeof query, next: typeof query) => {
     if (previous.groupBy !== next.groupBy) setHiddenSeries(new Set());
@@ -161,7 +164,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
       { key: 'keyId', groupLabel: t('dashboard.usage.groupBy.keyId'), filterLabel: t('dashboard.usage.filters.keyId'), allLabel: t('dashboard.usage.filters.all.keyId'), options: usage.dimensionValues.keyIds.map(value => ({ value, label: requiredLabel(keys, value, 'API key') })) },
     ];
   }, [loadedQuery.filters.userId, loaderData.currentUserId, t, upstreams, usage]);
-  const availableDimensions = dimensions?.filter(dimension => dimension.key !== 'userId' || loaderData.isAdmin) ?? null;
+  const availableDimensions = dimensions?.filter(dimension => dimension.key !== 'userId' || loaderData.userDimensionAvailable) ?? null;
   const selectedDimension = availableDimensions === null ? null : (() => {
     const dimension = availableDimensions.find(candidate => candidate.key === loadedQuery.groupBy);
     if (dimension === undefined) throw new RangeError(`Unknown Usage grouping dimension: ${loadedQuery.groupBy}`);

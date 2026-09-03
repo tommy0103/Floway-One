@@ -26,6 +26,7 @@ const renderPage = (regionAvailable: boolean | null, groupBy: 'model' | 'runtime
       loaderData={{
         currentUserId: '1',
         error: null,
+        isAdmin: false,
         loadedAt: Date.UTC(2026, 7, 5, 12),
         overview,
         regionAvailable,
@@ -38,6 +39,7 @@ const renderPage = (regionAvailable: boolean | null, groupBy: 'model' | 'runtime
           hidden: [],
         },
         upstreams: [],
+        userDimensionAvailable: regionAvailable === null ? null : false,
         view: 'self-by-key',
       }}
       matches={[] as never}
@@ -65,7 +67,11 @@ describe('Performance Region dimensions', () => {
   it('retries an unknown runtime through the page refresh action', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
-      if (path === '/api/runtime-info') return Response.json({ kind: 'node', runtimeLocation: 'LOCAL' });
+      if (path === '/api/runtime-info') return Response.json({
+        kind: 'node',
+        profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+        runtimeLocation: 'LOCAL',
+      });
       if (path === '/api/performance/overview') return Response.json(overview);
       throw new Error(`Unexpected request to ${path}`);
     }));
@@ -110,7 +116,11 @@ describe('Performance Region dimensions', () => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
       if (path === '/api/runtime-info') {
         runtimeRequests += 1;
-        return Response.json({ kind: 'node', runtimeLocation: 'LOCAL' });
+        return Response.json({
+          kind: 'node',
+          profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+          runtimeLocation: 'LOCAL',
+        });
       }
       if (path === '/api/performance/overview') {
         overviewRequests += 1;
@@ -136,7 +146,11 @@ describe('Performance Region dimensions', () => {
   it('publishes recovered capability when the existing overview still matches', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
-      if (path === '/api/runtime-info') return Response.json({ kind: 'node', runtimeLocation: 'LOCAL' });
+      if (path === '/api/runtime-info') return Response.json({
+        kind: 'node',
+        profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+        runtimeLocation: 'LOCAL',
+      });
       if (path === '/api/performance/overview') return Response.json({ error: 'Refresh failed' }, { status: 500 });
       throw new Error(`Unexpected request to ${path}`);
     }));

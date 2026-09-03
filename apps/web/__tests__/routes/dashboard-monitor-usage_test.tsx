@@ -21,7 +21,6 @@ const usageRecord = { bucket, group: 'gpt-5', requests: 1, metrics: { input_toke
 const loaderData = {
   currentUserId: '1',
   error: null,
-  isAdmin: true,
   loadedAt,
   search: { records: [], keys: [] },
   state: {
@@ -46,6 +45,7 @@ const loaderData = {
     users: [{ id: 1, username: 'admin' }, { id: 2, username: 'Alice' }],
     keys: [{ id: 'key-2', name: 'Alice key', createdAt: '2026-08-01T00:00:00.000Z' }],
   },
+  userDimensionAvailable: true,
 };
 
 const renderPage = (data: Parameters<typeof DashboardMonitorUsage>[0]['loaderData']) => {
@@ -61,9 +61,21 @@ const renderPage = (data: Parameters<typeof DashboardMonitorUsage>[0]['loaderDat
   return renderInApp(<RouterProvider router={router} />);
 };
 
-const stubUsageGateway = (upstreamOptions: () => Response = () => Response.json([{ id: 'up-1', name: 'Copilot seat', kind: 'copilot', enabled: true, hue: 210, cachedModelCount: 1 }])) => {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
+const stubUsageGateway = (
+  upstreamOptions: () => Response = () => Response.json([{ id: 'up-1', name: 'Copilot seat', kind: 'copilot', enabled: true, hue: 210, cachedModelCount: 1 }]),
+  userManagement = true,
+) => {
+  const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
+    const { pathname: path } = url;
+    if (path === '/api/runtime-info') return Response.json({
+      kind: 'node',
+      profile: {
+        mode: userManagement ? 'server' : 'personal',
+        capabilities: { userManagement, remoteAccess: userManagement, desktopIntegration: !userManagement },
+      },
+      runtimeLocation: 'LOCAL',
+    });
     if (path === '/api/token-usage/overview') return Response.json({
       series: [{ bucket: '2026-08-05T11', group: 'gpt-5', requests: 1, metrics: [], cost: null }],
       axes: { none: [], model: [], upstream: [], userId: [], keyId: [] },
@@ -71,10 +83,14 @@ const stubUsageGateway = (upstreamOptions: () => Response = () => Response.json(
       users: [{ id: 1, username: 'admin' }, { id: 2, username: 'Alice' }],
       keys: [{ id: 'key-2', name: 'Alice key', createdAt: '2026-08-01T00:00:00.000Z' }],
     });
-    if (path === '/api/search-usage') return Response.json({ view: 'all-by-user', records: [], users: [] });
+    if (path === '/api/search-usage') return url.searchParams.get('view') === 'all-by-user'
+      ? Response.json({ view: 'all-by-user', records: [], users: [] })
+      : Response.json({ view: 'self-by-key', records: [], keys: [] });
     if (path === '/api/upstream-options') return upstreamOptions();
     throw new Error(`Unexpected request to ${path}`);
-  }));
+  });
+  vi.stubGlobal('fetch', fetch);
+  return fetch;
 };
 
 describe('usage dimension controls', () => {
@@ -195,6 +211,32 @@ describe('usage dimension controls', () => {
     expect(data.state.groupBy).toBe('userId');
     expect(data.usage?.series[0]).toMatchObject({ group: 'gpt-5', metrics: {} });
     expect(data.upstreams).toEqual([{ id: 'up-1', name: 'Copilot seat', hue: 210 }]);
+  });
+
+  it('removes personal user state before requesting or rendering usage', async () => {
+    useAuthStore.getState().primeFromLogin({
+      token: 'owner-session',
+      user: { id: 1, username: 'admin', isAdmin: true, upstreamIds: null },
+    });
+    const fetch = stubUsageGateway(undefined, false);
+
+    const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/usage?g=userId&fusr=2') } as never);
+
+    expect(data.userDimensionAvailable).toBe(false);
+    expect(data.state.groupBy).toBe('model');
+    expect(data.state.filters.userId).toEqual([]);
+    const overviewRequest = fetch.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .find(url => url.pathname === '/api/token-usage/overview');
+    expect(overviewRequest?.searchParams.get('group_by')).toBe('model');
+    expect(overviewRequest?.searchParams.getAll('filter_user_id')).toEqual([]);
+    const searchRequest = fetch.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .find(url => url.pathname === '/api/search-usage');
+    expect(searchRequest?.searchParams.get('view')).toBe('self-by-key');
+
+    renderPage(data);
+    expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull();
   });
 
   it('keeps token charts available when upstream names fail to load', async () => {

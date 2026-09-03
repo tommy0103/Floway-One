@@ -83,6 +83,7 @@ const en = {
         users: 'Users',
         backupRestore: 'Backup / Restore',
         settings: 'Settings',
+        localOwner: 'Local owner',
       },
       logout: {
         label: 'Sign out',
@@ -173,6 +174,7 @@ const en = {
       },
       settings: {
         description: 'Manage your Floway account security',
+        personalDescription: 'Manage security for this local owner',
         changePassword: 'Change password',
         currentPassword: 'Current password',
         newPassword: 'New password',

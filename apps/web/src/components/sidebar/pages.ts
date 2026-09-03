@@ -20,6 +20,7 @@ export interface DashboardPage {
   labelKey: string;
   icon: FluentIcon;
   adminOnly?: boolean;
+  requiresUserManagement?: boolean;
 }
 
 export interface NavGroup {
@@ -71,7 +72,7 @@ export const navGroups: NavGroup[] = [
     labelKey: 'dashboard.groups.admin',
     adminOnly: true,
     items: [
-      { to: '/dashboard/admin/users', labelKey: 'dashboard.nav.users', icon: People20Color },
+      { to: '/dashboard/admin/users', labelKey: 'dashboard.nav.users', icon: People20Color, requiresUserManagement: true },
       { to: '/dashboard/admin/backup-restore', labelKey: 'dashboard.nav.backupRestore', icon: Database20Color },
     ],
   },

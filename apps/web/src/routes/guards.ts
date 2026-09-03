@@ -1,6 +1,7 @@
 import { redirect } from 'react-router';
 
 import type { AuthUser } from '../api/auth';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { requireAdmin } from '../auth/require-admin';
 import { getSessionToken } from '../auth/session';
 import { useAuthStore } from '../stores/auth-store';
@@ -28,4 +29,10 @@ export const requireDashboardUser = async (): Promise<AuthUser> => {
 export const requireDashboardAdmin = async (): Promise<void> => {
   requireDashboardSession();
   if (!(await requireAdmin())) throw redirect(OPERATOR_LANDING);
+};
+
+export const requireUserManagement = async (): Promise<void> => {
+  requireDashboardSession();
+  const runtime = await loadRuntimeInfo();
+  if (!runtime.profile.capabilities.userManagement) throw redirect(OPERATOR_LANDING);
 };
