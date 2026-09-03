@@ -31,8 +31,8 @@ desktop = [
 
 [dependencies]
 getrandom = { version = "0.3.3", optional = true }
-tauri = { version = "2.11.5", optional = true }
+tauri = { version = "2.11.5", optional = true, features = [] }
 tauri-plugin-shell = { version = "2.3.6", optional = true }
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", optional = true }
+tauri-build = { version = "2.6.3", optional = true, features = [] }

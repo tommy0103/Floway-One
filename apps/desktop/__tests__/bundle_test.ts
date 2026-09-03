@@ -85,6 +85,9 @@ describe('desktop bundle preparation', () => {
       expect((await stat(resolve(runtimeRoot, '..'))).isDirectory()).toBe(true);
       expect(runtimeRoot.startsWith(resolve(root, 'src-tauri/resources'))).toBe(false);
       await generateFixtureRuntime(runtimeRoot);
+      const commandShim = resolve(runtimeRoot, 'apps/platform-node/node_modules/.bin/runtime-tool');
+      await mkdir(resolve(commandShim, '..'), { recursive: true });
+      await writeFile(commandShim, 'unused command shim');
       const deployedManifest = resolve(
         runtimeRoot,
         'apps/platform-node/node_modules/@floway-dev/gateway/package.json',
@@ -113,6 +116,10 @@ describe('desktop bundle preparation', () => {
     }
     expect(generateRuntime).toHaveBeenCalledOnce();
     expect(await readFile(sourceManifest, 'utf8')).toBe(sourceManifestValue);
+    await expect(stat(resolve(
+      prepared.runtimeRoot,
+      'apps/platform-node/node_modules/.bin',
+    ))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
   });
 

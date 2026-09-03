@@ -85,12 +85,25 @@ const requirePhysicalProductionDependencies = async (runtimeRoot: string): Promi
       if (entry.isSymbolicLink()) {
         // Tauri's resource walker treats directory symlinks as directories to
         // skip but does not follow them, so a pnpm isolated layout silently
-        // loses every linked dependency. Executable shims under `.bin` are not
-        // used by the packaged entry and may be omitted safely.
+        // loses every linked dependency. Command shims are removed before this
+        // validation because the packaged entry invokes no node_modules bin.
         // https://github.com/tauri-apps/tauri/blob/a5dc562a0088bc447ed9efbef532da3b4be1ac1c/crates/tauri-utils/src/resources.rs#L170-L181
-        if (!path.split('/').includes('.bin') && !path.split('\\').includes('.bin')) {
-          throw new Error(`Desktop bundle dependency must be physical for Tauri resources: ${path}`);
-        }
+        throw new Error(`Desktop bundle dependency must be physical for Tauri resources: ${path}`);
+      } else if (entry.isDirectory()) {
+        pending.push(path);
+      }
+    }
+  }
+};
+
+const removePnpmCommandShims = async (runtimeRoot: string): Promise<void> => {
+  const pending = [resolve(runtimeRoot, 'apps/platform-node/node_modules')];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory() && entry.name === '.bin') {
+        await rm(path, { force: true, recursive: true });
       } else if (entry.isDirectory()) {
         pending.push(path);
       }
@@ -161,6 +174,7 @@ export const prepareDesktopBundle = async ({
     await cp(stagedRuntimeRoot, writableRuntimeRoot, { recursive: true });
     await rm(stagedRuntimeRoot, { force: true, recursive: true });
     await rename(writableRuntimeRoot, stagedRuntimeRoot);
+    await removePnpmCommandShims(stagedRuntimeRoot);
     await compilePackagedRuntime(stagedRuntimeRoot);
     await assertPackagedRuntime(stagedRuntimeRoot);
     await probePackagedRuntime(stagedRuntimeRoot, nodeExecutable);
