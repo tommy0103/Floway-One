@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import {
   access,
   cp,
@@ -178,7 +179,11 @@ const isolatedRoot = await mkdtemp(join(await realpath(tmpdir()), 'floway-deskto
 const installedApp = resolve(isolatedRoot, 'Applications/Floway One.app');
 try {
   await mkdir(dirname(installedApp), { recursive: true });
-  await cp(appRoot, installedApp, { recursive: true });
+  // Node's FICLONE mode requests a copy-on-write app copy and falls back to a
+  // physical copy when the filesystem cannot clone, preserving install semantics.
+  // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/doc/api/fs.md#L1075-L1125
+  // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/doc/api/fs.md#L1033-L1046
+  await cp(appRoot, installedApp, { mode: fsConstants.COPYFILE_FICLONE, recursive: true });
   const installedExecutable = resolve(installedApp, 'Contents/MacOS/floway-one');
   const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
   const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
