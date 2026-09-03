@@ -235,7 +235,7 @@ try {
     replacement.writeUInt32LE(machOCpuTypeForArchitecture(wrongArchitecture));
     await nodeFile.write(replacement, 0, 4, 4);
     await nodeFile.sync();
-    await runExpectedFailure(installedExecutable, ['Floway desktop application failed', 'sidecar']);
+    await runExpectedFailure(installedExecutable, ['Failed to setup app', 'Bad CPU type in executable (os error 86)']);
   } finally {
     await nodeFile.write(originalCpuType, 0, 4, 4);
     await nodeFile.close();
