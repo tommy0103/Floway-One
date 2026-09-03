@@ -1,20 +1,23 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
-import { readPackagedNodeVersion } from '../apps/desktop/src/release-contract.ts';
+import { acquireNodeDistribution } from './node-distribution.ts';
+import { MACOS_TARGET_TRIPLES, readPackagedNodeVersion } from './release-contract.ts';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const execFileAsync = promisify(execFile);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const desktopRoot = resolve(root, 'apps/desktop');
 const pnpmCli = process.env.npm_execpath;
 if (pnpmCli === undefined) throw new Error('Desktop verifier requires pnpm to provide npm_execpath');
 
-const runPnpm = async (args: readonly string[]): Promise<void> => {
+const runPnpm = async (args: readonly string[], environment: NodeJS.ProcessEnv = process.env): Promise<void> => {
   await new Promise<void>((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, [pnpmCli, ...args], {
       cwd: root,
-      env: process.env,
+      env: environment,
       stdio: 'inherit',
     });
     child.once('error', cause => rejectRun(new Error(`Failed to start pnpm ${args.join(' ')}`, { cause })));
@@ -52,18 +55,57 @@ if (process.platform !== 'darwin') {
 
 const generatedPaths = [
   resolve(desktopRoot, 'src-tauri/target'),
-  resolve(desktopRoot, 'src-tauri/resources'),
-  resolve(desktopRoot, 'src-tauri/binaries'),
+  resolve(desktopRoot, 'src-tauri/bundle-inputs'),
+  resolve(desktopRoot, 'src-tauri/bundle-inputs.previous'),
   resolve(desktopRoot, 'src-tauri/.bundle-staging'),
+  resolve(desktopRoot, 'src-tauri/.desktop-verification'),
   resolve(desktopRoot, 'src-tauri/gen'),
 ];
+
+const canExecuteNode = async (path: string): Promise<boolean> => {
+  try {
+    return (await execFileAsync(path, ['--version'])).stdout.trim() === `v${packagedNodeVersion}`;
+  } catch {
+    return false;
+  }
+};
 
 try {
   await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
   await runPnpm(['--filter', '@floway-dev/desktop', 'run', 'test:rust']);
   await runPnpm(['run', 'build:web']);
-  await runPnpm(['--filter', '@floway-dev/desktop', 'exec', 'tauri', 'build', '--debug', '--bundles', 'app']);
-  await runPnpm(['--filter', '@floway-dev/desktop', 'run', 'test:packaged:macos', '--', '--profile=debug']);
+  for (const targetTriple of MACOS_TARGET_TRIPLES) {
+    const distributionRoot = resolve(desktopRoot, 'src-tauri/.desktop-verification', targetTriple);
+    const nodeExecutable = await acquireNodeDistribution(packagedNodeVersion, targetTriple, distributionRoot);
+    const launch = await canExecuteNode(nodeExecutable);
+    const environment = {
+      ...process.env,
+      FLOWAY_DESKTOP_EXECUTE_NODE: launch ? '1' : '0',
+      FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
+    };
+    await runPnpm([
+      '--filter',
+      '@floway-dev/desktop',
+      'exec',
+      'tauri',
+      'build',
+      '--debug',
+      '--bundles',
+      'app',
+      '--target',
+      targetTriple,
+    ], environment);
+    await runPnpm([
+      '--filter',
+      '@floway-dev/desktop',
+      'run',
+      'test:packaged:macos',
+      '--',
+      '--profile=debug',
+      `--target=${targetTriple}`,
+      `--launch=${launch ? 'yes' : 'no'}`,
+    ], environment);
+  }
 } finally {
   await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
 }

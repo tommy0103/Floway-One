@@ -6,9 +6,8 @@
   },
   "include": ["**/*.ts"],
   "exclude": [
-    "src-tauri/binaries/**",
+    "src-tauri/bundle-inputs/**",
     "src-tauri/.bundle-staging/**",
-    "src-tauri/resources/**",
     "src-tauri/target/**"
   ]
 }

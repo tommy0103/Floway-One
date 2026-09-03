@@ -16,10 +16,11 @@
       "icons/icon.generated.png"
     ],
     "externalBin": [
-      "binaries/floway-node"
+      "bundle-inputs/binaries/floway-node"
     ],
     "resources": {
-      "resources/runtime/": "runtime/"
+      "bundle-inputs/runtime/": "runtime/",
+      "bundle-inputs/desktop-bundle-contract.json": "desktop-bundle-contract.json"
     }
   }
 }

@@ -4,12 +4,22 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { prepareDesktopBundle } from './src/bundle.ts';
+import {
+  architectureForTargetTriple,
+  readPackagedNodeVersion,
+} from './src/release-contract.ts';
 
 const execFileAsync = promisify(execFile);
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(desktopRoot, '../..');
 const targetTriple = process.env.TAURI_ENV_TARGET_TRIPLE
   ?? (await execFileAsync('rustc', ['--print', 'host-tuple'])).stdout.trim();
+const nodeArchitecture = architectureForTargetTriple(targetTriple);
+const nodeExecutable = process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE ?? process.execPath;
+const executeNode = process.env.FLOWAY_DESKTOP_EXECUTE_NODE === undefined
+  ? nodeExecutable === process.execPath
+  : process.env.FLOWAY_DESKTOP_EXECUTE_NODE === '1';
+const nodeVersion = await readPackagedNodeVersion(desktopRoot);
 
 const generateRuntime = async (outputRoot: string): Promise<void> => {
   await new Promise<void>((resolveRun, rejectRun) => {
@@ -18,6 +28,8 @@ const generateRuntime = async (outputRoot: string): Promise<void> => {
       resolve(repositoryRoot, 'scripts/generate-node-runtime.ts'),
       outputRoot,
       '--node-linker=hoisted',
+      '--target-platform=darwin',
+      `--target-architecture=${nodeArchitecture}`,
     ], { cwd: repositoryRoot, env: process.env, stdio: 'inherit' });
     child.once('error', cause => rejectRun(new Error('Failed to start the Node runtime assembler', { cause })));
     child.once('exit', (code, signal) => {
@@ -30,9 +42,10 @@ const generateRuntime = async (outputRoot: string): Promise<void> => {
 await prepareDesktopBundle({
   desktopRoot,
   generateRuntime,
-  nodeArchitecture: process.arch,
-  nodeExecutable: process.execPath,
-  nodePlatform: process.platform,
-  nodeVersion: process.versions.node,
+  nodeArchitecture,
+  nodeExecutable,
+  nodePlatform: 'darwin',
+  nodeVersion,
   targetTriple,
+  executeNode,
 });

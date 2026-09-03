@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "pnpm --dir ../.. run build:web && tauri build && pnpm run test:packaged:macos",
+    "build": "pnpm run test:desktop",
     "prepare:bundle": "jiti entry.ts",
+    "test:desktop": "jiti src/test-desktop.ts",
     "test:packaged:macos": "jiti __tests__/packaged-desktop-verifier.ts",
     "test:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
     "typecheck": "tsc --noEmit"

@@ -5,6 +5,8 @@ import { promisify } from 'node:util';
 
 import ts from 'typescript';
 
+import { visitFileTree } from './filesystem-tree.ts';
+
 const execFileAsync = promisify(execFile);
 
 const isProductionTypeScript = (path: string): boolean =>
@@ -14,16 +16,10 @@ const isProductionTypeScript = (path: string): boolean =>
   && !path.split('\\').includes('__tests__');
 
 const collectTypeScript = async (root: string): Promise<string[]> => {
-  const pending = [root];
   const sources: string[] = [];
-  while (pending.length > 0) {
-    const directory = pending.pop()!;
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) pending.push(path);
-      else if (entry.isFile() && isProductionTypeScript(path)) sources.push(path);
-    }
-  }
+  await visitFileTree(root, ({ dirent, path }) => {
+    if (dirent.isFile() && isProductionTypeScript(path)) sources.push(path);
+  });
   return sources;
 };
 

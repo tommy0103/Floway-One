@@ -23,6 +23,11 @@ export type DesktopHostPlatform = keyof typeof HOST_TARGET_TRIPLES;
 export type DesktopHostArchitecture = keyof (typeof HOST_TARGET_TRIPLES)[DesktopHostPlatform];
 export type DesktopTargetTriple = (typeof HOST_TARGET_TRIPLES)[DesktopHostPlatform][DesktopHostArchitecture];
 
+export const MACOS_TARGET_TRIPLES = Object.freeze([
+  HOST_TARGET_TRIPLES.darwin.arm64,
+  HOST_TARGET_TRIPLES.darwin.x64,
+] as const);
+
 export const targetTripleForHost = (
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,

@@ -175,10 +175,12 @@ also a script of its own, in the order the chain runs them: `typegen`, `lint`,
 `test:desktop`, `test:installers`, `check:agents-md`, `check:generated-assets`,
 `check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries
 the assertions about the emitted bundle. `test:desktop` uses the exact packaged
-Node and pnpm versions to build a real macOS application with Tauri's production
-features, copies it to an isolated application-like path, launches its packaged
-verification mode, and fault-tests resources, architecture, native Keyring
-loading, and child cleanup. The final check assembles an isolated production
+Node and pnpm versions to build separate arm64 and x64 macOS applications with
+Tauri's production features, installs each executable artifact that the host can
+run into an isolated application-like path, starts its packaged personal runtime,
+checks migrations, loopback health and Dashboard assets, and fault-tests resources,
+the actually loaded native Keyring binding, architecture, and live-child cleanup.
+The final check assembles an isolated production
 Node runtime and executes its image command. `typegen` comes first because the
 generated route types are not checked in and the lint configuration is
 type-aware, so a fresh clone has to produce them before anything else can read

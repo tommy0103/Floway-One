@@ -71,3 +71,15 @@ export const assertMachOArchitecture = async (
     throw new Error(`Mach-O architecture mismatch for ${path}: expected ${expected}, received ${actual.join(', ')}`);
   }
 };
+
+export const assertSingleMachOArchitecture = async (
+  path: string,
+  expected: MachOArchitecture,
+): Promise<void> => {
+  const actual = await readMachOArchitectures(path);
+  if (actual.length !== 1 || actual[0] !== expected) {
+    throw new Error(
+      `Mach-O package architecture mismatch for ${path}: expected only ${expected}, received ${actual.join(', ')}`,
+    );
+  }
+};

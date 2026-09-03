@@ -67,8 +67,12 @@ jobs:
         run: ${{ matrix.check.run }}
 
   desktop:
-    name: desktop
-    runs-on: macos-latest
+    name: desktop-${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
@@ -83,6 +87,8 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Install both macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build, install, launch, and inspect the desktop application
         run: pnpm run test:desktop
 

@@ -5,9 +5,24 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputArgument = process.argv[2];
-const layoutArgument = process.argv[3];
-if (outputArgument === undefined || (layoutArgument !== undefined && layoutArgument !== '--node-linker=hoisted')) {
-  throw new Error('Usage: generate-node-runtime.ts <output-directory> [--node-linker=hoisted]');
+const optionArguments = process.argv.slice(3);
+const layoutArgument = optionArguments.find(argument => argument === '--node-linker=hoisted');
+const targetPlatform = optionArguments.find(argument => argument.startsWith('--target-platform='))?.slice('--target-platform='.length);
+const targetArchitecture = optionArguments.find(argument => argument.startsWith('--target-architecture='))?.slice('--target-architecture='.length);
+const knownOptions = optionArguments.filter(argument =>
+  argument === '--node-linker=hoisted'
+  || argument.startsWith('--target-platform=')
+  || argument.startsWith('--target-architecture='));
+if (
+  outputArgument === undefined
+  || knownOptions.length !== optionArguments.length
+  || (targetPlatform === undefined) !== (targetArchitecture === undefined)
+  || (targetPlatform !== undefined && targetPlatform !== 'darwin')
+  || (targetArchitecture !== undefined && targetArchitecture !== 'arm64' && targetArchitecture !== 'x64')
+) {
+  throw new Error(
+    'Usage: generate-node-runtime.ts <output-directory> [--node-linker=hoisted] [--target-platform=darwin --target-architecture=arm64|x64]',
+  );
 }
 
 const outputRoot = resolve(outputArgument);
@@ -32,8 +47,11 @@ try {
     // The desktop path instead uses pnpm's modern, injected-workspace deploy,
     // which creates a dedicated frozen lockfile and physical dependencies.
     // https://github.com/pnpm/pnpm/blob/bcc678c257797bdca86db4d535fd9d9614b2197c/pnpm11/releasing/commands/src/deploy/deploy.ts#L209-L214
+    // pnpm 10.24 maps --os/--cpu to its supported-architecture authority.
+    // https://github.com/pnpm/pnpm/blob/16d08d0cb076a3d2e1fe75f558c08059b17dadd9/config/config/src/overrideSupportedArchitecturesWithCLI.ts#L3-L22
     const child = spawn(windows ? 'pnpm.cmd' : 'pnpm', [
       ...(layoutArgument === '--node-linker=hoisted' ? ['--config.node-linker=hoisted'] : []),
+      ...(targetPlatform === undefined ? [] : [`--os=${targetPlatform}`, `--cpu=${targetArchitecture}`]),
       '--filter',
       '@floway-dev/platform-node',
       'deploy',

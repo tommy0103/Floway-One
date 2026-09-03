@@ -63,8 +63,11 @@ describe('desktop bundle preparation', () => {
     ) as {
       bundle: { externalBin: string[]; resources: Record<string, string> };
     };
-    expect(config.bundle.externalBin).toEqual(['binaries/floway-node']);
-    expect(config.bundle.resources).toEqual({ 'resources/runtime/': 'runtime/' });
+    expect(config.bundle.externalBin).toEqual(['bundle-inputs/binaries/floway-node']);
+    expect(config.bundle.resources).toEqual({
+      'bundle-inputs/desktop-bundle-contract.json': 'desktop-bundle-contract.json',
+      'bundle-inputs/runtime/': 'runtime/',
+    });
   });
 
   test('packages the exact compatible Node executable with the complete generated runtime', async () => {
@@ -81,7 +84,7 @@ describe('desktop bundle preparation', () => {
     const targetTriple = targetTripleForHost(process.platform, process.arch);
     const generateRuntime = vi.fn(async (runtimeRoot: string) => {
       expect((await stat(resolve(runtimeRoot, '..'))).isDirectory()).toBe(true);
-      expect(runtimeRoot.startsWith(resolve(root, 'src-tauri/resources'))).toBe(false);
+      expect(runtimeRoot.startsWith(resolve(root, 'src-tauri/bundle-inputs'))).toBe(false);
       await generateFixtureRuntime(runtimeRoot);
       const commandShim = resolve(runtimeRoot, 'apps/platform-node/node_modules/.bin/runtime-tool');
       await mkdir(resolve(commandShim, '..'), { recursive: true });
@@ -106,8 +109,9 @@ describe('desktop bundle preparation', () => {
 
     expect(prepared.nodeSidecar).toBe(resolve(
       root,
-      `src-tauri/binaries/floway-node-${targetTriple}${process.platform === 'win32' ? '.exe' : ''}`,
+      `src-tauri/bundle-inputs/binaries/floway-node-${targetTriple}${process.platform === 'win32' ? '.exe' : ''}`,
     ));
+    expect(prepared.contractPath).toBe(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json'));
     expect((await stat(prepared.nodeSidecar)).size).toBe((await stat(nodeExecutable)).size);
     if (process.platform !== 'win32') {
       expect((await stat(prepared.nodeSidecar)).mode & 0o777).toBe(0o755);
@@ -119,6 +123,39 @@ describe('desktop bundle preparation', () => {
       'apps/platform-node/node_modules/.bin',
     ))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
+  });
+
+  test('keeps the previous complete inputs when staged sidecar validation fails', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const targetTriple = targetTripleForHost(process.platform, process.arch);
+    const options = {
+      desktopRoot: root,
+      generateRuntime: generateFixtureRuntime,
+      nodeArchitecture: process.arch,
+      nodeExecutable: process.execPath,
+      nodePlatform: process.platform,
+      nodeVersion: process.versions.node,
+      targetTriple,
+    } as const;
+    const published = await prepareDesktopBundle(options);
+    const priorEntry = await readFile(resolve(published.runtimeRoot, 'apps/platform-node/entry.js'), 'utf8');
+    const priorContract = await readFile(published.contractPath, 'utf8');
+    const priorSidecar = await stat(published.nodeSidecar);
+    const validateSidecar = vi.fn(async (path: string) => {
+      expect(path.startsWith(resolve(root, 'src-tauri/.bundle-staging'))).toBe(true);
+      throw new Error('forced staged sidecar validation failure');
+    });
+
+    await expect(prepareDesktopBundle({ ...options, validateSidecar })).rejects.toThrow(
+      'forced staged sidecar validation failure',
+    );
+
+    expect(validateSidecar).toHaveBeenCalledOnce();
+    expect(await readFile(resolve(published.runtimeRoot, 'apps/platform-node/entry.js'), 'utf8')).toBe(priorEntry);
+    expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
+    expect((await stat(published.nodeSidecar)).size).toBe(priorSidecar.size);
+    await expect(stat(resolve(root, 'src-tauri/bundle-inputs.previous'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test('rejects a target that cannot use the build-host Node executable before generation', async () => {
