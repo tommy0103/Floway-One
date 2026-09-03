@@ -58,6 +58,33 @@ const openProtectedValues = async (
   return opened;
 };
 
+const openLegacyValues = async (
+  db: SqlDatabase,
+  file: string,
+  plan: ProtectedMigrationPlan,
+): Promise<readonly OpenedProtectedValue[]> => {
+  const opened: OpenedProtectedValue[] = [];
+  for (const transition of plan.fields) {
+    const { table, identityColumn, column } = transition.before;
+    let rows: { results: Array<{ identity: string | number; value: string | null }> };
+    try {
+      rows = await db.prepare(
+        `SELECT ${quoteIdentifier(identityColumn)} AS identity, ${quoteIdentifier(column)} AS value FROM ${quoteIdentifier(table)}`,
+      ).all<{ identity: string | number; value: string | null }>();
+    } catch (cause) {
+      throw new Error(
+        `Floway One migration ${file} could not read legacy field ${transition.field.id} at ${table}.${column}`,
+        { cause },
+      );
+    }
+    for (const row of rows.results) {
+      if (row.value === null || (transition.field.plaintextEmpty && row.value === '')) continue;
+      opened.push({ transition, identity: row.identity, plaintext: row.value });
+    }
+  }
+  return opened;
+};
+
 const sealAndRestoreProtectedValues = async (
   db: SqlDatabase,
   storedSecrets: StoredSecretCodec,
@@ -98,7 +125,10 @@ export const applyMigrations = async (
   db: SqlDatabase,
   dir: string = DEFAULT_MIGRATIONS_DIR,
   storedSecrets?: StoredSecretCodec,
+  options: { readonly adoptLegacyPlaintext?: boolean } = {},
 ): Promise<void> => {
+  await db.exec('PRAGMA busy_timeout = 30000');
+  if (options.adoptLegacyPlaintext) await db.exec('PRAGMA secure_delete = ON');
   await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
 
   const appliedRows = await db.prepare('SELECT name FROM _migrations').all<{ name: string }>();
@@ -117,18 +147,29 @@ export const applyMigrations = async (
       }
     }
 
-    await db.exec('BEGIN');
+    await db.exec('BEGIN IMMEDIATE');
     try {
+      const alreadyApplied = await db.prepare('SELECT name FROM _migrations WHERE name = ?')
+        .bind(file)
+        .first<{ name: string }>();
+      if (alreadyApplied !== null) {
+        await db.exec('COMMIT');
+        applied.add(file);
+        continue;
+      }
       const opened = plan === null || storedSecrets === undefined
         ? []
-        : await openProtectedValues(db, storedSecrets, file, plan);
-      await db.exec(sql);
+        : options.adoptLegacyPlaintext
+          ? await openLegacyValues(db, file, plan)
+          : await openProtectedValues(db, storedSecrets, file, plan);
+      await db.exec(plan?.persistentSql ?? sql);
       if (plan !== null && storedSecrets !== undefined) {
         await sealAndRestoreProtectedValues(db, storedSecrets, file, opened);
       }
       await db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind(file).run();
       await db.exec('COMMIT');
       applied.add(file);
+      if (options.adoptLegacyPlaintext) await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (error) {
       // SQLite may auto-rollback a hard error. Do not let recovery replace the
       // migration, codec, or storage-plan cause visible to the operator.

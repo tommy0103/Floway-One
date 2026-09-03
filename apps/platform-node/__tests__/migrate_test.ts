@@ -237,3 +237,42 @@ test('personal migration rejects protected SQL without a checked-in plan and pre
   assertEquals((error.cause as Error).message, `Missing checked-in protected migration plan for ${migrationName}`);
   await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 }));
+
+test('legacy plaintext adoption seal failure restores the 0083 schema and exact cause', () => withTemp(async dir => {
+  const sentinel = 'legacy-adoption-rollback-secret';
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  const searchPlaintext = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => `${sentinel}-${field.provider}`);
+  await setup.db.prepare(
+    'UPDATE search_config SET tavily_api_key = ?, microsoft_web_iq_api_key = ?, jina_api_key = ?',
+  ).bind(...searchPlaintext).run();
+  await setup.db.prepare('UPDATE upstreams SET config_json = ?').bind(`{"apiKey":"${sentinel}-upstream"}`).run();
+  await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
+  await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)')
+    .bind('0083_canonical_protocol_names.sql')
+    .run();
+  const sealCause = new Error('legacy adoption seal sentinel');
+  const failingCodec: StoredSecretCodec = {
+    open: () => Promise.reject(new Error('legacy adoption attempted decryption')),
+    seal: () => Promise.reject(sealCause),
+  };
+
+  const error = await assertRejects(() => applyMigrations(
+    setup.db,
+    setup.migrationDir,
+    failingCodec,
+    { adoptLegacyPlaintext: true },
+  ));
+  assert(error === sealCause);
+  const columns = await setup.db.prepare('PRAGMA table_info(search_config)').all<{ name: string }>();
+  assertEquals(columns.results.some(column => column.name === 'tavily_api_key'), true);
+  assertEquals(
+    await setup.db.prepare('SELECT tavily_api_key FROM search_config').first<{ tavily_api_key: string }>(),
+    { tavily_api_key: searchPlaintext[0] },
+  );
+  assertEquals(
+    await setup.db.prepare('SELECT name FROM _migrations WHERE name = ?')
+      .bind(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)
+      .first(),
+    null,
+  );
+}));

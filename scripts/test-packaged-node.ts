@@ -1,15 +1,23 @@
-import { execFile, spawn, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { type Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { startIsolatedLinuxSecretService } from './packaged-node/linux-secret-service.ts';
+import {
+  assertWindowsOwnerOnlyAcl,
+  readWindowsRoamingAppData,
+  setWindowsOwnerToAdministrators,
+  setWindowsRoamingAppData,
+  WINDOWS_ROAMING_APP_DATA_FOLDER_ID,
+} from './packaged-node/windows.ts';
 import {
   createOperatingSystemCredential,
   type DeviceMasterKeyCredential,
@@ -28,13 +36,11 @@ const ADMIN_KEY = 'packaged-layout-test';
 const PERSONAL_SECRET = `packaged-personal-secret-${randomUUID()}`;
 const REQUIRE_CREDENTIAL_STORE = process.env.FLOWAY_REQUIRE_CREDENTIAL_STORE === '1';
 const START_LINUX_SECRET_SERVICE = process.env.FLOWAY_START_TEST_SECRET_SERVICE === '1';
-// Microsoft documents this GUID as FOLDERID_RoamingAppData.
-// https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/shell/knownfolderid.md#folderid_roamingappdata
-const WINDOWS_ROAMING_APP_DATA_FOLDER_ID = '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D';
-// Microsoft defines S-1-5-32-544 as the built-in Administrators group.
-// https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/SecAuthZ/well-known-sids.md#well-known-sids
-const WINDOWS_BUILTIN_ADMINISTRATORS_SID = 'S-1-5-32-544';
 const TAVILY_STORED_SECRET_COLUMN = WEB_SEARCH_STORED_SECRET_FIELDS.find(field => field.provider === 'tavily')!.column;
+// ERROR_FILE_NOT_FOUND is Win32 error 2; HRESULT_FROM_WIN32 exposes it as
+// 0x80070002 through the failing Known Folder call.
+// https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/Debug/system-error-codes--0-499-.md#error_file_not_found
+const WINDOWS_MISSING_KNOWN_FOLDER_HRESULT = '0x80070002';
 
 const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
@@ -122,7 +128,6 @@ const packagedDefaultPersonalEntry = resolve(packageRoot, 'apps/platform-node/pe
 const packagedPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-entry-verification.ts');
 const packagedServerBoundaryEntry = resolve(packageRoot, 'apps/platform-node/server-boundary-verification.ts');
 const children = new Set<ChildProcessByStdio<null, Readable, Readable>>();
-const serviceChildren = new Set<ChildProcess>();
 
 const probe = createServer();
 await new Promise<void>((resolveListening, rejectListening) => {
@@ -134,111 +139,6 @@ await new Promise<void>((resolveClosed, rejectClosed) => probe.close(error => {
   if (error === undefined) resolveClosed();
   else rejectClosed(error);
 }));
-
-const terminateChild = async (child: ChildProcess): Promise<void> => {
-  serviceChildren.delete(child);
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  await exited;
-};
-
-const waitForLine = async (child: ChildProcessWithoutNullStreams, stream: Readable): Promise<string> => await new Promise((resolveLine, rejectLine) => {
-  let output = '';
-  let errors = '';
-  const timeout = setTimeout(() => rejectLine(new Error(`service startup timed out\nstdout: ${output}\nstderr: ${errors}`)), 10_000);
-  stream.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  stream.on('data', chunk => {
-    output += chunk;
-    const line = output.split('\n').find(candidate => candidate.length > 0);
-    if (line === undefined) return;
-    clearTimeout(timeout);
-    resolveLine(line);
-  });
-  child.stderr.on('data', chunk => { errors += chunk; });
-  child.once('error', error => { clearTimeout(timeout); rejectLine(error); });
-  child.once('exit', (code, signal) => {
-    clearTimeout(timeout);
-    rejectLine(new Error(`service exited before readiness (${code ?? signal})\nstdout: ${output}\nstderr: ${errors}`));
-  });
-});
-
-const waitForPath = async (path: string, child: ChildProcess): Promise<void> => {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    try {
-      await access(path);
-      return;
-    } catch (error) {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error(`service exited before creating ${path}`, { cause: error });
-      }
-      await new Promise(resolveWait => setTimeout(resolveWait, 50));
-    }
-  }
-  throw new Error(`service did not create ${path} before the startup deadline`);
-};
-
-const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> => {
-  if (!START_LINUX_SECRET_SERVICE) return async () => undefined;
-  if (process.platform !== 'linux') fail('FLOWAY_START_TEST_SECRET_SERVICE is supported only on Linux');
-
-  const originalBusAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
-  const originalRuntimeDirectory = process.env.XDG_RUNTIME_DIR;
-  const serviceRuntimeDirectory = resolve(runtimeRoot, 'secret-service-runtime');
-  await mkdir(serviceRuntimeDirectory, { recursive: true, mode: 0o700 });
-  process.env.XDG_RUNTIME_DIR = serviceRuntimeDirectory;
-
-  // Run a private session bus and Secret Service daemon so the Linux job
-  // requires the same org.freedesktop.secrets API used by desktop sessions.
-  // https://dbus.freedesktop.org/doc/dbus-daemon.1.html
-  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L137-L146
-  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-main.c#L999-L1006
-  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/gkd-util.c#L122-L123
-  // https://gitlab.gnome.org/GNOME/gnome-keyring/-/blob/adadbad2fdeb79a654dca37b31349e2a1d527ef0/daemon/control/gkd-control-server.c#L406-L446
-  const bus = spawn('dbus-daemon', ['--session', '--nofork', '--print-address=1'], { stdio: ['pipe', 'pipe', 'pipe'] });
-  serviceChildren.add(bus);
-  const busAddress = await waitForLine(bus, bus.stdout);
-  process.env.DBUS_SESSION_BUS_ADDRESS = busAddress;
-
-  const keyring = spawn('gnome-keyring-daemon', ['--foreground', '--login', '--components=secrets'], {
-    env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  serviceChildren.add(keyring);
-  keyring.stdin.end('floway-ci-secret-service\n');
-  await waitForPath(resolve(serviceRuntimeDirectory, 'keyring/control'), keyring);
-  await execFileAsync('gnome-keyring-daemon', ['--start', '--components=secrets'], {
-    env: process.env,
-    timeout: 10_000,
-  });
-
-  const deadline = Date.now() + 10_000;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await createOperatingSystemCredential(`Floway Secret Service readiness ${randomUUID()}`, 'probe');
-      lastError = undefined;
-      break;
-    } catch (error) {
-      lastError = error;
-      await new Promise(resolveWait => setTimeout(resolveWait, 50));
-    }
-  }
-  if (lastError !== undefined) {
-    await Promise.all([...serviceChildren].map(terminateChild));
-    throw new Error('Isolated Linux Secret Service did not become ready', { cause: lastError });
-  }
-
-  return async () => {
-    await Promise.all([terminateChild(keyring), terminateChild(bus)]);
-    if (originalBusAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
-    else process.env.DBUS_SESSION_BUS_ADDRESS = originalBusAddress;
-    if (originalRuntimeDirectory === undefined) delete process.env.XDG_RUNTIME_DIR;
-    else process.env.XDG_RUNTIME_DIR = originalRuntimeDirectory;
-  };
-};
 
 const stopRuntime = async (child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> => {
   children.delete(child);
@@ -380,9 +280,30 @@ const assertCiphertextAtRest = (databasePath: string): void => {
   }
 };
 
-const rewindProtectedSearchMigration = (databasePath: string): void => {
+const rewindProtectedSearchMigration = async (databasePath: string, masterKey: Uint8Array): Promise<void> => {
   const database = new DatabaseSync(databasePath);
   try {
+    const codec = createAes256GcmStoredSecretCodec(masterKey);
+    const upstreams = database.prepare('SELECT id, config_json, state_json FROM upstreams')
+      .all() as Array<{ id: string; config_json: string; state_json: string | null }>;
+    for (const upstream of upstreams) {
+      database.prepare('UPDATE upstreams SET config_json = ?, state_json = ? WHERE id = ?').run(
+        await codec.open(upstream.config_json, storedSecretContext(`upstream:${upstream.id}:config`)),
+        upstream.state_json === null
+          ? null
+          : await codec.open(upstream.state_json, storedSecretContext(`upstream:${upstream.id}:state`)),
+        upstream.id,
+      );
+    }
+    const search = database.prepare(
+      'SELECT protected_tavily_api_key, protected_microsoft_web_iq_api_key, protected_jina_api_key FROM search_config WHERE id = 1',
+    ).get() as {
+      protected_tavily_api_key: string;
+      protected_microsoft_web_iq_api_key: string;
+      protected_jina_api_key: string;
+    };
+    const plaintextSearch = await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(field =>
+      search[field.column] === '' ? Promise.resolve('') : codec.open(search[field.column], field.context)));
     database.exec(`
       BEGIN;
       CREATE TABLE search_config_legacy (
@@ -397,17 +318,33 @@ const rewindProtectedSearchMigration = (databasePath: string): void => {
         updated_at TEXT NOT NULL
       );
       INSERT INTO search_config_legacy
-      SELECT id, provider, protected_tavily_api_key, protected_microsoft_web_iq_api_key,
-             protected_jina_api_key, passthrough_openai_search, alpha_search_upstream_id,
-             alpha_search_model, updated_at
-      FROM search_config;
+      SELECT id, provider, '', '', '', passthrough_openai_search, alpha_search_upstream_id,
+             alpha_search_model, updated_at FROM search_config;
       DROP TABLE search_config;
       ALTER TABLE search_config_legacy RENAME TO search_config;
       DELETE FROM _migrations WHERE name = '${PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION}';
       COMMIT;
     `);
+    database.prepare(
+      'UPDATE search_config SET tavily_api_key = ?, microsoft_web_iq_api_key = ?, jina_api_key = ? WHERE id = 1',
+    ).run(...plaintextSearch);
   } finally {
     database.close();
+  }
+};
+
+const assertRawSecretsAbsent = async (databasePath: string, secrets: readonly string[]): Promise<void> => {
+  for (const path of [databasePath, `${databasePath}-journal`, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(await readFile(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const secret of secrets) {
+      if (bytes.includes(Buffer.from(secret))) fail(`${path} retained adopted plaintext ${secret}`);
+    }
   }
 };
 
@@ -499,39 +436,6 @@ const assertPersonalStartupFailure = async (
   });
 };
 
-const readWindowsRoamingAppData = async (): Promise<string> => {
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    '[Console]::Out.Write([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData))',
-  ], { encoding: 'utf8' });
-  const roamingAppData = stdout.trim();
-  if (!isAbsolute(roamingAppData)) fail(`Windows returned a non-absolute Roaming AppData Known Folder: ${roamingAppData}`);
-  return roamingAppData;
-};
-
-const setWindowsRoamingAppData = async (path: string): Promise<void> => {
-  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class FlowayKnownFolderRedirect {
-  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-  public static extern int SHSetKnownFolderPath(ref Guid rfid, uint flags, IntPtr token, string path);
-}
-'@
-$FolderId = [Guid]'${WINDOWS_ROAMING_APP_DATA_FOLDER_ID}'
-$Path = [Environment]::GetEnvironmentVariable('FLOWAY_REDIRECTED_KNOWN_FOLDER')
-$HResult = [FlowayKnownFolderRedirect]::SHSetKnownFolderPath([ref]$FolderId, 0, [IntPtr]::Zero, $Path)
-if ($HResult -ne 0) { [Runtime.InteropServices.Marshal]::ThrowExceptionForHR($HResult) }
-`], {
-    env: { ...process.env, FLOWAY_REDIRECTED_KNOWN_FOLDER: path },
-  });
-};
-
 const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
   if (process.platform !== 'win32') return;
 
@@ -586,7 +490,7 @@ const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
       {},
       [
         'Floway One could not resolve the Windows Roaming AppData Known Folder',
-        '0x80070002',
+        WINDOWS_MISSING_KNOWN_FOLDER_HRESULT,
       ],
       packagedDefaultPersonalEntry,
     );
@@ -782,45 +686,6 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
   }
 };
 
-type WindowsAclExpectation = 'directory' | 'inherited-file' | 'protected-file';
-
-const assertWindowsOwnerOnlyAcl = async (target: string, expectation: WindowsAclExpectation): Promise<void> => {
-  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
-$ErrorActionPreference = 'Stop'
-$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_TARGET')
-$Expectation = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_EXPECTATION')
-$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$IsDirectory = $Expectation -eq 'directory'
-$ExpectedProtected = $Expectation -ne 'inherited-file'
-$ExpectedInherited = $Expectation -eq 'inherited-file'
-$ExpectedCurrentOwner = $Expectation -ne 'inherited-file'
-$ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
-$Acl = if ($IsDirectory) { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
-$Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or ($ExpectedCurrentOwner -and $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid) -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited -ne $ExpectedInherited) {
-  throw "ACL verification failed for $Target as $Expectation (owner=$($Acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value), sid=$($Sid.Value), identity=$($Rules[0].IdentityReference.Value), access=$($Rules[0].AccessControlType), rights=$($Rules[0].FileSystemRights), protected=$($Acl.AreAccessRulesProtected), inherited=$($Rules[0].IsInherited), inheritance=$($Rules[0].InheritanceFlags), propagation=$($Rules[0].PropagationFlags), rules=$($Rules.Count))"
-}
-`], {
-    env: {
-      ...process.env,
-      FLOWAY_ACL_VERIFY_EXPECTATION: expectation,
-      FLOWAY_ACL_VERIFY_TARGET: target,
-    },
-  });
-};
-
-const setWindowsOwnerToAdministrators = async (target: string): Promise<void> => {
-  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
-$ErrorActionPreference = 'Stop'
-$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_OWNER_TARGET')
-$Acl = [System.IO.File]::GetAccessControl($Target)
-$Acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('${WINDOWS_BUILTIN_ADMINISTRATORS_SID}'))
-[System.IO.File]::SetAccessControl($Target, $Acl)
-`], {
-    env: { ...process.env, FLOWAY_ACL_OWNER_TARGET: target },
-  });
-};
-
 const assertPrivatePersonalStorage = async (
   paths: PersonalRuntimePaths,
   contentPath: string,
@@ -885,7 +750,7 @@ const assertPrivatePersonalStorage = async (
 };
 
 try {
-  const stopIsolatedLinuxSecretService = await startIsolatedLinuxSecretService();
+  const stopIsolatedLinuxSecretService = await startIsolatedLinuxSecretService(runtimeRoot, START_LINUX_SECRET_SERVICE);
   try {
     await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
     if (serverCommand.at(-1) !== 'apps/platform-node/entry.ts') {
@@ -963,12 +828,18 @@ await runNodeEntry({
         const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
         if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
         assertCiphertextAtRest(personalPaths.databasePath);
-        rewindProtectedSearchMigration(personalPaths.databasePath);
+        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
+        await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
         const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
         await assertPersistedPersonalSecret(migrated.origin);
         await stopRuntime(migrated.child);
         assertCiphertextAtRest(personalPaths.databasePath);
-        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
+        await assertRawSecretsAbsent(personalPaths.databasePath, [
+          PERSONAL_SECRET,
+          'packaged-api-key',
+          'packaged-refresh',
+          'packaged-access',
+        ]);
 
         const hardener = new PersonalStorageHardener(personalPaths);
         hardener.initialize();
@@ -1004,7 +875,6 @@ await runNodeEntry({
   }
 } finally {
   await Promise.all([...children].map(stopRuntime));
-  await Promise.all([...serviceChildren].map(terminateChild));
   await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 

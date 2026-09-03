@@ -85,7 +85,9 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       undefined,
       { validate: false },
     );
-    await applyMigrations(db, undefined, storedSecrets);
+    await applyMigrations(db, undefined, storedSecrets, {
+      adoptLegacyPlaintext: storedSecrets.requiresLegacyAdoption,
+    });
     await validateStoredSecrets(db, storedSecrets);
   } else {
     await applyMigrations(db);

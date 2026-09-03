@@ -63,6 +63,9 @@ try {
 }
 `;
 
+// Marshal.GetExceptionForHR turns the native result into the original .NET
+// exception that remains attached as the startup cause.
+// https://github.com/dotnet/dotnet-api-docs/blob/ac69dc2863d25fb47493bfbd80a6a22eb0c4a140/xml/System.Runtime.InteropServices/Marshal.xml#L2811-L2869
 const WINDOWS_HRESULT_EXCEPTION_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $HResult = [int][Environment]::GetEnvironmentVariable('FLOWAY_WINDOWS_HRESULT')

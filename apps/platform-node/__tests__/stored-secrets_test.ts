@@ -14,7 +14,11 @@ import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '@floway-dev/gateway';
 import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretContext } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
-const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = false): SqlDatabase => ({
+const databaseWithStoredState = (
+  hasUpstreams: boolean,
+  hasSearchCredentials = false,
+  legacy = false,
+): SqlDatabase => ({
   prepare: query => ({
     bind() { return this; },
     first: <T>() => {
@@ -29,7 +33,7 @@ const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = f
     all: <T>() => {
       if (query === 'SELECT name FROM _migrations') {
         return Promise.resolve({
-          results: [{ name: PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION }] as T[],
+          results: [{ name: legacy ? '0083_canonical_protocol_names.sql' : PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION }] as T[],
           success: true,
           meta: {},
         });
@@ -120,6 +124,40 @@ test('personal profile creates an OS-held master key only when no protected prov
   assertEquals(credential.writes.length, 1);
   assertEquals(credential.writes[0]?.byteLength, 32);
   assertEquals(stored.includes('provider-secret'), false);
+});
+
+test('personal profile creates one OS-held key for the version-gated 0083 plaintext adoption', async () => {
+  const credential = new MemoryDeviceMasterKeyCredential(null);
+  const codec = await createNodeStoredSecretCodec(
+    'personal',
+    databaseWithStoredState(true, true, true),
+    creationLock,
+    credential,
+    { validate: false },
+  );
+
+  assertEquals(codec.requiresLegacyAdoption, true);
+  assertEquals(credential.writes.length, 1);
+  assertEquals(credential.writes[0]?.byteLength, 32);
+});
+
+test('concurrent 0083 adoption callers share one OS-held key creation', async () => {
+  const credential = new MemoryDeviceMasterKeyCredential(null);
+  let tail = Promise.resolve();
+  const serializedLock: DeviceMasterKeyCreationLock = {
+    run: operation => {
+      const result = tail.then(operation);
+      tail = result.then(() => undefined, () => undefined);
+      return result;
+    },
+  };
+  const codecs = await Promise.all([
+    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, true), serializedLock, credential, { validate: false }),
+    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, true), serializedLock, credential, { validate: false }),
+  ]);
+
+  assertEquals(codecs.every(codec => codec.requiresLegacyAdoption), true);
+  assertEquals(credential.writes.length, 1);
 });
 
 test('personal profile reports a lost OS-held key for existing upstream or web search credentials', async () => {

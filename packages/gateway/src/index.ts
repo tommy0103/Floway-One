@@ -18,13 +18,16 @@ export {
 } from './repo/stored-secret-fields.ts';
 export {
   databaseHasProtectedValues,
+  inspectProtectedStorage,
   planProtectedMigration,
   protectedStorageLayout,
   PROTECTED_MIGRATION_PLANS,
   PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
+  LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
   type ProtectedMigrationFieldPlan,
   type ProtectedMigrationPlan,
   type ProtectedStorageFieldLocation,
+  type ProtectedStorageStatus,
 } from './repo/protected-migrations.ts';
 export { MODEL_CATALOG_REVISION } from './repo/models-cache-contract.ts';
 export { initBackgroundSchedulerResolver } from './runtime/background.ts';

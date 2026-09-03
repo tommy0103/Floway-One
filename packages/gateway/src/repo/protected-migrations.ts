@@ -7,6 +7,7 @@ import {
 import type { SqlDatabase } from '@floway-dev/platform';
 
 export const PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION = '0084_protected_search_secret_columns.sql';
+export const LEGACY_PLAINTEXT_SCHEMA_MIGRATION = '0083_canonical_protocol_names.sql';
 
 export interface ProtectedStorageFieldLocation {
   readonly field: ProtectedStoredSecretField;
@@ -23,6 +24,7 @@ export interface ProtectedMigrationFieldPlan {
 export interface ProtectedMigrationPlan {
   readonly name: string;
   readonly fields: readonly ProtectedMigrationFieldPlan[];
+  readonly persistentSql: string;
 }
 
 const LEGACY_SEARCH_SECRET_COLUMNS = {
@@ -33,15 +35,38 @@ const LEGACY_SEARCH_SECRET_COLUMNS = {
 
 const identityTransform = (plaintext: string): string => plaintext;
 
+const PERSONAL_PROTECTED_SEARCH_REBUILD_SQL = `
+CREATE TABLE search_config_protected (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  provider TEXT NOT NULL,
+  protected_tavily_api_key TEXT NOT NULL DEFAULT '',
+  protected_microsoft_web_iq_api_key TEXT NOT NULL DEFAULT '',
+  protected_jina_api_key TEXT NOT NULL DEFAULT '',
+  passthrough_openai_search INTEGER NOT NULL DEFAULT 0 CHECK (passthrough_openai_search IN (0, 1)),
+  alpha_search_upstream_id TEXT NOT NULL DEFAULT '',
+  alpha_search_model TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+INSERT INTO search_config_protected
+  (id, provider, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
+SELECT id, provider, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at
+FROM search_config;
+DROP TABLE search_config;
+ALTER TABLE search_config_protected RENAME TO search_config;
+`;
+
 export const PROTECTED_MIGRATION_PLANS: readonly ProtectedMigrationPlan[] = Object.freeze([
   Object.freeze({
     name: PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
-    fields: Object.freeze(WEB_SEARCH_STORED_SECRET_FIELDS.map(field => Object.freeze({
+    persistentSql: PERSONAL_PROTECTED_SEARCH_REBUILD_SQL,
+    fields: Object.freeze(PROTECTED_STORED_SECRET_FIELDS.map(field => Object.freeze({
       field,
-      before: Object.freeze({
-        ...field.location,
-        column: LEGACY_SEARCH_SECRET_COLUMNS[field.provider],
-      }),
+      before: WEB_SEARCH_STORED_SECRET_FIELDS.includes(field as (typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number])
+        ? Object.freeze({
+            ...field.location,
+            column: LEGACY_SEARCH_SECRET_COLUMNS[(field as (typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number]).provider],
+          })
+        : field.location,
       after: field.location,
       transform: identityTransform,
     }))),
@@ -145,4 +170,26 @@ export const databaseHasProtectedValues = async (db: SqlDatabase): Promise<boole
     }
   }
   return false;
+};
+
+export interface ProtectedStorageStatus {
+  readonly hasProtectedValues: boolean;
+  readonly requiresLegacyAdoption: boolean;
+}
+
+export const inspectProtectedStorage = async (db: SqlDatabase): Promise<ProtectedStorageStatus> => {
+  const applied = await db.prepare('SELECT name FROM _migrations').all<{ name: string }>();
+  const names = new Set(applied.results.map(row => row.name));
+  if (!names.has(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)) {
+    if (!names.has(LEGACY_PLAINTEXT_SCHEMA_MIGRATION)) {
+      throw new Error(
+        `Floway One cannot adopt protected storage before ${LEGACY_PLAINTEXT_SCHEMA_MIGRATION}`,
+      );
+    }
+    return { hasProtectedValues: true, requiresLegacyAdoption: true };
+  }
+  return {
+    hasProtectedValues: await databaseHasProtectedValues(db),
+    requiresLegacyAdoption: false,
+  };
 };
