@@ -427,8 +427,8 @@ const assertPersonalStartupFailure = async (
   }
   let previousIndex = -1;
   for (const message of expectedChain) {
-    const index = output.indexOf(message);
-    if (index === -1 || index <= previousIndex) {
+    const index = output.indexOf(message, previousIndex + 1);
+    if (index === -1) {
       fail(`${name} personal runtime lost or reordered its error chain at ${JSON.stringify(message)}\n${output}`);
     }
     previousIndex = index;
