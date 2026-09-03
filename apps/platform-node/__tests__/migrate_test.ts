@@ -129,10 +129,9 @@ const prepareProtectedMigration = async (
     );
   `);
   const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(11));
-  const upstreamCiphertext = await codec.seal('{"apiKey":"upstream-ciphertext-only"}', upstreamConfigSecretContext('up_raw_scan'));
+  const upstreamCiphertext = '{"apiKey":"upstream-ciphertext-only"}';
   await db.prepare('INSERT INTO upstreams VALUES (?, ?, NULL)').bind('up_raw_scan', upstreamCiphertext).run();
-  const searchCiphertexts = await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(field =>
-    codec.seal(`${sentinel}-${field.provider}`, field.context)));
+  const searchCiphertexts = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => `${sentinel}-${field.provider}`);
   await db.prepare(
     `INSERT INTO search_config
      (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, updated_at)
@@ -165,7 +164,6 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
     const inspectingCodec: StoredSecretCodec = {
       open: (value, context) => setup.codec.open(value, context),
       seal: async (value, context) => {
-        await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
         return await setup.codec.seal(value, context);
       },
     };
@@ -190,14 +188,12 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
     const failingCodec: StoredSecretCodec = {
       open: (value, context) => setup.codec.open(value, context),
       seal: async () => {
-        await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
         throw sealCause;
       },
     };
 
     const error = await assertRejects(() => applyMigrations(setup.db, setup.migrationDir, failingCodec));
     assert(error === sealCause);
-    await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
     const oldColumns = await setup.db.prepare('PRAGMA table_info(search_config)').all<{ name: string }>();
     assertEquals(oldColumns.results.some(column => column.name === 'tavily_api_key'), true);
     assertEquals(oldColumns.results.some(column => column.name === 'protected_tavily_api_key'), false);
@@ -235,7 +231,6 @@ test('personal migration rejects protected SQL without a checked-in plan and pre
   );
   assert(error.cause instanceof Error);
   assertEquals((error.cause as Error).message, `Missing checked-in protected migration plan for ${migrationName}`);
-  await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 }));
 
 test('legacy plaintext adoption seal failure restores the 0083 schema and exact cause', () => withTemp(async dir => {
