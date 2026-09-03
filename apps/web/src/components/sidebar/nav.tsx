@@ -10,7 +10,7 @@ import { fluentComponents } from '../../fluent';
 import { pageNavigation } from '../../lib/page-navigation';
 import { FlowayLogo } from '../logo';
 import { NavSelectionIndicator } from './nav-selection-indicator';
-import { accountPage, dashboardPages, navGroups } from './pages';
+import { accountPage, dashboardPageAvailable, dashboardPages, navGroups } from './pages';
 import { useTranslation } from '../../i18n/translation';
 import { useAuthStore } from '../../stores/auth-store';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -144,7 +144,7 @@ export function Sidebar({ capabilities, onNavigate, user }: {
               if (group.adminOnly && !user.isAdmin) return null;
               const items = group.items.filter(item =>
                 (!item.adminOnly || user.isAdmin)
-                && (!item.requiresUserManagement || capabilities.userManagement));
+                && dashboardPageAvailable(item, capabilities));
               if (items.length === 0) return null;
               return <div key={group.labelKey ?? groupIndex}>
                 {group.labelKey && <NavSectionHeader>{t(group.labelKey)}</NavSectionHeader>}

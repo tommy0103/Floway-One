@@ -4,6 +4,7 @@ import type { AuthUser } from '../api/auth';
 import { loadRuntimeInfo } from '../api/runtime-info';
 import { requireAdmin } from '../auth/require-admin';
 import { getSessionToken } from '../auth/session';
+import { dashboardPageAvailable, type DashboardPage } from '../components/sidebar/pages';
 import { useAuthStore } from '../stores/auth-store';
 
 // The one dashboard page every signed-in account can open.
@@ -31,8 +32,8 @@ export const requireDashboardAdmin = async (): Promise<void> => {
   if (!(await requireAdmin())) throw redirect(OPERATOR_LANDING);
 };
 
-export const requireUserManagement = async (): Promise<void> => {
+export const requireDashboardPage = async (page: DashboardPage): Promise<void> => {
   requireDashboardSession();
   const runtime = await loadRuntimeInfo();
-  if (!runtime.profile.capabilities.userManagement) throw redirect(OPERATOR_LANDING);
+  if (!dashboardPageAvailable(page, runtime.profile.capabilities)) throw redirect(OPERATOR_LANDING);
 };

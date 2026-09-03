@@ -110,6 +110,7 @@ describe('usage dimension controls', () => {
     expect(range.parentElement?.parentElement).toBe(controlsRow);
     expect(controlsRow?.nextElementSibling?.contains(screen.getByRole('combobox', { name: 'Upstream' }))).toBe(true);
     expect(screen.getByRole('heading', { level: 2, name: 'By Model' })).toBeTruthy();
+    expect(screen.getByText('Track token usage and traffic volume across users, keys, models, and upstreams')).toBeTruthy();
   });
 
   it('hides API key filters under user grouping', () => {
@@ -204,13 +205,20 @@ describe('usage dimension controls', () => {
       token: 'admin-session',
       user: { id: 1, username: 'admin', isAdmin: true, upstreamIds: null },
     });
-    stubUsageGateway();
+    const fetch = stubUsageGateway();
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/usage?g=userId') } as never);
 
     expect(data.state.groupBy).toBe('userId');
     expect(data.usage?.series[0]).toMatchObject({ group: 'gpt-5', metrics: {} });
     expect(data.upstreams).toEqual([{ id: 'up-1', name: 'Copilot seat', hue: 210 }]);
+    const requests = fetch.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'));
+    const overviewRequest = requests.find(url => url.pathname === '/api/token-usage/overview');
+    expect(overviewRequest?.searchParams.get('group_by')).toBe('userId');
+    const searchRequest = requests.find(url => url.pathname === '/api/search-usage');
+    expect(searchRequest?.searchParams.get('view')).toBe('all-by-user');
+    expect(searchRequest?.searchParams.get('include_user_metadata')).toBe('1');
+    expect(searchRequest?.searchParams.has('include_key_metadata')).toBe(false);
   });
 
   it('removes personal user state before requesting or rendering usage', async () => {
@@ -237,6 +245,8 @@ describe('usage dimension controls', () => {
 
     renderPage(data);
     expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull();
+    expect(screen.getByText("Track this local owner's token usage and traffic across API keys, models, and upstreams")).toBeTruthy();
+    expect(screen.queryByText(/across users/)).toBeNull();
   });
 
   it('keeps token charts available when upstream names fail to load', async () => {

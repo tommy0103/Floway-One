@@ -220,7 +220,9 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   return <section className="dashboard-page">
     <DashboardPageHeader
       actions={<ResourceListActions appearance="subtle" onRefresh={() => void refresh()} refreshLabel={t('dashboard.usage.actions.refresh')} refreshing={refreshing} />}
-      description={t('dashboard.pages.usage')}
+      description={t(loaderData.userDimensionAvailable
+        ? 'dashboard.pages.usage'
+        : 'dashboard.pages.personalUsage')}
       title={t('dashboard.nav.usage')}
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}

@@ -32,6 +32,7 @@ const en = {
         unexpectedTitle: 'Something went wrong',
         unexpectedDescription: 'An unexpected error occurred',
         notFound: 'The requested page could not be found',
+        runtimeCapabilitiesUnavailable: 'Runtime capabilities could not be loaded. Refresh after the gateway is available.',
         sourceMapLoading: 'Loading source maps…',
         sourceMapFailed: 'Source maps could not be loaded',
       },
@@ -104,6 +105,8 @@ const en = {
             'Inspect request records, status, routing results, and error details',
         usage:
             'Track token usage and traffic volume across users, keys, models, and upstreams',
+        personalUsage:
+            'Track this local owner\'s token usage and traffic across API keys, models, and upstreams',
         performance:
             'Monitor latency, throughput, and upstream performance signals',
         users:

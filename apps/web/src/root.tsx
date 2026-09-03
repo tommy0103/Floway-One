@@ -18,6 +18,7 @@ import { ErrorShell, ErrorStack } from './components/ui/error-shell';
 import { AppLoadingScreen } from './components/ui/loading-screen';
 import { fluentComponents } from './fluent';
 import { defaultLanguage, htmlLanguageFor } from './i18n/languages';
+import { LocalizedError } from './i18n/localized-error';
 import { useTranslation } from './i18n/translation';
 import { useSourceMappedStack } from './lib/source-mapped-stack';
 import { DARK_SCHEME_QUERY, useMediaQuery } from './lib/use-media-query';
@@ -118,8 +119,13 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         ? t('common.errors.notFound')
         : error.statusText || details;
   } else if (error instanceof Error) {
-    details = error.message;
-    rawStack = error.stack;
+    if (error instanceof LocalizedError) {
+      details = t(error.translationKey);
+      rawStack = error.stackWithMessage(details);
+    } else {
+      details = error.message;
+      rawStack = error.stack;
+    }
   }
 
   const restoration = useSourceMappedStack(rawStack);
