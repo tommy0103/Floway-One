@@ -11,6 +11,7 @@ pub const NODE_SIDECAR_NAME: &str = "floway-node";
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeBundle {
     pub dashboard_index: PathBuf,
+    pub dashboard_routes: PathBuf,
     pub entry: PathBuf,
     pub migrations: PathBuf,
     pub root: PathBuf,
@@ -96,6 +97,7 @@ pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, Bund
     let platform_node = root.join("apps/platform-node");
     Ok(RuntimeBundle {
         dashboard_index: require_file(root.join("apps/web/dist/client/index.html"))?,
+        dashboard_routes: require_file(root.join("apps/web/dist/client/dashboard-routes.json"))?,
         entry: require_file(platform_node.join("entry.js"))?,
         migrations: require_migrations(
             platform_node.join("node_modules/@floway-dev/gateway/migrations"),
@@ -106,7 +108,8 @@ pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, Bund
 
 #[cfg(feature = "desktop")]
 mod desktop {
-    use std::io;
+    use std::error::Error;
+    use std::fmt::{Display, Formatter};
     use std::sync::Mutex;
 
     use getrandom::fill;
@@ -116,25 +119,125 @@ mod desktop {
 
     use super::{DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, resolve_runtime_bundle};
 
-    fn ephemeral_admin_key() -> Result<String, io::Error> {
+    const PACKAGE_VERIFICATION_SCRIPT: &str = r#"
+const watchdog = setTimeout(() => {
+  console.error('Floway package verification sidecar timed out');
+  process.exit(70);
+}, 10_000);
+const keyring = await import('@napi-rs/keyring');
+if (typeof keyring.Entry !== 'function') throw new Error('Floway package verification could not load the Keyring native entry');
+await import('@floway-dev/gateway');
+await import('./entry.js');
+clearTimeout(watchdog);
+"#;
+
+    #[derive(Debug)]
+    struct StartupAuthorityError {
+        source: getrandom::Error,
+    }
+
+    impl Display for StartupAuthorityError {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(
+                formatter,
+                "Floway could not create ephemeral startup authority"
+            )
+        }
+    }
+
+    impl Error for StartupAuthorityError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.source)
+        }
+    }
+
+    fn ephemeral_admin_key() -> Result<String, StartupAuthorityError> {
         let mut bytes = [0_u8; 32];
-        fill(&mut bytes).map_err(|error| {
-            io::Error::other(format!(
-                "Floway could not create ephemeral startup authority: {error}"
-            ))
-        })?;
+        fill(&mut bytes).map_err(|source| StartupAuthorityError { source })?;
         Ok(bytes
             .into_iter()
             .map(|byte| format!("{byte:02x}"))
             .collect())
     }
 
-    pub fn run() {
+    fn print_error_chain(error: &(dyn Error + 'static)) {
+        eprintln!("Floway desktop application failed: {error}");
+        let mut source = error.source();
+        while let Some(cause) = source {
+            eprintln!("caused by: {cause}");
+            source = cause.source();
+        }
+    }
+
+    fn start_package_verification(
+        app: &mut tauri::App,
+        runtime: super::RuntimeBundle,
+    ) -> Result<(), Box<dyn Error>> {
+        let (mut events, child) = app
+            .shell()
+            .sidecar(NODE_SIDECAR_NAME)?
+            .args([
+                "--input-type=module".into(),
+                "--eval".into(),
+                PACKAGE_VERIFICATION_SCRIPT.into(),
+            ])
+            .current_dir(runtime.root.join("apps/platform-node"))
+            .spawn()?;
+        println!("Floway package verification sidecar pid {}", child.pid());
+        app.manage(Mutex::new(child));
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            let mut command_error = None;
+            while let Some(event) = events.recv().await {
+                match event {
+                    CommandEvent::Stdout(bytes) => {
+                        println!(
+                            "[Floway package verification stdout] {}",
+                            String::from_utf8_lossy(&bytes)
+                        );
+                    }
+                    CommandEvent::Stderr(bytes) => {
+                        eprintln!(
+                            "[Floway package verification stderr] {}",
+                            String::from_utf8_lossy(&bytes)
+                        );
+                    }
+                    CommandEvent::Error(error) => command_error = Some(error),
+                    CommandEvent::Terminated(payload) => {
+                        if payload.code == Some(0) && command_error.is_none() {
+                            println!("Floway package verification succeeded");
+                            handle.exit(0);
+                        } else {
+                            if let Some(error) = command_error {
+                                eprintln!("Floway package verification sidecar error: {error}");
+                            }
+                            eprintln!(
+                                "Floway package verification sidecar exited with code {:?} signal {:?}",
+                                payload.code, payload.signal
+                            );
+                            handle.exit(1);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            eprintln!("Floway package verification sidecar event stream ended before exit");
+            handle.exit(1);
+        });
+        Ok(())
+    }
+
+    fn try_run() -> Result<(), Box<dyn Error>> {
+        let package_verification = std::env::args().any(|argument| argument == "--verify-package");
         tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
-            .setup(|app| {
+            .setup(move |app| {
                 let resource_dir = app.path().resource_dir()?;
                 let runtime = resolve_runtime_bundle(&resource_dir)?;
+                if package_verification {
+                    return start_package_verification(app, runtime);
+                }
                 let admin_key = ephemeral_admin_key()?;
                 let (mut events, child) = app
                     .shell()
@@ -190,8 +293,15 @@ mod desktop {
                 });
                 Ok(())
             })
-            .run(tauri::generate_context!())
-            .expect("Floway desktop application failed");
+            .run(tauri::generate_context!())?;
+        Ok(())
+    }
+
+    pub fn run() {
+        if let Err(error) = try_run() {
+            print_error_chain(error.as_ref());
+            std::process::exit(1);
+        }
     }
 }
 

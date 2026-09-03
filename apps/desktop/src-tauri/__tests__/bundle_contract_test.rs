@@ -21,6 +21,7 @@ fn write_fixture(root: &Path) {
         "runtime/apps/platform-node/entry.js",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql",
         "runtime/apps/web/dist/client/index.html",
+        "runtime/apps/web/dist/client/dashboard-routes.json",
     ];
     for relative in files {
         let path = root.join(relative);

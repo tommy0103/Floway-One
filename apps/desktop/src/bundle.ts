@@ -2,31 +2,7 @@ import { chmod, copyFile, cp, mkdir, readdir, rename, rm, stat } from 'node:fs/p
 import { join, resolve } from 'node:path';
 
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
-
-const REQUIRED_NODE_VERSION = '24.19.0';
-
-const TARGETS_BY_HOST: Readonly<Record<NodeJS.Platform, Readonly<Partial<Record<NodeJS.Architecture, string>>>>> = {
-  aix: {},
-  android: {},
-  darwin: {
-    arm64: 'aarch64-apple-darwin',
-    x64: 'x86_64-apple-darwin',
-  },
-  freebsd: {},
-  haiku: {},
-  linux: {
-    arm64: 'aarch64-unknown-linux-gnu',
-    x64: 'x86_64-unknown-linux-gnu',
-  },
-  openbsd: {},
-  sunos: {},
-  win32: {
-    arm64: 'aarch64-pc-windows-msvc',
-    x64: 'x86_64-pc-windows-msvc',
-  },
-  cygwin: {},
-  netbsd: {},
-};
+import { readPackagedNodeVersion, targetTripleForHost } from './release-contract.ts';
 
 export interface PrepareDesktopBundleOptions {
   readonly desktopRoot: string;
@@ -126,10 +102,7 @@ const assertCompatibleTarget = (
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
 ): void => {
-  const expected = TARGETS_BY_HOST[platform]?.[architecture];
-  if (expected === undefined) {
-    throw new Error(`Desktop Node sidecar packaging does not support ${platform}/${architecture}`);
-  }
+  const expected = targetTripleForHost(platform, architecture);
   if (targetTriple !== expected) {
     throw new Error(
       `Desktop Node sidecar target ${targetTriple} is incompatible with the build host ${platform}/${architecture}; expected ${expected}`,
@@ -146,8 +119,9 @@ export const prepareDesktopBundle = async ({
   nodeVersion,
   targetTriple,
 }: PrepareDesktopBundleOptions): Promise<PreparedDesktopBundle> => {
-  if (nodeVersion !== REQUIRED_NODE_VERSION) {
-    throw new Error(`Desktop bundles require Node.js ${REQUIRED_NODE_VERSION}; received ${nodeVersion}`);
+  const requiredNodeVersion = await readPackagedNodeVersion(desktopRoot);
+  if (nodeVersion !== requiredNodeVersion) {
+    throw new Error(`Desktop bundles require Node.js ${requiredNodeVersion}; received ${nodeVersion}`);
   }
   assertCompatibleTarget(targetTriple, nodePlatform, nodeArchitecture);
 

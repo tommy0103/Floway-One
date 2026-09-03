@@ -3,7 +3,7 @@ name = "floway-desktop"
 version = "0.1.0"
 description = "Floway desktop application shell"
 edition = "2024"
-license = "AGPL-3.0-or-later"
+license = "MIT"
 autobins = false
 default-run = "floway-one"
 
@@ -30,9 +30,13 @@ desktop = [
 ]
 
 [dependencies]
-getrandom = { version = "0.3.3", optional = true }
-tauri = { version = "2.11.5", optional = true, features = [] }
-tauri-plugin-shell = { version = "2.3.6", optional = true }
+# https://github.com/rust-random/getrandom/releases/tag/v0.3.4
+getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
+# https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5
+tauri = { version = "=2.11.5", optional = true, features = [] }
+# https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
+tauri-plugin-shell = { version = "=2.3.6", optional = true }
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", optional = true, features = [] }
+# https://github.com/tauri-apps/tauri/releases/tag/tauri-build-v2.6.3
+tauri-build = { version = "=2.6.3", optional = true, features = [] }

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { assertPackagedRuntime, prepareDesktopBundle } from '../src/bundle.ts';
 import { compilePackagedRuntime } from '../src/packaged-runtime.ts';
+import { targetTripleForHost } from '../src/release-contract.ts';
 
 const roots = new Set<string>();
 const desktopRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -68,6 +69,7 @@ describe('desktop bundle preparation', () => {
 
   test('packages the exact compatible Node executable with the complete generated runtime', async () => {
     const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), '24.19.0\n');
     const nodeExecutable = process.execPath;
     const sourceManifest = resolve(root, 'workspace-gateway-package.json');
     const sourceManifestValue = JSON.stringify({
@@ -76,11 +78,7 @@ describe('desktop bundle preparation', () => {
       exports: { '.': { import: './src/index.ts', types: './src/index.ts' } },
     });
     await writeFile(sourceManifest, sourceManifestValue);
-    const targetTriple = {
-      darwin: { arm64: 'aarch64-apple-darwin', x64: 'x86_64-apple-darwin' },
-      linux: { arm64: 'aarch64-unknown-linux-gnu', x64: 'x86_64-unknown-linux-gnu' },
-      win32: { arm64: 'aarch64-pc-windows-msvc', x64: 'x86_64-pc-windows-msvc' },
-    }[process.platform as 'darwin' | 'linux' | 'win32'][process.arch as 'arm64' | 'x64'];
+    const targetTriple = targetTripleForHost(process.platform, process.arch);
     const generateRuntime = vi.fn(async (runtimeRoot: string) => {
       expect((await stat(resolve(runtimeRoot, '..'))).isDirectory()).toBe(true);
       expect(runtimeRoot.startsWith(resolve(root, 'src-tauri/resources'))).toBe(false);
@@ -125,6 +123,7 @@ describe('desktop bundle preparation', () => {
 
   test('rejects a target that cannot use the build-host Node executable before generation', async () => {
     const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), '24.19.0\n');
     const generateRuntime = vi.fn(generateFixtureRuntime);
 
     await expect(prepareDesktopBundle({
@@ -141,6 +140,7 @@ describe('desktop bundle preparation', () => {
 
   test('rejects an incompatible Node runtime before generation', async () => {
     const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), '24.19.0\n');
     const generateRuntime = vi.fn(generateFixtureRuntime);
 
     await expect(prepareDesktopBundle({

@@ -26,8 +26,6 @@ jobs:
             run: pnpm run typecheck
           - name: test
             run: pnpm run test
-          - name: desktop
-            run: pnpm run test:desktop
           - name: installers
             run: pnpm run test:installers
           - name: generated-assets
@@ -67,6 +65,26 @@ jobs:
         run: pnpm run typegen
       - name: ${{ matrix.check.name }}
         run: ${{ matrix.check.run }}
+
+  desktop:
+    name: desktop
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Enable exact package-manager version
+        run: corepack enable
+      - name: Set up exact packaged Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build, install, launch, and inspect the desktop application
+        run: pnpm run test:desktop
 
   packaged-node-windows:
     name: packaged-node-windows

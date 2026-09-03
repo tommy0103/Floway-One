@@ -19,7 +19,7 @@
     "lint:fix": "cross-env NODE_OPTIONS=\"--max-old-space-size=12288\" eslint --cache . --fix",
     "typecheck": "pnpm -r run typecheck && tsc --noEmit -p tsconfig.scripts.json",
     "test": "cross-env NODE_OPTIONS=\"--max-old-space-size=8192\" vitest run",
-    "test:desktop": "pnpm --filter @floway-dev/desktop run test:rust",
+    "test:desktop": "jiti scripts/test-desktop.ts",
     "test:installers": "pnpm --filter @floway-dev/agent-setup run test:installers",
     "test:packaged-node": "jiti scripts/test-packaged-node.ts",
     "build:desktop": "pnpm --filter @floway-dev/desktop run build",

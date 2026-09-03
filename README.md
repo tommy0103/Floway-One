@@ -172,13 +172,20 @@ Secret Service, Windows Credential Manager, and macOS Keychain to exercise
 platform-specific credential storage, assembly, and startup paths. Each link is
 also a script of its own, in the order the chain runs them: `typegen`, `lint`,
 `typecheck`, `test`,
-`test:installers`, `check:agents-md`, `check:generated-assets`,
+`test:desktop`, `test:installers`, `check:agents-md`, `check:generated-assets`,
 `check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries
-the assertions about the emitted bundle, and the final check assembles an
-isolated production Node runtime and executes its image command. `typegen` comes
-first because the generated route types are not checked in and the lint
-configuration is type-aware, so a fresh clone has to produce them before
-anything else can read the dashboard's sources.
+the assertions about the emitted bundle. `test:desktop` uses the exact packaged
+Node and pnpm versions to build a real macOS application with Tauri's production
+features, copies it to an isolated application-like path, launches its packaged
+verification mode, and fault-tests resources, architecture, native Keyring
+loading, and child cleanup. The final check assembles an isolated production
+Node runtime and executes its image command. `typegen` comes first because the
+generated route types are not checked in and the lint configuration is
+type-aware, so a fresh clone has to produce them before anything else can read
+the dashboard's sources. Desktop release authorities are the versioned
+[Node.js distribution](https://nodejs.org/dist/v24.19.0/),
+[Tauri 2.11.5](https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5),
+and [Tauri Shell 2.3.6](https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6).
 
 [AGENTS.md](./AGENTS.md) defines the repository-wide agent requirements and
 indexes its CI workflows, skills, workspace packages, and their responsibilities.
