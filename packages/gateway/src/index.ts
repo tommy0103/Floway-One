@@ -3,11 +3,19 @@ export { initRepo } from './repo/index.ts';
 export { FileDumpStore } from './repo/dump-store.ts';
 export {
   SqlRepo,
+  validateStoredSecrets,
+} from './repo/sql.ts';
+export {
+  PROTECTED_STORED_SECRET_FIELDS,
+  UPSTREAM_CONFIG_STORED_SECRET_FIELD,
+  UPSTREAM_STATE_STORED_SECRET_FIELD,
   upstreamConfigSecretContext,
   upstreamStateSecretContext,
-  validateStoredSecrets,
   WEB_SEARCH_STORED_SECRET_FIELDS,
-} from './repo/sql.ts';
+  type ProtectedStoredSecretField,
+  type StoredSecretSqlLocation,
+  type WebSearchStoredSecretField,
+} from './repo/stored-secret-fields.ts';
 export { MODEL_CATALOG_REVISION } from './repo/models-cache-contract.ts';
 export { initBackgroundSchedulerResolver } from './runtime/background.ts';
 export { initDumpBroker, initDumpStore } from './dump/registry.ts';

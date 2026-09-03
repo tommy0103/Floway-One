@@ -2,7 +2,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { upstreamConfigSecretContext, upstreamStateSecretContext } from '@floway-dev/gateway';
+import {
+  PROTECTED_STORED_SECRET_FIELDS,
+  type ProtectedStoredSecretField,
+  type StoredSecretSqlLocation,
+} from '@floway-dev/gateway';
 import { migrationsDir } from '@floway-dev/gateway/migrations-dir';
 import type { SqlDatabase, StoredSecretCodec } from '@floway-dev/platform';
 
@@ -23,21 +27,123 @@ const DEFAULT_MIGRATIONS_DIR = fileURLToPath(migrationsDir);
 // We bracket each file with our own BEGIN/COMMIT so a mid-file failure rolls
 // the whole file back; without that bracket, the partial DDL from earlier
 // statements would persist after a later one threw.
-const rewriteProtectedUpstreamDocuments = async (
+export interface ProtectedMigrationTransition {
+  readonly field: ProtectedStoredSecretField;
+  readonly before?: StoredSecretSqlLocation;
+  readonly after?: StoredSecretSqlLocation;
+}
+
+export type ProtectedMigrationTransitions = Readonly<Record<string, readonly ProtectedMigrationTransition[]>>;
+
+interface ResolvedProtectedMigrationTransition {
+  readonly field: ProtectedStoredSecretField;
+  readonly before: StoredSecretSqlLocation;
+  readonly after: StoredSecretSqlLocation;
+}
+
+interface TransformedProtectedValue {
+  readonly field: ProtectedStoredSecretField;
+  readonly location: StoredSecretSqlLocation;
+  readonly identity: string | number;
+  readonly value: string;
+}
+
+const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
+
+const resolveProtectedTransitions = (
+  file: string,
+  transitions: ProtectedMigrationTransitions,
+): readonly ResolvedProtectedMigrationTransition[] => {
+  const overrides = new Map<string, ProtectedMigrationTransition>();
+  for (const transition of transitions[file] ?? []) {
+    if (!PROTECTED_STORED_SECRET_FIELDS.includes(transition.field)) {
+      throw new Error(`Floway One migration ${file} names an unknown protected stored-secret field ${transition.field.id}`);
+    }
+    if (overrides.has(transition.field.id)) {
+      throw new Error(`Floway One migration ${file} repeats protected stored-secret field ${transition.field.id}`);
+    }
+    overrides.set(transition.field.id, transition);
+  }
+  return PROTECTED_STORED_SECRET_FIELDS.map(field => {
+    const override = overrides.get(field.id);
+    return {
+      field,
+      before: override?.before ?? field.location,
+      after: override?.after ?? field.location,
+    };
+  });
+};
+
+const transformProtectedValues = async (
   db: SqlDatabase,
   storedSecrets: StoredSecretCodec,
+  file: string,
+  transitions: readonly ResolvedProtectedMigrationTransition[],
+  schema: 'before' | 'after',
   operation: 'open' | 'seal',
+): Promise<readonly TransformedProtectedValue[]> => {
+  const transformed: TransformedProtectedValue[] = [];
+  for (const transition of transitions) {
+    const location = transition[schema];
+    const table = quoteIdentifier(location.table);
+    const identityColumn = quoteIdentifier(location.identityColumn);
+    const column = quoteIdentifier(location.column);
+    let rows: { results: Array<{ identity: string | number; value: string | null }> };
+    try {
+      rows = await db.prepare(
+        `SELECT ${identityColumn} AS identity, ${column} AS value FROM ${table}`,
+      ).all<{ identity: string | number; value: string | null }>();
+    } catch (cause) {
+      throw new Error(
+        `Floway One migration ${file} could not read its ${schema}-schema protected field ${transition.field.id} at ${location.table}.${location.column}`,
+        { cause },
+      );
+    }
+    for (const row of rows.results) {
+      if (row.value === null) {
+        if (!transition.field.nullable) {
+          throw new Error(
+            `Floway One migration ${file} found NULL in protected field ${transition.field.id} at ${location.table}.${location.column}`,
+          );
+        }
+        continue;
+      }
+      if (transition.field.plaintextEmpty && row.value === '') continue;
+      transformed.push({
+        field: transition.field,
+        location,
+        identity: row.identity,
+        value: await storedSecrets[operation](row.value, transition.field.contextFor(row.identity)),
+      });
+    }
+  }
+  return transformed;
+};
+
+const restoreProtectedValues = async (
+  db: SqlDatabase,
+  file: string,
+  values: readonly TransformedProtectedValue[],
 ): Promise<void> => {
-  const rows = await db.prepare('SELECT id, config_json, state_json FROM upstreams')
-    .all<{ id: string; config_json: string; state_json: string | null }>();
-  for (const row of rows.results) {
-    const configJson = await storedSecrets[operation](row.config_json, upstreamConfigSecretContext(row.id));
-    const stateJson = row.state_json === null
-      ? null
-      : await storedSecrets[operation](row.state_json, upstreamStateSecretContext(row.id));
-    await db.prepare('UPDATE upstreams SET config_json = ?, state_json = ? WHERE id = ?')
-      .bind(configJson, stateJson, row.id)
-      .run();
+  for (const value of values) {
+    const table = quoteIdentifier(value.location.table);
+    const identityColumn = quoteIdentifier(value.location.identityColumn);
+    const column = quoteIdentifier(value.location.column);
+    try {
+      const result = await db.prepare(
+        `UPDATE ${table} SET ${column} = ? WHERE ${identityColumn} IS ?`,
+      ).bind(value.value, value.identity).run();
+      if (result.meta.changes !== 1) {
+        throw new Error(
+          `Floway One migration ${file} could not uniquely restore protected field ${value.field.id} for identity ${String(value.identity)}`,
+        );
+      }
+    } catch (cause) {
+      throw new Error(
+        `Floway One migration ${file} could not restore protected field ${value.field.id} at ${value.location.table}.${value.location.column}`,
+        { cause },
+      );
+    }
   }
 };
 
@@ -45,6 +151,7 @@ export const applyMigrations = async (
   db: SqlDatabase,
   dir: string = DEFAULT_MIGRATIONS_DIR,
   storedSecrets?: StoredSecretCodec,
+  protectedTransitions: ProtectedMigrationTransitions = {},
 ): Promise<void> => {
   await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
 
@@ -58,9 +165,18 @@ export const applyMigrations = async (
 
     await db.exec('BEGIN');
     try {
-      if (storedSecrets !== undefined) await rewriteProtectedUpstreamDocuments(db, storedSecrets, 'open');
+      const transitions = storedSecrets === undefined
+        ? []
+        : resolveProtectedTransitions(file, protectedTransitions);
+      if (storedSecrets !== undefined) {
+        const plaintext = await transformProtectedValues(db, storedSecrets, file, transitions, 'before', 'open');
+        await restoreProtectedValues(db, file, plaintext);
+      }
       await db.exec(sql);
-      if (storedSecrets !== undefined) await rewriteProtectedUpstreamDocuments(db, storedSecrets, 'seal');
+      if (storedSecrets !== undefined) {
+        const ciphertext = await transformProtectedValues(db, storedSecrets, file, transitions, 'after', 'seal');
+        await restoreProtectedValues(db, file, ciphertext);
+      }
       await db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind(file).run();
       await db.exec('COMMIT');
     } catch (e) {

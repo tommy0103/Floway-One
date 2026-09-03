@@ -37,8 +37,7 @@ const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = f
           meta: {},
         });
       }
-      if (query === 'SELECT id, config_json, state_json FROM upstreams'
-        || query === 'SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config') {
+      if (/^SELECT .+ AS identity, .+ AS value FROM (?:upstreams|search_config)$/u.test(query)) {
         return Promise.resolve({ results: [] as T[], success: true, meta: {} });
       }
       return Promise.reject(new Error(`Unexpected all() query: ${query}`));

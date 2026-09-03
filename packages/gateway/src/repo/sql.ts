@@ -9,6 +9,12 @@ import { SqlScheduledMaintenanceRepo } from './scheduled-maintenance-sql.ts';
 import { generateSessionToken } from './session-tokens.ts';
 import { SqlSpilledFilesRepo } from './spilled-files-sql.ts';
 import { runStatements } from './sql-batch.ts';
+import {
+  PROTECTED_STORED_SECRET_FIELDS,
+  UPSTREAM_CONFIG_STORED_SECRET_FIELD,
+  UPSTREAM_STATE_STORED_SECRET_FIELD,
+  WEB_SEARCH_STORED_SECRET_FIELDS,
+} from './stored-secret-fields.ts';
 import type {
   ApiKey,
   ApiKeyRepo,
@@ -67,7 +73,7 @@ import { usageMetricRows } from './usage-metrics.ts';
 import { querySqlUsageOverview } from './usage-overview-sql.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../shared/performance-histogram.ts';
 import { parseServerSecret } from '../shared/server-secret.ts';
-import { assertWebSearchProviderName, WEB_SEARCH_PROVIDER_NAMES, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
+import { assertWebSearchProviderName, type WebSearchConfig } from '../shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
 import { plaintextStoredSecretCodec, type SqlBindValue, type SqlDatabase, type SqlPreparedStatement, type StoredSecretCodec, type StoredSecretContext } from '@floway-dev/platform';
 import { addDecimalStrings, canonicalPricingSelectorKey, parseBillingMetric, parseModelKind, parseNonNegativeDecimalString, parsePricingSelectorKey, type AliasSelection, type AnnouncedMetadata } from '@floway-dev/protocols/common';
@@ -823,28 +829,11 @@ const toWebSearchUsageRecord = (row: { provider: string; key_id: string; action:
   };
 };
 
-type WebSearchSecretConfigKey = 'jina' | 'microsoftWebIq' | 'tavily';
-type WebSearchSecretColumn = 'jina_api_key' | 'microsoft_web_iq_api_key' | 'tavily_api_key';
-
-const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSecretContext =>
-  `web-search:${provider}:api-key` as StoredSecretContext;
-
-const WEB_SEARCH_STORED_SECRET_FIELD_BY_PROVIDER = {
-  tavily: { column: 'tavily_api_key', configKey: 'tavily' },
-  'microsoft-web-iq': { column: 'microsoft_web_iq_api_key', configKey: 'microsoftWebIq' },
-  jina: { column: 'jina_api_key', configKey: 'jina' },
-} as const satisfies Record<WebSearchProviderName, {
-  readonly column: WebSearchSecretColumn;
-  readonly configKey: WebSearchSecretConfigKey;
-}>;
-
-export const WEB_SEARCH_STORED_SECRET_FIELDS = Object.freeze(WEB_SEARCH_PROVIDER_NAMES.map(provider => Object.freeze({
-  provider,
-  ...WEB_SEARCH_STORED_SECRET_FIELD_BY_PROVIDER[provider],
-  context: webSearchApiKeySecretContext(provider),
-})));
-
+type WebSearchSecretConfigKey = (typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number]['configKey'];
+type WebSearchSecretColumn = (typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number]['column'];
 type WebSearchSecretRow = Record<WebSearchSecretColumn, string>;
+const WEB_SEARCH_SECRET_TABLE = WEB_SEARCH_STORED_SECRET_FIELDS[0].location.table;
+const WEB_SEARCH_SECRET_IDENTITY_COLUMN = WEB_SEARCH_STORED_SECRET_FIELDS[0].location.identityColumn;
 const WEB_SEARCH_SECRET_COLUMNS = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => field.column).join(', ');
 
 class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
@@ -852,7 +841,7 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 
   async get(): Promise<unknown | null> {
     const row = await this.db
-      .prepare(`SELECT provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM search_config WHERE id = 1`)
+      .prepare(`SELECT provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM ${WEB_SEARCH_SECRET_TABLE} WHERE ${WEB_SEARCH_SECRET_IDENTITY_COLUMN} = 1`)
       .first<WebSearchSecretRow & { provider: string; passthrough_openai_search: number; alpha_search_upstream_id: string; alpha_search_model: string }>();
     if (!row) throw new Error('search_config singleton row missing');
     const protectedConfig = Object.fromEntries(await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(async field => [
@@ -879,9 +868,9 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
       .join(',\n           ');
     await this.db
       .prepare(
-        `INSERT INTO search_config (id, provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
+        `INSERT INTO ${WEB_SEARCH_SECRET_TABLE} (${WEB_SEARCH_SECRET_IDENTITY_COLUMN}, provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
          VALUES (1, ?, ${WEB_SEARCH_STORED_SECRET_FIELDS.map(() => '?').join(', ')}, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (${WEB_SEARCH_SECRET_IDENTITY_COLUMN}) DO UPDATE SET
            provider = excluded.provider,
            ${secretUpdates},
            passthrough_openai_search = excluded.passthrough_openai_search,
@@ -909,29 +898,26 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 // declaring the row unwritable, not a derived figure.
 export const UPSTREAM_STATE_WRITE_ATTEMPTS = 4;
 
-export const upstreamConfigSecretContext = (id: string): StoredSecretContext => `upstream:${id}:config` as StoredSecretContext;
-export const upstreamStateSecretContext = (id: string): StoredSecretContext => `upstream:${id}:state` as StoredSecretContext;
+const UPSTREAM_CONFIG_SECRET_COLUMN = UPSTREAM_CONFIG_STORED_SECRET_FIELD.location.column;
+const UPSTREAM_STATE_SECRET_COLUMN = UPSTREAM_STATE_STORED_SECRET_FIELD.location.column;
+const UPSTREAM_SECRET_TABLE = UPSTREAM_CONFIG_STORED_SECRET_FIELD.location.table;
+const UPSTREAM_SECRET_IDENTITY_COLUMN = UPSTREAM_CONFIG_STORED_SECRET_FIELD.location.identityColumn;
+const UPSTREAM_SECRET_COLUMN_SELECT = `${UPSTREAM_CONFIG_SECRET_COLUMN} AS config_json, ${UPSTREAM_STATE_SECRET_COLUMN} AS state_json`;
 
 export const validateStoredSecrets = async (
   db: SqlDatabase,
   storedSecrets: StoredSecretCodec,
 ): Promise<void> => {
-  const upstreamRows = await db
-    .prepare('SELECT id, config_json, state_json FROM upstreams')
-    .all<{ id: string; config_json: string; state_json: string | null }>();
-  for (const row of upstreamRows.results) {
-    await storedSecrets.open(row.config_json, upstreamConfigSecretContext(row.id));
-    if (row.state_json !== null) {
-      await storedSecrets.open(row.state_json, upstreamStateSecretContext(row.id));
-    }
-  }
-
-  const searchRows = await db
-    .prepare(`SELECT ${WEB_SEARCH_SECRET_COLUMNS} FROM search_config`)
-    .all<WebSearchSecretRow>();
-  for (const row of searchRows.results) {
-    for (const field of WEB_SEARCH_STORED_SECRET_FIELDS) {
-      if (row[field.column] !== '') await storedSecrets.open(row[field.column], field.context);
+  for (const field of PROTECTED_STORED_SECRET_FIELDS) {
+    const { table, identityColumn, column } = field.location;
+    const rows = await db.prepare(`SELECT ${identityColumn} AS identity, ${column} AS value FROM ${table}`)
+      .all<{ identity: string | number; value: string | null }>();
+    for (const row of rows.results) {
+      if (row.value === null) {
+        if (!field.nullable) throw new Error(`Protected stored-secret field ${field.id} is unexpectedly NULL`);
+      } else if (!(field.plaintextEmpty && row.value === '')) {
+        await storedSecrets.open(row.value, field.contextFor(row.identity));
+      }
     }
   }
 };
@@ -941,14 +927,14 @@ class SqlUpstreamRepo implements UpstreamRepo {
 
   async list(): Promise<UpstreamRecord[]> {
     const { results } = await this.db
-      .prepare('SELECT id, provider, name, enabled, sort_order, created_at, updated_at, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM upstreams ORDER BY sort_order, created_at')
+      .prepare(`SELECT ${UPSTREAM_SECRET_IDENTITY_COLUMN} AS id, provider, name, enabled, sort_order, created_at, updated_at, ${UPSTREAM_SECRET_COLUMN_SELECT}, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM ${UPSTREAM_SECRET_TABLE} ORDER BY sort_order, created_at`)
       .all<UpstreamRow>();
     return await Promise.all(results.map(row => toUpstreamRecord(row, this.storedSecrets)));
   }
 
   async getById(id: string): Promise<UpstreamRecord | null> {
     const row = await this.db
-      .prepare('SELECT id, provider, name, enabled, sort_order, created_at, updated_at, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM upstreams WHERE id = ?')
+      .prepare(`SELECT ${UPSTREAM_SECRET_IDENTITY_COLUMN} AS id, provider, name, enabled, sort_order, created_at, updated_at, ${UPSTREAM_SECRET_COLUMN_SELECT}, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue FROM ${UPSTREAM_SECRET_TABLE} WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ?`)
       .bind(id)
       .first<UpstreamRow>();
     return row ? await toUpstreamRecord(row, this.storedSecrets) : null;
@@ -965,25 +951,25 @@ class SqlUpstreamRepo implements UpstreamRepo {
   private async saveRecord(upstream: UpstreamRecord, clearModelsCache: boolean): Promise<void> {
     const configJson = await this.storedSecrets.seal(
       serializeStoredConfig(upstream.config),
-      upstreamConfigSecretContext(upstream.id),
+      UPSTREAM_CONFIG_STORED_SECRET_FIELD.contextFor(upstream.id),
     );
     const statePlaintext = serializeStoredState(upstream.state);
     const stateJson = statePlaintext === null
       ? null
-      : await this.storedSecrets.seal(statePlaintext, upstreamStateSecretContext(upstream.id));
+      : await this.storedSecrets.seal(statePlaintext, UPSTREAM_STATE_STORED_SECRET_FIELD.contextFor(upstream.id));
     // created_at is deliberately not in the ON CONFLICT update list: the row's first INSERT
     // wins, and re-saves preserve that timestamp regardless of what the caller passes.
     await this.db
       .prepare(
-        `INSERT INTO upstreams (id, provider, name, enabled, sort_order, created_at, updated_at, config_json, state_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
+        `INSERT INTO ${UPSTREAM_SECRET_TABLE} (${UPSTREAM_SECRET_IDENTITY_COLUMN}, provider, name, enabled, sort_order, created_at, updated_at, ${UPSTREAM_CONFIG_SECRET_COLUMN}, ${UPSTREAM_STATE_SECRET_COLUMN}, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (${UPSTREAM_SECRET_IDENTITY_COLUMN}) DO UPDATE SET
            provider = excluded.provider,
            name = excluded.name,
            enabled = excluded.enabled,
            sort_order = excluded.sort_order,
            updated_at = excluded.updated_at,
-           config_json = excluded.config_json,
-           state_json = excluded.state_json,
+           ${UPSTREAM_CONFIG_SECRET_COLUMN} = excluded.${UPSTREAM_CONFIG_SECRET_COLUMN},
+           ${UPSTREAM_STATE_SECRET_COLUMN} = excluded.${UPSTREAM_STATE_SECRET_COLUMN},
            flag_overrides = excluded.flag_overrides,
            disabled_public_model_ids = excluded.disabled_public_model_ids,
            proxy_fallback_list_json = excluded.proxy_fallback_list_json,
@@ -1010,12 +996,12 @@ class SqlUpstreamRepo implements UpstreamRepo {
   }
 
   async delete(id: string): Promise<boolean> {
-    const result = await this.db.prepare('DELETE FROM upstreams WHERE id = ?').bind(id).run();
+    const result = await this.db.prepare(`DELETE FROM ${UPSTREAM_SECRET_TABLE} WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ?`).bind(id).run();
     return (result.meta.changes ?? 0) > 0;
   }
 
   async deleteAll(): Promise<void> {
-    await this.db.prepare('DELETE FROM upstreams').run();
+    await this.db.prepare(`DELETE FROM ${UPSTREAM_SECRET_TABLE}`).run();
   }
 
   // Written only here and never by save(): an operator edit carries whatever
@@ -1025,7 +1011,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
     const rawConfig = await this.modelsCacheWriteConfig(id, generation);
     if (rawConfig === null) return false;
     const result = await this.db
-      .prepare('UPDATE upstreams SET models_cache_json = ? WHERE id = ? AND updated_at = ? AND config_json = ?')
+      .prepare(`UPDATE ${UPSTREAM_SECRET_TABLE} SET models_cache_json = ? WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ? AND updated_at = ? AND ${UPSTREAM_CONFIG_SECRET_COLUMN} = ?`)
       .bind(encodeUpstreamModelsCache({ ...cache, lastError: null }), id, generation.updatedAt, rawConfig)
       .run();
     return (result.meta.changes ?? 0) > 0;
@@ -1040,7 +1026,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
     const rawConfig = await this.modelsCacheWriteConfig(id, generation);
     if (rawConfig === null) return false;
     const result = await this.db
-      .prepare("UPDATE upstreams SET models_cache_json = json_set(models_cache_json, '$.lastError', json(?)) WHERE id = ? AND updated_at = ? AND config_json = ? AND models_cache_json IS NOT NULL")
+      .prepare(`UPDATE ${UPSTREAM_SECRET_TABLE} SET models_cache_json = json_set(models_cache_json, '$.lastError', json(?)) WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ? AND updated_at = ? AND ${UPSTREAM_CONFIG_SECRET_COLUMN} = ? AND models_cache_json IS NOT NULL`)
       .bind(JSON.stringify(error), id, generation.updatedAt, rawConfig)
       .run();
     return (result.meta.changes ?? 0) > 0;
@@ -1048,11 +1034,11 @@ class SqlUpstreamRepo implements UpstreamRepo {
 
   private async modelsCacheWriteConfig(id: string, generation: ModelsCacheGeneration): Promise<string | null> {
     const row = await this.db
-      .prepare('SELECT updated_at, config_json FROM upstreams WHERE id = ?')
+      .prepare(`SELECT updated_at, ${UPSTREAM_CONFIG_SECRET_COLUMN} AS config_json FROM ${UPSTREAM_SECRET_TABLE} WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ?`)
       .bind(id)
       .first<{ updated_at: string; config_json: string }>();
     if (row === null || row.updated_at !== generation.updatedAt) return null;
-    const configJson = await this.storedSecrets.open(row.config_json, upstreamConfigSecretContext(id));
+    const configJson = await this.storedSecrets.open(row.config_json, UPSTREAM_CONFIG_STORED_SECRET_FIELD.contextFor(id));
     return serializeStoredConfig(decodeUpstreamConfig(configJson, id)) === serializeStoredConfig(generation.config)
       ? row.config_json
       : null;
@@ -1074,13 +1060,13 @@ class SqlUpstreamRepo implements UpstreamRepo {
   async saveState(id: string, mutate: (current: unknown) => unknown): Promise<void> {
     for (let attempt = 0; attempt < UPSTREAM_STATE_WRITE_ATTEMPTS; attempt++) {
       const row = await this.db
-        .prepare('SELECT state_json FROM upstreams WHERE id = ?')
+        .prepare(`SELECT ${UPSTREAM_STATE_SECRET_COLUMN} AS state_json FROM ${UPSTREAM_SECRET_TABLE} WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ?`)
         .bind(id)
         .first<{ state_json: string | null }>();
       if (!row) throw new UpstreamGoneError(id);
       const currentPlaintext = row.state_json === null
         ? null
-        : await this.storedSecrets.open(row.state_json, upstreamStateSecretContext(id));
+        : await this.storedSecrets.open(row.state_json, UPSTREAM_STATE_STORED_SECRET_FIELD.contextFor(id));
       const current = currentPlaintext === null ? null : decodeUpstreamState(currentPlaintext, id);
       const nextPlaintext = serializeStoredState(mutate(current));
       // A mutator that decided there is nothing to do returns what it was
@@ -1088,9 +1074,9 @@ class SqlUpstreamRepo implements UpstreamRepo {
       if (nextPlaintext === currentPlaintext) return;
       const next = nextPlaintext === null
         ? null
-        : await this.storedSecrets.seal(nextPlaintext, upstreamStateSecretContext(id));
+        : await this.storedSecrets.seal(nextPlaintext, UPSTREAM_STATE_STORED_SECRET_FIELD.contextFor(id));
       const result = await this.db
-        .prepare('UPDATE upstreams SET state_json = ? WHERE id = ? AND state_json IS ?')
+        .prepare(`UPDATE ${UPSTREAM_SECRET_TABLE} SET ${UPSTREAM_STATE_SECRET_COLUMN} = ? WHERE ${UPSTREAM_SECRET_IDENTITY_COLUMN} = ? AND ${UPSTREAM_STATE_SECRET_COLUMN} IS ?`)
         .bind(next, id, row.state_json)
         .run();
       if ((result.meta.changes ?? 0) > 0) return;
@@ -1118,10 +1104,10 @@ interface UpstreamRow {
 }
 
 const toUpstreamRecord = async (row: UpstreamRow, storedSecrets: StoredSecretCodec): Promise<UpstreamRecord> => {
-  const configJson = await storedSecrets.open(row.config_json, upstreamConfigSecretContext(row.id));
+  const configJson = await storedSecrets.open(row.config_json, UPSTREAM_CONFIG_STORED_SECRET_FIELD.contextFor(row.id));
   const stateJson = row.state_json === null
     ? null
-    : await storedSecrets.open(row.state_json, upstreamStateSecretContext(row.id));
+    : await storedSecrets.open(row.state_json, UPSTREAM_STATE_STORED_SECRET_FIELD.contextFor(row.id));
   const config = decodeUpstreamConfig(configJson, row.id);
   const state = stateJson === null ? null : decodeUpstreamState(stateJson, row.id);
 

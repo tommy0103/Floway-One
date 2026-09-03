@@ -77,7 +77,7 @@ test('personal storage preserves the original hardening failure as its cause', (
   assertEquals((error.cause as NodeJS.ErrnoException).code, 'EEXIST');
 }));
 
-test('Windows hardening applies an owner-only ACL at every storage boundary', () => withTempPaths(async paths => {
+test('Windows hardening caches an unchanged SQLite file identity and re-hardens each replacement once', () => withTempPaths(async paths => {
   const calls: Array<{ kind: 'directory' | 'file' | 'tree'; path: string }> = [];
   const hardener = new PersonalStorageHardener(paths, {
     platform: 'win32',
@@ -89,12 +89,23 @@ test('Windows hardening applies an owner-only ACL at every storage boundary', ()
   const auxiliaries = ['-journal', '-wal', '-shm'].map(suffix => `${paths.databasePath}${suffix}`);
   await Promise.all([writeFile(paths.databasePath, ''), ...auxiliaries.map(path => writeFile(path, 'first'))]);
   hardener.hardenSqliteFiles(paths.databasePath);
+  const firstCounts = new Map(
+    [paths.databasePath, ...auxiliaries].map(path => [path, calls.filter(call => call.path === path).length]),
+  );
+  hardener.hardenSqliteFiles(paths.databasePath);
+  for (const path of [paths.databasePath, ...auxiliaries]) {
+    assertEquals(calls.filter(call => call.path === path).length, firstCounts.get(path));
+  }
   await Promise.all(auxiliaries.map(path => rm(path)));
   await Promise.all(auxiliaries.map(path => writeFile(path, 'recreated')));
+  const replacementCallStart = calls.length;
   hardener.hardenSqliteFiles(paths.databasePath);
 
   assert(calls.some(call => call.kind === 'tree' && call.path === paths.dataDir));
   assert(calls.some(call => call.kind === 'directory' && call.path.endsWith('nested')));
   assert(calls.some(call => call.kind === 'file' && call.path.endsWith('body.bin')));
-  for (const path of auxiliaries) assertEquals(calls.filter(call => call.path === path).length, 2);
+  for (const path of auxiliaries) {
+    assertEquals(calls.filter(call => call.path === path).length, (firstCounts.get(path) ?? 0) + 1);
+  }
+  assertEquals(calls.slice(replacementCallStart), auxiliaries.map(path => ({ kind: 'file', path })));
 }));
