@@ -1,5 +1,7 @@
 import type { ZodType } from 'zod';
 
+import { secretSafeJsonSyntaxError } from '@floway-dev/platform';
+
 interface StoredJsonMessages {
   malformed: string;
   invalid: string;
@@ -9,7 +11,9 @@ export const parseStoredJson = (raw: string, malformedMessage: string): unknown 
   try {
     return JSON.parse(raw);
   } catch (cause) {
-    throw new Error(malformedMessage, { cause });
+    throw new Error(malformedMessage, {
+      cause: secretSafeJsonSyntaxError(cause, 'Protected stored value contains malformed JSON'),
+    });
   }
 };
 

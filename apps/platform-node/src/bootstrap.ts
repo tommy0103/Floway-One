@@ -1,8 +1,11 @@
+import { createDeviceMasterKeyCreationLock, type DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import { EventTargetChannelBroker } from './event-target-channel-broker.ts';
 import { createNodeExternalResourceFetcher } from './external-resource-fetcher.ts';
 import { nodeFetch } from './fetch.ts';
 import { FsFileStore } from './fs-file-store.ts';
 import { createNodeSqliteDatabase } from './node-sqlite-database.ts';
+import type { PersonalRuntimePaths } from './personal-runtime.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import { nodeRuntimeRootCAs } from './runtime-root-cas.ts';
 import { createSharpImageProcessor } from './sharp-image-processor.ts';
 import { nodeSocketDial } from './socket-dial.ts';
@@ -35,16 +38,33 @@ interface NodeStoragePaths {
 }
 
 export type BootstrapNodePlatformOptions =
-  | { readonly profile: 'personal'; readonly storage: NodeStoragePaths }
+  | {
+    readonly personalStorage: InitializedPersonalStorage;
+    readonly profile: 'personal';
+    readonly storage: PersonalRuntimePaths;
+  }
   | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
 
+export interface BootstrapNodePlatformDependencies {
+  readonly createDeviceMasterKeyCreationLock?: typeof createDeviceMasterKeyCreationLock;
+}
+
+export interface BootstrappedNodePlatform {
+  readonly db: SqlDatabase;
+  readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
+  readonly personalStorage?: InitializedPersonalStorage;
+}
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
   const profile = value ?? 'server';
   if (profile === 'personal' || profile === 'server') return profile;
   throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profile)}`);
 };
 
-export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): { db: SqlDatabase } => {
+export const bootstrapNodePlatform = (
+  options: BootstrapNodePlatformOptions,
+  dependencies: BootstrapNodePlatformDependencies = {},
+): BootstrappedNodePlatform => {
+  const { profile } = options;
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
   initRuntimeProfile(options.profile);
@@ -54,15 +74,19 @@ export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): { 
 
   const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
   const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
+  const personalStorage = profile === 'personal' ? options.personalStorage : undefined;
 
-  const files = new FsFileStore(filesDir);
+  const files = new FsFileStore(filesDir, personalStorage);
   initFileStore(files);
   initSocketDial(nodeSocketDial);
   addTrustedRootCAs(nodeRuntimeRootCAs);
-  const db = createNodeSqliteDatabase(dbPath);
+  const db = createNodeSqliteDatabase(dbPath, { permissions: personalStorage });
   initImageCacheStore(new SqliteImageCacheStore(db, IMAGE_CACHE_POLICY));
   initImageProcessor(createSharpImageProcessor());
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
-  return { db };
+  const deviceMasterKeyCreationLock = profile === 'personal'
+    ? (dependencies.createDeviceMasterKeyCreationLock ?? createDeviceMasterKeyCreationLock)()
+    : undefined;
+  return { db, deviceMasterKeyCreationLock, personalStorage };
 };

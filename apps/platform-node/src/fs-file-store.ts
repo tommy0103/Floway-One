@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import type { FileStore } from '@floway-dev/platform';
 
 // Filesystem-backed FileStore. Every key resolves to a path under `root`.
@@ -9,30 +10,33 @@ import type { FileStore } from '@floway-dev/platform';
 // translated to native path segments on the way in/out so the same key reads
 // identically on Windows and POSIX hosts.
 //
-// Threat model: `root` (`FLOWAY_FILES_DIR`) is gateway-trusted. Everything
-// dumped here is data the gateway already holds in its database (API keys,
-// upstream credentials, request payloads); fs-level access to this directory
-// is already equivalent to gateway compromise. We deliberately do not mode
-// 0o600 / 0o700 the writes — bodies are stored verbatim and the OS-level
-// confidentiality boundary belongs to the operator (umask, mount perms,
-// dedicated user). The dashboard redacts sensitive headers at render time
-// for human display, but the on-disk record stays untouched so an operator
-// can replay or diff against upstream byte-for-byte.
+// Server deployments retain their operator-owned umask/mount boundary.
+// Personal composition supplies a private-storage policy so every directory
+// and body is current-user-only without changing the stored bytes.
 export class FsFileStore implements FileStore {
   private readonly root: string;
 
-  constructor(root: string) {
+  constructor(root: string, private readonly permissions?: InitializedPersonalStorage) {
     // Resolve once so `pathFor` can verify resolved paths still live under it.
     this.root = resolve(root);
-    // Ensure the root exists so the first put() doesn't race against a missing
-    // directory and so tests / fresh deploys see a consistent structure.
-    mkdirSync(this.root, { recursive: true });
+    // Standalone/server stores own root creation. Personal stores receive a
+    // nominal capability whose factory already created and hardened this root.
+    if (permissions === undefined) mkdirSync(this.root, { recursive: true });
   }
 
   async put(key: string, body: Uint8Array): Promise<void> {
     const path = this.pathFor(key);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, body);
+    if (this.permissions === undefined) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, body);
+      return;
+    }
+    // A root-level body inherits the already-hardened root. Only nested keys
+    // create a new directory that needs explicit hardening.
+    const parent = dirname(path);
+    if (parent !== this.root) this.permissions.ensureDirectory(parent);
+    await writeFile(path, body, { mode: 0o600 });
+    this.permissions.hardenFile(path);
   }
 
   async get(key: string): Promise<Uint8Array | null> {

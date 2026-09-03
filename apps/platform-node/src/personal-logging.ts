@@ -11,6 +11,8 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
+import type { InitializedPersonalStorage } from './personal-storage.ts';
+
 export const PERSONAL_STDOUT_LOG = 'floway.stdout.log';
 export const PERSONAL_STDERR_LOG = 'floway.stderr.log';
 export const DEFAULT_LOG_MAX_BYTES = 1024 * 1024;
@@ -19,6 +21,7 @@ export const DEFAULT_LOG_FILE_COUNT = 3;
 interface PersonalLoggingOptions {
   readonly maxBytes?: number;
   readonly maxFiles?: number;
+  readonly permissions?: InitializedPersonalStorage;
   readonly stderr?: NodeJS.WriteStream;
   readonly stdout?: NodeJS.WriteStream;
 }
@@ -36,12 +39,14 @@ class RotatingFileSink {
     private readonly path: string,
     private readonly maxBytes: number,
     private readonly maxFiles: number,
+    private readonly permissions?: InitializedPersonalStorage,
   ) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Log maxBytes must be a positive integer');
     if (!Number.isSafeInteger(maxFiles) || maxFiles < 1) throw new Error('Log maxFiles must be a positive integer');
 
     writeFileSync(path, '', { flag: 'a', mode: 0o600 });
     chmodSync(path, 0o600);
+    permissions?.hardenFile(path);
     this.size = statSync(path).size;
     if (this.size > maxBytes) {
       truncateSync(path, maxBytes);
@@ -72,6 +77,7 @@ class RotatingFileSink {
     }
     writeFileSync(this.path, '', { mode: 0o600 });
     chmodSync(this.path, 0o600);
+    this.permissions?.hardenFile(this.path);
     this.size = 0;
   }
 }
@@ -142,10 +148,22 @@ export const installPersonalLogging = (
   const maxBytes = options.maxBytes ?? DEFAULT_LOG_MAX_BYTES;
   const maxFiles = options.maxFiles ?? DEFAULT_LOG_FILE_COUNT;
   try {
-    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') chmodSync(logsDir, 0o700);
-    const stdoutSink = new RotatingFileSink(join(logsDir, PERSONAL_STDOUT_LOG), maxBytes, maxFiles);
-    const stderrSink = new RotatingFileSink(join(logsDir, PERSONAL_STDERR_LOG), maxBytes, maxFiles);
+    if (options.permissions === undefined) {
+      mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+      if (process.platform !== 'win32') chmodSync(logsDir, 0o700);
+    }
+    const stdoutSink = new RotatingFileSink(
+      join(logsDir, PERSONAL_STDOUT_LOG),
+      maxBytes,
+      maxFiles,
+      options.permissions,
+    );
+    const stderrSink = new RotatingFileSink(
+      join(logsDir, PERSONAL_STDERR_LOG),
+      maxBytes,
+      maxFiles,
+      options.permissions,
+    );
     let runtimeFailureReported = false;
     let fatalReported = false;
     const writeFatalOnce = (cause: unknown): void => {

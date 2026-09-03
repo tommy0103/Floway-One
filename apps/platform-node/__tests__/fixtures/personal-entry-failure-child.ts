@@ -9,9 +9,10 @@ const [mode, dataDir] = process.argv.slice(2);
 if (mode === undefined || dataDir === undefined) throw new Error('Expected a failure mode and data directory');
 
 process.env.FLOWAY_PROFILE = 'personal';
-if (mode !== 'profile-invariant') delete process.env.NODE_ENV;
+delete process.env.NODE_ENV;
 
 const paths: PersonalRuntimePaths = {
+  credentialLockDatabasePath: join(dataDir, 'credential-lock', 'device-master-key-v1.creation-lock.db'),
   dataDir,
   databasePath: join(dataDir, 'floway.db'),
   filesDir: join(dataDir, 'files'),
@@ -31,10 +32,12 @@ if (mode === 'corrupt-state') {
 
 if (mode === 'corrupt-state' || mode === 'invalid-port' || mode === 'state-write') {
   await runNodeEntry({
+    args: [],
     resolvePersonalRuntimePaths: () => paths,
   });
 } else if (mode === 'migration') {
   await runNodeEntry({
+    args: [],
     resolvePersonalRuntimePaths: () => paths,
     start: async () => {
       throw new Error('forced migration failure', { cause: new Error('forced SQLite cause') });
@@ -42,6 +45,7 @@ if (mode === 'corrupt-state' || mode === 'invalid-port' || mode === 'state-write
   });
 } else if (mode === 'after-listen-server' || mode === 'after-listen-rejection') {
   await runNodeEntry({
+    args: [],
     resolvePersonalRuntimePaths: () => paths,
     start: async () => {
       const server = createServer();
@@ -63,10 +67,6 @@ if (mode === 'corrupt-state' || mode === 'invalid-port' || mode === 'state-write
       });
       return address;
     },
-  });
-} else if (mode === 'profile-invariant') {
-  await runNodeEntry({
-    resolvePersonalRuntimePaths: () => paths,
   });
 } else {
   throw new Error(`Unsupported failure mode: ${mode}`);

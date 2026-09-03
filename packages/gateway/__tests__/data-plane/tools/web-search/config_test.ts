@@ -11,22 +11,22 @@ import { assertEquals, assertRejects, assertThrows } from '@floway-dev/test-util
 
 interface WebSearchConfigRow {
   provider: string;
-  tavily_api_key: string;
-  microsoft_web_iq_api_key: string;
-  jina_api_key: string;
+  protected_tavily_api_key: string;
+  protected_microsoft_web_iq_api_key: string;
+  protected_jina_api_key: string;
   passthrough_openai_search: number;
   alpha_search_upstream_id: string;
   alpha_search_model: string;
 }
 
-const SELECT_SQL = 'SELECT provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM search_config WHERE id = 1';
-const UPSERT_SQL = `INSERT INTO search_config (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
+const SELECT_SQL = 'SELECT provider, protected_tavily_api_key, protected_microsoft_web_iq_api_key, protected_jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM search_config WHERE id = 1';
+const UPSERT_SQL = `INSERT INTO search_config (id, provider, protected_tavily_api_key, protected_microsoft_web_iq_api_key, protected_jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
          VALUES (1, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
          ON CONFLICT (id) DO UPDATE SET
            provider = excluded.provider,
-           tavily_api_key = excluded.tavily_api_key,
-           microsoft_web_iq_api_key = excluded.microsoft_web_iq_api_key,
-           jina_api_key = excluded.jina_api_key,
+           protected_tavily_api_key = excluded.protected_tavily_api_key,
+           protected_microsoft_web_iq_api_key = excluded.protected_microsoft_web_iq_api_key,
+           protected_jina_api_key = excluded.protected_jina_api_key,
            passthrough_openai_search = excluded.passthrough_openai_search,
            alpha_search_upstream_id = excluded.alpha_search_upstream_id,
            alpha_search_model = excluded.alpha_search_model,
@@ -58,9 +58,9 @@ class FakeSqlPreparedStatement {
     if (this.query === UPSERT_SQL) {
       this.db.webSearchConfig = {
         provider: String(this.binds[0]),
-        tavily_api_key: String(this.binds[1]),
-        microsoft_web_iq_api_key: String(this.binds[2]),
-        jina_api_key: String(this.binds[3]),
+        protected_tavily_api_key: String(this.binds[1]),
+        protected_microsoft_web_iq_api_key: String(this.binds[2]),
+        protected_jina_api_key: String(this.binds[3]),
         passthrough_openai_search: Number(this.binds[4]),
         alpha_search_upstream_id: String(this.binds[5]),
         alpha_search_model: String(this.binds[6]),
@@ -198,9 +198,9 @@ test('saveWebSearchConfig writes the typed columns and round-trips through the s
   });
   assertEquals(db.webSearchConfig, {
     provider: 'disabled',
-    tavily_api_key: 'tvly-test',
-    microsoft_web_iq_api_key: 'ms-test',
-    jina_api_key: 'jina-test',
+    protected_tavily_api_key: 'tvly-test',
+    protected_microsoft_web_iq_api_key: 'ms-test',
+    protected_jina_api_key: 'jina-test',
     passthrough_openai_search: 0,
     alpha_search_upstream_id: '',
     alpha_search_model: '',

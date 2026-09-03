@@ -8,7 +8,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "start": "tsx entry.ts"
+    "test:packaged": "jiti __tests__/packaged-node-verifier.ts",
+    "start": "tsx entry.ts",
+    "start:personal": "tsx entry.ts --profile=personal"
   },
   "dependencies": {
     "@floway-dev/gateway": "workspace:*",
@@ -16,6 +18,7 @@
     "@floway-dev/platform": "workspace:*",
     "@floway-dev/protocols": "workspace:*",
     "@hono/node-server": "^2.0.4",
+    "@napi-rs/keyring": "2.0.0",
     "hono": "^4",
     "sharp": "^0.35.3",
     "tsx": "^4",

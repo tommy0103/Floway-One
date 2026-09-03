@@ -2,7 +2,20 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import type { SqlBindValue, SqlDatabase, SqlPreparedStatement, SqlResult } from '@floway-dev/platform';
+
+const withPostcondition = <T>(operation: () => T, postcondition: () => void): T => {
+  let result: T;
+  try {
+    result = operation();
+  } catch (cause) {
+    try { postcondition(); } catch { /* the database error remains authoritative */ }
+    throw cause;
+  }
+  postcondition();
+  return result;
+};
 
 // node:sqlite's prepared statement is synchronous and returns plain rows.
 // We adapt it to the platform's async, enveloped contract. bind() returns a
@@ -12,24 +25,34 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
   constructor(
     private readonly stmt: StatementSync,
     private readonly bound: readonly SqlBindValue[] = [],
+    private readonly hardenFiles: () => void = () => undefined,
   ) {}
 
   bind(...values: SqlBindValue[]): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.stmt, values);
+    return new NodeSqlitePreparedStatement(this.stmt, values, this.hardenFiles);
   }
 
   first<T = Record<string, unknown>>(): Promise<T | null> {
-    const row = this.stmt.get(...(this.bound as never[]));
+    const row = withPostcondition(
+      () => this.stmt.get(...(this.bound as never[])),
+      this.hardenFiles,
+    );
     return Promise.resolve((row as T | undefined) ?? null);
   }
 
   all<T = Record<string, unknown>>(): Promise<SqlResult<T>> {
-    const rows = this.stmt.all(...(this.bound as never[])) as T[];
+    const rows = withPostcondition(
+      () => this.stmt.all(...(this.bound as never[])) as T[],
+      this.hardenFiles,
+    );
     return Promise.resolve({ results: rows, success: true, meta: {} });
   }
 
   runSync(): SqlResult {
-    const result = this.stmt.run(...(this.bound as never[]));
+    const result = withPostcondition(
+      () => this.stmt.run(...(this.bound as never[])),
+      this.hardenFiles,
+    );
     return {
       results: [],
       success: true,
@@ -43,10 +66,10 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
 }
 
 class NodeSqliteDatabase implements SqlDatabase {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: DatabaseSync, private readonly hardenFiles: () => void) {}
 
   prepare(query: string): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.db.prepare(query));
+    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], this.hardenFiles);
   }
 
   // Wraps the supplied statements in a single transaction so the batch is
@@ -65,6 +88,7 @@ class NodeSqliteDatabase implements SqlDatabase {
         return stmt.runSync();
       });
       this.db.exec('COMMIT');
+      this.hardenFiles();
       return Promise.resolve(results);
     } catch (e) {
       // SQLite auto-rolls-back on a hard error class (SQLITE_FULL,
@@ -75,24 +99,40 @@ class NodeSqliteDatabase implements SqlDatabase {
       // the original failure on the way out. Swallow that recovery throw
       // so `throw e` always wins and the operator sees the real cause.
       try { this.db.exec('ROLLBACK'); } catch { /* txn already auto-rolled-back */ }
+      try { this.hardenFiles(); } catch { /* preserve the transaction failure */ }
       throw e;
     }
   }
 
   exec(sql: string): Promise<unknown> {
-    this.db.exec(sql);
+    withPostcondition(() => this.db.exec(sql), this.hardenFiles);
     return Promise.resolve(undefined);
   }
 }
 
-export const createNodeSqliteDatabase = (path: string): SqlDatabase => {
-  // node:sqlite throws ERR_SQLITE_ERROR ("unable to open database file") when
-  // the parent directory is missing — unhelpful on a fresh deploy. Each
-  // component owns its own root.
-  mkdirSync(dirname(path), { recursive: true });
+interface CreateNodeSqliteDatabaseOptions {
+  readonly permissions?: InitializedPersonalStorage;
+}
+
+export const createNodeSqliteDatabase = (
+  path: string,
+  options: CreateNodeSqliteDatabaseOptions = {},
+): SqlDatabase => {
+  // Standalone/server databases own parent creation. Personal databases
+  // receive a nominal capability whose factory already created and hardened
+  // the application-data root before this consumer can open SQLite.
+  if (options.permissions === undefined) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  const hardenFiles = (): void => options.permissions?.hardenSqliteFiles(path);
+  try {
+    hardenFiles();
+  } catch (cause) {
+    try { db.close(); } catch { /* preserve the hardening failure */ }
+    throw cause;
+  }
   // node:sqlite leaves foreign keys off by default; the schema relies on FK
   // enforcement, so turn it on at open.
   db.exec('PRAGMA foreign_keys = ON');
-  return new NodeSqliteDatabase(db);
+  hardenFiles();
+  return new NodeSqliteDatabase(db, hardenFiles);
 };
