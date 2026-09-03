@@ -95,7 +95,18 @@ export interface PersonalStorageHardenerOptions {
   readonly platform?: NodeJS.Platform;
   readonly posixUid?: number;
   readonly applyWindowsAcl?: (path: string, kind: WindowsAclKind) => void;
+  readonly fileSystem?: PersonalStorageFileSystem;
 }
+
+export interface PersonalStorageFileSystem {
+  createDirectory(path: string): void;
+  setMode(path: string, mode: number): void;
+}
+
+const defaultPersonalStorageFileSystem: PersonalStorageFileSystem = {
+  createDirectory: path => mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE }),
+  setMode: (path, mode) => chmodSync(path, mode),
+};
 
 const sqliteFiles = (databasePath: string): readonly string[] => [
   databasePath,
@@ -109,6 +120,7 @@ class PersonalStorageHardener implements InitializedPersonalStorage {
   private readonly platform: NodeJS.Platform;
   private readonly posixUid: number;
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
+  private readonly fileSystem: PersonalStorageFileSystem;
   private readonly hardenedWindowsPaths = new Map<string, string>();
   private readonly verifiedWindowsInheritableDirectories = new Set<string>();
   private readonly verifiedWindowsSqlitePaths = new Map<string, string>();
@@ -120,6 +132,7 @@ class PersonalStorageHardener implements InitializedPersonalStorage {
     this.platform = options.platform ?? process.platform;
     this.posixUid = options.posixUid ?? userInfo().uid;
     this.applyWindowsAcl = options.applyWindowsAcl ?? applyWindowsOwnerOnlyAcl;
+    this.fileSystem = options.fileSystem ?? defaultPersonalStorageFileSystem;
   }
 
   static initialize(
@@ -159,7 +172,7 @@ class PersonalStorageHardener implements InitializedPersonalStorage {
 
   ensureDirectory(path: string): void {
     try {
-      mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+      this.fileSystem.createDirectory(path);
       this.applyPrivateAccess(path, 'directory');
     } catch (cause) {
       throw new Error(`Floway could not enforce current-user-only access on directory ${path}`, { cause });
@@ -193,7 +206,7 @@ class PersonalStorageHardener implements InitializedPersonalStorage {
 
   private createDirectory(path: string): void {
     try {
-      mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+      this.fileSystem.createDirectory(path);
     } catch (cause) {
       throw new Error(`Floway could not enforce current-user-only access on directory ${path}`, { cause });
     }
@@ -244,7 +257,7 @@ class PersonalStorageHardener implements InitializedPersonalStorage {
     }
 
     const expectedMode = kind === 'directory' ? PRIVATE_DIRECTORY_MODE : PRIVATE_FILE_MODE;
-    chmodSync(path, expectedMode);
+    this.fileSystem.setMode(path, expectedMode);
     const verified = statSync(path);
     if (verified.uid !== this.posixUid || (verified.mode & 0o777) !== expectedMode) {
       throw new Error(`Floway could not verify current-user-only access on ${path}`);

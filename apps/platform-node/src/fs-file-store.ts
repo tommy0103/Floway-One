@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 
-import type { PrivateStoragePermissions } from './personal-storage.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import type { FileStore } from '@floway-dev/platform';
 
 // Filesystem-backed FileStore. Every key resolves to a path under `root`.
@@ -16,13 +16,12 @@ import type { FileStore } from '@floway-dev/platform';
 export class FsFileStore implements FileStore {
   private readonly root: string;
 
-  constructor(root: string, private readonly permissions?: PrivateStoragePermissions) {
+  constructor(root: string, private readonly permissions?: InitializedPersonalStorage) {
     // Resolve once so `pathFor` can verify resolved paths still live under it.
     this.root = resolve(root);
-    // Ensure the root exists so the first put() doesn't race against a missing
-    // directory and so tests / fresh deploys see a consistent structure.
+    // Standalone/server stores own root creation. Personal stores receive a
+    // nominal capability whose factory already created and hardened this root.
     if (permissions === undefined) mkdirSync(this.root, { recursive: true });
-    else permissions.ensureDirectory(this.root);
   }
 
   async put(key: string, body: Uint8Array): Promise<void> {
@@ -32,7 +31,10 @@ export class FsFileStore implements FileStore {
       await writeFile(path, body);
       return;
     }
-    this.permissions.ensureDirectory(dirname(path));
+    // A root-level body inherits the already-hardened root. Only nested keys
+    // create a new directory that needs explicit hardening.
+    const parent = dirname(path);
+    if (parent !== this.root) this.permissions.ensureDirectory(parent);
     await writeFile(path, body, { mode: 0o600 });
     this.permissions.hardenFile(path);
   }

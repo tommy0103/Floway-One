@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
-import type { PrivateStoragePermissions } from './personal-storage.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import type { SqlBindValue, SqlDatabase, SqlPreparedStatement, SqlResult } from '@floway-dev/platform';
 
 const withPostcondition = <T>(operation: () => T, postcondition: () => void): T => {
@@ -111,18 +111,17 @@ class NodeSqliteDatabase implements SqlDatabase {
 }
 
 interface CreateNodeSqliteDatabaseOptions {
-  readonly permissions?: PrivateStoragePermissions;
+  readonly permissions?: InitializedPersonalStorage;
 }
 
 export const createNodeSqliteDatabase = (
   path: string,
   options: CreateNodeSqliteDatabaseOptions = {},
 ): SqlDatabase => {
-  // node:sqlite throws ERR_SQLITE_ERROR ("unable to open database file") when
-  // the parent directory is missing — unhelpful on a fresh deploy. Each
-  // component owns its own root.
+  // Standalone/server databases own parent creation. Personal databases
+  // receive a nominal capability whose factory already created and hardened
+  // the application-data root before this consumer can open SQLite.
   if (options.permissions === undefined) mkdirSync(dirname(path), { recursive: true });
-  else options.permissions.ensureDirectory(dirname(path));
   const db = new DatabaseSync(path);
   const hardenFiles = (): void => options.permissions?.hardenSqliteFiles(path);
   try {
