@@ -119,11 +119,21 @@ mod desktop {
 
     use super::{DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, resolve_runtime_bundle};
 
+    // Keyring's loader exclusively tries this override when it is present.
+    // https://github.com/Brooooooklyn/keyring-node/blob/f3449416a1b4bf11b0570f0a49395aacc84c8608/index.js#L63-L70
     const PACKAGE_VERIFICATION_SCRIPT: &str = r#"
 const watchdog = setTimeout(() => {
   console.error('Floway package verification sidecar timed out');
   process.exit(70);
 }, 10_000);
+const { access } = await import('node:fs/promises');
+try {
+  await access('.verify-broken-keyring');
+  const { resolve } = await import('node:path');
+  process.env.NAPI_RS_NATIVE_LIBRARY_PATH = resolve('missing-keyring.node');
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+}
 const keyring = await import('@napi-rs/keyring');
 if (typeof keyring.Entry !== 'function') throw new Error('Floway package verification could not load the Keyring native entry');
 await import('@floway-dev/gateway');

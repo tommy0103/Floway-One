@@ -10,6 +10,7 @@ import {
   realpath,
   rename,
   rm,
+  writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -188,7 +189,6 @@ try {
   const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
   const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
   const installedEntry = resolve(installedPlatformNode, 'entry.js');
-  const installedKeyringEntry = resolve(installedApp, keyringEntryRelative);
 
   const launched = await execFileAsync(installedExecutable, ['--verify-package'], { timeout: 30_000 });
   if (!launched.stdout.includes('Floway package verification succeeded')) {
@@ -206,15 +206,22 @@ try {
     await rename(missingEntry, installedEntry);
   }
 
-  const brokenKeyringEntry = `${installedKeyringEntry}.broken`;
-  await rename(installedKeyringEntry, brokenKeyringEntry);
+  const keyringFaultMarker = resolve(installedPlatformNode, '.verify-broken-keyring');
+  const missingKeyring = resolve(installedPlatformNode, 'missing-keyring.node');
+  try {
+    await access(missingKeyring);
+    throw new Error(`Broken Keyring fault path unexpectedly exists: ${missingKeyring}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await writeFile(keyringFaultMarker, 'force the packaged Keyring native loader to fail');
   try {
     const output = await runExpectedFailure(installedExecutable, ['keyring', 'verification sidecar exited']);
     const failedPid = readSidecarPid(output);
     if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
     assertProcessStopped(failedPid);
   } finally {
-    await rename(brokenKeyringEntry, installedKeyringEntry);
+    await rm(keyringFaultMarker, { force: true });
   }
 
   const nodeFile = await open(installedNode, 'r+');
