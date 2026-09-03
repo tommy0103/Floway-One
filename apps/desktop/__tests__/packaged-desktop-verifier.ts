@@ -13,7 +13,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -61,10 +61,14 @@ const errorOutput = (error: unknown): string => {
     .join('\n');
 };
 
-const runExpectedFailure = async (executable: string, expectedFragments: readonly string[]): Promise<string> => {
+const runExpectedFailure = async (
+  executable: string,
+  expectedFragments: readonly string[],
+  environment?: NodeJS.ProcessEnv,
+): Promise<string> => {
   let output: string;
   try {
-    await execFileAsync(executable, ['--verify-package'], { timeout: 30_000 });
+    await execFileAsync(executable, ['--verify-package'], { env: environment, timeout: 30_000 });
     throw new Error('Expected packaged application verification to fail');
   } catch (error) {
     output = errorOutput(error);
@@ -183,7 +187,6 @@ try {
   const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
   const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
   const installedEntry = resolve(installedPlatformNode, 'entry.js');
-  const installedKeyrings = keyringNatives.map(path => resolve(installedApp, relative(appRoot, path)));
 
   const launched = await execFileAsync(installedExecutable, ['--verify-package'], { timeout: 30_000 });
   if (!launched.stdout.includes('Floway package verification succeeded')) {
@@ -201,20 +204,24 @@ try {
     await rename(missingEntry, installedEntry);
   }
 
-  const brokenKeyrings = installedKeyrings.map(path => ({ path, moved: `${path}.broken` }));
-  const movedKeyrings: typeof brokenKeyrings = [];
+  const missingKeyring = resolve(isolatedRoot, 'missing-keyring.node');
   try {
-    for (const keyring of brokenKeyrings) {
-      await rename(keyring.path, keyring.moved);
-      movedKeyrings.push(keyring);
-    }
-    const output = await runExpectedFailure(installedExecutable, ['keyring', 'verification sidecar exited']);
-    const failedPid = readSidecarPid(output);
-    if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
-    assertProcessStopped(failedPid);
-  } finally {
-    for (const keyring of movedKeyrings.reverse()) await rename(keyring.moved, keyring.path);
+    await access(missingKeyring);
+    throw new Error(`Broken Keyring fault path unexpectedly exists: ${missingKeyring}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+  // Keyring's loader exclusively tries this override when it is present, making
+  // a proven-missing path a deterministic native-load fault rather than a layout guess.
+  // https://github.com/Brooooooklyn/keyring-node/blob/f3449416a1b4bf11b0570f0a49395aacc84c8608/index.js#L63-L70
+  const output = await runExpectedFailure(
+    installedExecutable,
+    ['keyring', 'verification sidecar exited'],
+    { ...process.env, NAPI_RS_NATIVE_LIBRARY_PATH: missingKeyring },
+  );
+  const failedPid = readSidecarPid(output);
+  if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
+  assertProcessStopped(failedPid);
 
   const nodeFile = await open(installedNode, 'r+');
   const originalCpuType = Buffer.alloc(4);
