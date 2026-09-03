@@ -176,11 +176,7 @@ clearTimeout(watchdog);
         let (mut events, child) = app
             .shell()
             .sidecar(NODE_SIDECAR_NAME)?
-            .args([
-                "--input-type=module".into(),
-                "--eval".into(),
-                PACKAGE_VERIFICATION_SCRIPT.into(),
-            ])
+            .args(["--input-type=module", "--eval", PACKAGE_VERIFICATION_SCRIPT])
             .current_dir(runtime.root.join("apps/platform-node"))
             .spawn()?;
         println!("Floway package verification sidecar pid {}", child.pid());
