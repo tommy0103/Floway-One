@@ -76,35 +76,43 @@ try {
   await runPnpm(['run', 'build:web']);
   for (const targetTriple of MACOS_TARGET_TRIPLES) {
     const distributionRoot = resolve(desktopRoot, 'src-tauri/.desktop-verification', targetTriple);
-    const nodeExecutable = await acquireNodeDistribution(packagedNodeVersion, targetTriple, distributionRoot);
-    const launch = await canExecuteNode(nodeExecutable);
-    const environment = {
-      ...process.env,
-      FLOWAY_DESKTOP_EXECUTE_NODE: launch ? '1' : '0',
-      FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
-    };
-    await runPnpm([
-      '--filter',
-      '@floway-dev/desktop',
-      'exec',
-      'tauri',
-      'build',
-      '--debug',
-      '--bundles',
-      'app',
-      '--target',
-      targetTriple,
-    ], environment);
-    await runPnpm([
-      '--filter',
-      '@floway-dev/desktop',
-      'run',
-      'test:packaged:macos',
-      '--',
-      '--profile=debug',
-      `--target=${targetTriple}`,
-      `--launch=${launch ? 'yes' : 'no'}`,
-    ], environment);
+    const targetOutput = resolve(desktopRoot, 'src-tauri/target', targetTriple);
+    try {
+      const nodeExecutable = await acquireNodeDistribution(packagedNodeVersion, targetTriple, distributionRoot);
+      const launch = await canExecuteNode(nodeExecutable);
+      const environment = {
+        ...process.env,
+        FLOWAY_DESKTOP_EXECUTE_NODE: launch ? '1' : '0',
+        FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
+      };
+      await runPnpm([
+        '--filter',
+        '@floway-dev/desktop',
+        'exec',
+        'tauri',
+        'build',
+        '--debug',
+        '--bundles',
+        'app',
+        '--target',
+        targetTriple,
+      ], environment);
+      await runPnpm([
+        '--filter',
+        '@floway-dev/desktop',
+        'run',
+        'test:packaged:macos',
+        '--',
+        '--profile=debug',
+        `--target=${targetTriple}`,
+        `--launch=${launch ? 'yes' : 'no'}`,
+      ], environment);
+    } finally {
+      await Promise.all([
+        rm(targetOutput, { force: true, recursive: true }),
+        rm(distributionRoot, { force: true, recursive: true }),
+      ]);
+    }
   }
 } finally {
   await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
