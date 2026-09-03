@@ -275,6 +275,31 @@ test('personal startup preserves malformed web search envelope causes', () => wi
   },
 ));
 
+test('personal startup validates decrypted upstream JSON without exposing malformed plaintext', async () => {
+  const key = new Uint8Array(32).fill(4);
+  const codec = createAes256GcmStoredSecretCodec(key);
+  const sentinel = 'LEAKME9';
+  await withSqliteStoredValues({
+    configJson: await codec.seal(
+      `{"apiKey":${sentinel}}`,
+      testContext('upstream:up_startup:config'),
+    ),
+  }, async database => {
+    const error = await assertRejects(
+      () => createNodeStoredSecretCodec(
+        'personal',
+        database,
+        creationLock,
+        new MemoryDeviceMasterKeyCredential(key),
+      ),
+      Error,
+      'Malformed upstream config JSON for up_startup',
+    );
+    assert(error.cause instanceof SyntaxError);
+    assertEquals(`${error.stack}\n${error.cause.stack}`.includes(sentinel), false);
+  });
+});
+
 test('personal startup rejects unsupported upstream envelope versions', () => withSqliteStoredValues(
   {
     configJson: JSON.stringify({

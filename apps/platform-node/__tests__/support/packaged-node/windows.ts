@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+// Native Windows packaged-verifier boundaries live with the owning Node app.
+
 // Microsoft documents this GUID as FOLDERID_RoamingAppData.
 // https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/shell/knownfolderid.md#folderid_roamingappdata
 export const WINDOWS_ROAMING_APP_DATA_FOLDER_ID = '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D';

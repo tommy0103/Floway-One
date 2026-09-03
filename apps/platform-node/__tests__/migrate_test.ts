@@ -1,6 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { test } from 'vitest';
@@ -13,7 +14,7 @@ import {
   WEB_SEARCH_STORED_SECRET_FIELDS,
 } from '@floway-dev/gateway';
 import { migrationsDir } from '@floway-dev/gateway/migrations-dir';
-import { createAes256GcmStoredSecretCodec, type StoredSecretCodec } from '@floway-dev/platform';
+import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretCodec } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const withTemp = async (fn: (dir: string) => Promise<void>): Promise<void> => {
@@ -288,4 +289,53 @@ test('legacy plaintext adoption seals upstream and search values through 0084', 
     .first<{ protected_tavily_api_key: string }>();
   assert(search !== null);
   assertEquals(await setup.codec.open(search.protected_tavily_api_key, WEB_SEARCH_STORED_SECRET_FIELDS[0].context), sentinel);
+}));
+
+test('reader-blocked final cleanup checkpoint keeps the gate until a clean restart', () => withTemp(async dir => {
+  const sentinel = 'legacy-reader-cleanup-secret';
+  const setup = await prepareProtectedMigration(dir, 'WAL', sentinel);
+  await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
+  await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind('0083_canonical_protocol_names.sql').run();
+  await setup.db.prepare('UPDATE upstreams SET config_json = ?')
+    .bind(`{"apiKey":"${sentinel}"}`)
+    .run();
+  await setup.db.prepare('UPDATE search_config SET tavily_api_key = ?').bind(sentinel).run();
+
+  let blockingReader: DatabaseSync | undefined;
+  let blockFinalCheckpoint = true;
+  const database: SqlDatabase = {
+    prepare: query => setup.db.prepare(query),
+    exec: async sql => {
+      const result = await setup.db.exec(sql === 'PRAGMA busy_timeout = 30000'
+        ? 'PRAGMA busy_timeout = 50'
+        : sql);
+      if (blockFinalCheckpoint && sql === 'VACUUM') {
+        blockFinalCheckpoint = false;
+        blockingReader = new DatabaseSync(setup.databasePath);
+        blockingReader.exec('BEGIN');
+        blockingReader.prepare('SELECT COUNT(*) FROM search_config').get();
+      }
+      return result;
+    },
+  };
+
+  await assertRejects(
+    () => applyMigrations(database, setup.migrationDir, setup.codec, { adoptLegacyPlaintext: true }),
+    Error,
+    'Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation',
+  );
+  assertEquals(
+    await setup.db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first(),
+    { id: 1 },
+  );
+  await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+
+  blockingReader?.exec('ROLLBACK');
+  blockingReader?.close();
+  await applyMigrations(setup.db, setup.migrationDir, setup.codec);
+  assertEquals(
+    await setup.db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first(),
+    null,
+  );
+  await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 }));

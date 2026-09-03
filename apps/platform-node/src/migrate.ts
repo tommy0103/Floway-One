@@ -21,11 +21,17 @@ interface OpenedProtectedValue {
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
-const openProtectedValues = async (
+type OpenMigrationValue = (
+  stored: string,
+  transition: ProtectedMigrationFieldPlan,
+  identity: string | number,
+) => Promise<string>;
+
+const openMigrationValues = async (
   db: SqlDatabase,
-  storedSecrets: StoredSecretCodec,
   file: string,
   plan: ProtectedMigrationPlan,
+  openValue: OpenMigrationValue,
 ): Promise<readonly OpenedProtectedValue[]> => {
   const opened: OpenedProtectedValue[] = [];
   for (const transition of plan.fields) {
@@ -37,7 +43,7 @@ const openProtectedValues = async (
       ).all<{ identity: string | number; value: string | null }>();
     } catch (cause) {
       throw new Error(
-        `Floway One migration ${file} could not read protected field ${transition.field.id} at ${table}.${column}`,
+        `Floway One migration ${file} could not read protected migration field ${transition.field.id} at ${table}.${column}`,
         { cause },
       );
     }
@@ -52,35 +58,8 @@ const openProtectedValues = async (
       opened.push({
         transition,
         identity: row.identity,
-        plaintext: await storedSecrets.open(row.value, transition.field.contextFor(row.identity)),
+        plaintext: await openValue(row.value, transition, row.identity),
       });
-    }
-  }
-  return opened;
-};
-
-const openLegacyValues = async (
-  db: SqlDatabase,
-  file: string,
-  plan: ProtectedMigrationPlan,
-): Promise<readonly OpenedProtectedValue[]> => {
-  const opened: OpenedProtectedValue[] = [];
-  for (const transition of plan.fields) {
-    const { table, identityColumn, column } = transition.before;
-    let rows: { results: Array<{ identity: string | number; value: string | null }> };
-    try {
-      rows = await db.prepare(
-        `SELECT ${quoteIdentifier(identityColumn)} AS identity, ${quoteIdentifier(column)} AS value FROM ${quoteIdentifier(table)}`,
-      ).all<{ identity: string | number; value: string | null }>();
-    } catch (cause) {
-      throw new Error(
-        `Floway One migration ${file} could not read legacy field ${transition.field.id} at ${table}.${column}`,
-        { cause },
-      );
-    }
-    for (const row of rows.results) {
-      if (row.value === null || (transition.field.plaintextEmpty && row.value === '')) continue;
-      opened.push({ transition, identity: row.identity, plaintext: row.value });
     }
   }
   return opened;
@@ -128,7 +107,14 @@ export const applyMigrations = async (
   storedSecrets?: StoredSecretCodec,
   options: { readonly adoptLegacyPlaintext?: boolean; readonly through?: string } = {},
 ): Promise<void> => {
+  // SQLite runs the configured busy handler for the connection when a lock
+  // cannot be obtained. The PRAGMA is the connection-level form of
+  // sqlite3_busy_timeout().
+  // https://sqlite.org/pragma.html#pragma_busy_timeout
   await db.exec('PRAGMA busy_timeout = 30000');
+  // secure_delete overwrites deleted content with zeros so legacy plaintext
+  // is not retained in freed database pages during adoption.
+  // https://sqlite.org/pragma.html#pragma_secure_delete
   if (options.adoptLegacyPlaintext) await db.exec('PRAGMA secure_delete = ON');
   await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
 
@@ -165,9 +151,17 @@ export const applyMigrations = async (
       const adoptThisMigration = plan?.inputMode === 'legacy-plaintext';
       const opened = plan === null || storedSecrets === undefined
         ? []
-        : adoptThisMigration
-          ? await openLegacyValues(db, file, plan)
-          : await openProtectedValues(db, storedSecrets, file, plan);
+        : await openMigrationValues(
+            db,
+            file,
+            plan,
+            adoptThisMigration
+              ? value => Promise.resolve(value)
+              : (value, transition, identity) => storedSecrets.open(
+                  value,
+                  transition.field.contextFor(identity),
+                ),
+          );
       await db.exec(plan?.persistentSql ?? sql);
       if (plan !== null && storedSecrets !== undefined) {
         await sealAndRestoreProtectedValues(db, storedSecrets, file, opened);
@@ -193,17 +187,23 @@ export const applyMigrations = async (
   const cleanupPending = cleanupTable !== null
     && await db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first<{ id: number }>() !== null;
   if (cleanupPending) {
+    // TRUNCATE checkpoints report busy readers without blocking forever and
+    // shrink a successfully checkpointed WAL to zero bytes.
+    // https://sqlite.org/pragma.html#pragma_wal_checkpoint
     const checkpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
       .first<{ busy: number; checkpointed: number; log: number }>();
     if (checkpoint?.busy !== 0) {
       throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented WAL truncation');
     }
+    // VACUUM rebuilds the database into a minimal file, removing free pages
+    // that could retain the adopted plaintext after the secure-delete pass.
+    // https://sqlite.org/lang_vacuum.html
     await db.exec('VACUUM');
-    await db.exec('DELETE FROM _protected_storage_cleanup WHERE id = 1');
     const finalCheckpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
       .first<{ busy: number; checkpointed: number; log: number }>();
     if (finalCheckpoint?.busy !== 0) {
       throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation');
     }
+    await db.exec('DELETE FROM _protected_storage_cleanup WHERE id = 1');
   }
 };

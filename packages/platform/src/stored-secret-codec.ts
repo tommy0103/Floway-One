@@ -1,3 +1,5 @@
+import { secretSafeJsonSyntaxError } from './json-syntax-error.ts';
+
 const AES_256_KEY_BYTES = 32;
 // A 96-bit IV is the interoperable GCM default and lets Web Crypto use the
 // construction specified in NIST SP 800-38D without IV preprocessing.
@@ -57,7 +59,10 @@ const parseEnvelope = (stored: string, context: StoredSecretContext): StoredSecr
   try {
     value = JSON.parse(stored);
   } catch (cause) {
-    throw invalidEnvelope(context, cause);
+    throw invalidEnvelope(
+      context,
+      secretSafeJsonSyntaxError(cause, 'Encrypted stored secret envelope contains malformed JSON'),
+    );
   }
   if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value.$flowayEncrypted)) {
     throw invalidEnvelope(context);

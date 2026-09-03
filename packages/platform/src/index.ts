@@ -6,6 +6,7 @@ export * from './fetch.ts';
 export * from './file-store.ts';
 export * from './image-cache-store.ts';
 export * from './image-processor.ts';
+export * from './json-syntax-error.ts';
 export * from './runtime-kind.ts';
 export * from './runtime-profile.ts';
 export * from './sha256.ts';

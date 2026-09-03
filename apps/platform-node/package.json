@@ -8,6 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test:packaged": "jiti __tests__/packaged-node-verifier.ts",
     "start": "tsx entry.ts",
     "start:personal": "tsx entry.ts --profile=personal"
   },

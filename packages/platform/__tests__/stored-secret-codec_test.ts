@@ -88,3 +88,19 @@ test('stored secret codec preserves malformed base64 decoding failures', async (
     atob.mockRestore();
   }
 });
+
+test('malformed stored secret envelopes retain SyntaxError classification without exposing input', async () => {
+  const codec = createAes256GcmStoredSecretCodec(masterKey);
+  const sentinel = 'LEAKME7';
+  const error = await assertRejects(
+    () => codec.open(
+      `{"$flowayEncrypted":${sentinel}}`,
+      testContext('upstream:one:config'),
+    ),
+    Error,
+    'Invalid encrypted stored secret format for upstream:one:config',
+  );
+
+  assert(error.cause instanceof SyntaxError);
+  assertEquals(`${error.stack}\n${error.cause.stack}`.includes(sentinel), false);
+});

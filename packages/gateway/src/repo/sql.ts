@@ -916,7 +916,8 @@ export const validateStoredSecrets = async (
       if (row.value === null) {
         if (!field.nullable) throw new Error(`Protected stored-secret field ${field.id} is unexpectedly NULL`);
       } else if (!(field.plaintextEmpty && row.value === '')) {
-        await storedSecrets.open(row.value, field.contextFor(row.identity));
+        const plaintext = await storedSecrets.open(row.value, field.contextFor(row.identity));
+        field.validatePlaintext?.(plaintext, row.identity);
       }
     }
   }

@@ -1,3 +1,4 @@
+import { decodeUpstreamConfig, decodeUpstreamState } from './upstream-codecs.ts';
 import { WEB_SEARCH_PROVIDER_NAMES, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
 import type { StoredSecretContext } from '@floway-dev/platform';
 
@@ -13,6 +14,7 @@ export interface ProtectedStoredSecretField {
   readonly nullable: boolean;
   readonly plaintextEmpty: boolean;
   contextFor(identity: string | number): StoredSecretContext;
+  validatePlaintext?(plaintext: string, identity: string | number): void;
 }
 
 export const upstreamConfigSecretContext = (id: string): StoredSecretContext =>
@@ -27,6 +29,9 @@ export const UPSTREAM_CONFIG_STORED_SECRET_FIELD = Object.freeze({
   nullable: false,
   plaintextEmpty: false,
   contextFor: (identity: string | number) => upstreamConfigSecretContext(String(identity)),
+  validatePlaintext: (plaintext: string, identity: string | number) => {
+    decodeUpstreamConfig(plaintext, String(identity));
+  },
 } satisfies ProtectedStoredSecretField);
 
 export const UPSTREAM_STATE_STORED_SECRET_FIELD = Object.freeze({
@@ -35,6 +40,9 @@ export const UPSTREAM_STATE_STORED_SECRET_FIELD = Object.freeze({
   nullable: true,
   plaintextEmpty: false,
   contextFor: (identity: string | number) => upstreamStateSecretContext(String(identity)),
+  validatePlaintext: (plaintext: string, identity: string | number) => {
+    decodeUpstreamState(plaintext, String(identity));
+  },
 } satisfies ProtectedStoredSecretField);
 
 type WebSearchSecretConfigKey = 'jina' | 'microsoftWebIq' | 'tavily';
