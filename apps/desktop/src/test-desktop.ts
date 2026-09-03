@@ -83,6 +83,8 @@ try {
       const launch = await canExecuteNode(nodeExecutable);
       const environment = {
         ...process.env,
+        CARGO_INCREMENTAL: '0',
+        CARGO_PROFILE_DEV_DEBUG: '0',
         FLOWAY_DESKTOP_EXECUTE_NODE: launch ? '1' : '0',
         FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
       };
