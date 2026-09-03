@@ -844,7 +844,7 @@ await runNodeEntry({
 } finally {
   await Promise.all([...children].map(stopRuntime));
   await Promise.all([...serviceChildren].map(terminateChild));
-  await rm(runtimeRoot, { recursive: true, force: true });
+  await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
 console.log('Packaged Node runtime verified server compatibility, platform credential storage, and personal ciphertext at rest where supported');
