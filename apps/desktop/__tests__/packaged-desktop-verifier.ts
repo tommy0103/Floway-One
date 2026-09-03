@@ -12,7 +12,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -110,10 +110,16 @@ if (version !== `v${packagedNodeVersion}`) {
 const probe = await execFileAsync(nodeExecutable, [
   '--input-type=module',
   '--eval',
-  "const keyring = await import('@napi-rs/keyring'); if (typeof keyring.Entry !== 'function') throw new Error('Keyring native Entry is unavailable'); await import('@floway-dev/gateway'); await import('./entry.js'); console.log('embedded runtime imports resolved');",
+  "const keyringEntry = import.meta.resolve('@napi-rs/keyring'); const keyring = await import(keyringEntry); if (typeof keyring.Entry !== 'function') throw new Error('Keyring native Entry is unavailable'); await import('@floway-dev/gateway'); await import('./entry.js'); console.log(JSON.stringify({ keyringEntry, marker: 'embedded runtime imports resolved' }));",
 ], { cwd: platformNodeRoot });
-if (probe.stdout.trim() !== 'embedded runtime imports resolved') {
+const probeResult = JSON.parse(probe.stdout.trim()) as { keyringEntry?: unknown; marker?: unknown };
+if (probeResult.marker !== 'embedded runtime imports resolved' || typeof probeResult.keyringEntry !== 'string') {
   throw new Error(`Packaged desktop import probe returned unexpected output: ${JSON.stringify(probe.stdout)}`);
+}
+const keyringEntry = fileURLToPath(probeResult.keyringEntry);
+const keyringEntryRelative = relative(appRoot, keyringEntry);
+if (isAbsolute(keyringEntryRelative) || keyringEntryRelative.split(sep)[0] === '..') {
+  throw new Error(`Embedded Node resolved Keyring outside the packaged app: ${keyringEntry}`);
 }
 
 const pending = [dependenciesRoot];
@@ -182,14 +188,7 @@ try {
   const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
   const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
   const installedEntry = resolve(installedPlatformNode, 'entry.js');
-  const installedKeyringRoot = resolve(installedPlatformNode, 'node_modules/@napi-rs/keyring');
-  const installedKeyringManifest = JSON.parse(
-    await readFile(resolve(installedKeyringRoot, 'package.json'), 'utf8'),
-  ) as { main?: unknown };
-  if (typeof installedKeyringManifest.main !== 'string') {
-    throw new Error('Installed Keyring package does not declare its runtime entry');
-  }
-  const installedKeyringEntry = resolve(installedKeyringRoot, installedKeyringManifest.main);
+  const installedKeyringEntry = resolve(installedApp, keyringEntryRelative);
 
   const launched = await execFileAsync(installedExecutable, ['--verify-package'], { timeout: 30_000 });
   if (!launched.stdout.includes('Floway package verification succeeded')) {
