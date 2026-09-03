@@ -276,3 +276,21 @@ test('legacy plaintext adoption seal failure restores the 0083 schema and exact 
     null,
   );
 }));
+
+test('legacy plaintext adoption seals upstream and search values through 0084', () => withTemp(async dir => {
+  const sentinel = 'legacy-adoption-success';
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
+  await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind('0083_canonical_protocol_names.sql').run();
+  await setup.db.prepare('UPDATE upstreams SET config_json = ?').bind(`{"apiKey":"${sentinel}"}`).run();
+  await setup.db.prepare('UPDATE search_config SET tavily_api_key = ?').bind(sentinel).run();
+
+  await applyMigrations(setup.db, setup.migrationDir, setup.codec, { adoptLegacyPlaintext: true });
+  const upstream = await setup.db.prepare('SELECT config_json FROM upstreams').first<{ config_json: string }>();
+  assert(upstream !== null);
+  assertEquals(await setup.codec.open(upstream.config_json, upstreamConfigSecretContext('up_raw_scan')), `{"apiKey":"${sentinel}"}`);
+  const search = await setup.db.prepare('SELECT protected_tavily_api_key FROM search_config')
+    .first<{ protected_tavily_api_key: string }>();
+  assert(search !== null);
+  assertEquals(await setup.codec.open(search.protected_tavily_api_key, WEB_SEARCH_STORED_SECRET_FIELDS[0].context), sentinel);
+}));

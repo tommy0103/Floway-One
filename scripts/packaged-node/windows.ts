@@ -26,7 +26,7 @@ export const readWindowsRoamingAppData = async (): Promise<string> => {
 
 export const setWindowsRoamingAppData = async (path: string): Promise<void> => {
   // SHSetKnownFolderPath is the official Known Folder redirection boundary.
-  // https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/api/shlobj_core/nf-shlobj_core-shsetknownfolderpath.md
+  // https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shsetknownfolderpath
   await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'

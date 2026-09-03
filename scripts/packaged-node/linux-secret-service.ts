@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
-import { createOperatingSystemCredential } from '../../apps/platform-node/src/device-master-key.ts';
+import { createOperatingSystemCredential } from '../../apps/platform-node/packaged-test-support.ts';
 
 const execFileAsync = promisify(execFile);
 

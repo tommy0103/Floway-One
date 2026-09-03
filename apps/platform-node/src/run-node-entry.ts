@@ -12,6 +12,7 @@ import { selectNodeRuntimeProfile } from './runtime-profile.ts';
 import { startScheduledMaintenance } from './scheduled-maintenance.ts';
 import { createNodeStoredSecretCodec } from './stored-secrets.ts';
 import {
+  LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
   app,
   initBackgroundSchedulerResolver,
   initRepo,
@@ -78,6 +79,7 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       .first<{ name: string }>() !== null;
   let storedSecrets;
   if (hasExistingMigrationState) {
+    await applyMigrations(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
     storedSecrets = await createNodeStoredSecretCodec(
       'personal',
       db,

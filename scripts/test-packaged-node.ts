@@ -21,13 +21,13 @@ import {
 import {
   createOperatingSystemCredential,
   type DeviceMasterKeyCredential,
-} from '../apps/platform-node/src/device-master-key.ts';
-import { FsFileStore } from '../apps/platform-node/src/fs-file-store.ts';
-import { resolvePersonalRuntimePaths, type PersonalRuntimePaths } from '../apps/platform-node/src/personal-runtime.ts';
-import { PersonalStorageHardener } from '../apps/platform-node/src/personal-storage.ts';
-import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '../packages/gateway/src/repo/protected-migrations.ts';
-import { WEB_SEARCH_STORED_SECRET_FIELDS } from '../packages/gateway/src/repo/stored-secret-fields.ts';
-import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '../packages/platform/src/stored-secret-codec.ts';
+  FsFileStore,
+  resolvePersonalRuntimePaths,
+  type PersonalRuntimePaths,
+  PersonalStorageHardener,
+} from '../apps/platform-node/packaged-test-support.ts';
+import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION, WEB_SEARCH_STORED_SECRET_FIELDS } from '../packages/gateway/packaged-test-support.ts';
+import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '../packages/platform/packaged-test-support.ts';
 
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,6 +40,7 @@ const TAVILY_STORED_SECRET_COLUMN = WEB_SEARCH_STORED_SECRET_FIELDS.find(field =
 // ERROR_FILE_NOT_FOUND is Win32 error 2; HRESULT_FROM_WIN32 exposes it as
 // 0x80070002 through the failing Known Folder call.
 // https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/Debug/system-error-codes--0-499-.md#error_file_not_found
+// https://learn.microsoft.com/en-us/windows/win32/api/winerror/nf-winerror-hresult_from_win32
 const WINDOWS_MISSING_KNOWN_FOLDER_HRESULT = '0x80070002';
 
 const fail = (message: string): never => {
@@ -828,12 +829,12 @@ await runNodeEntry({
         const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
         if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
         assertCiphertextAtRest(personalPaths.databasePath);
-        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
         await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
         const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
         await assertPersistedPersonalSecret(migrated.origin);
         await stopRuntime(migrated.child);
         assertCiphertextAtRest(personalPaths.databasePath);
+        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
         await assertRawSecretsAbsent(personalPaths.databasePath, [
           PERSONAL_SECRET,
           'packaged-api-key',

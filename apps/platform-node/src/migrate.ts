@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   planProtectedMigration,
+  PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
   type ProtectedMigrationFieldPlan,
   type ProtectedMigrationPlan,
 } from '@floway-dev/gateway';
@@ -125,7 +126,7 @@ export const applyMigrations = async (
   db: SqlDatabase,
   dir: string = DEFAULT_MIGRATIONS_DIR,
   storedSecrets?: StoredSecretCodec,
-  options: { readonly adoptLegacyPlaintext?: boolean } = {},
+  options: { readonly adoptLegacyPlaintext?: boolean; readonly through?: string } = {},
 ): Promise<void> => {
   await db.exec('PRAGMA busy_timeout = 30000');
   if (options.adoptLegacyPlaintext) await db.exec('PRAGMA secure_delete = ON');
@@ -155,26 +156,40 @@ export const applyMigrations = async (
       if (alreadyApplied !== null) {
         await db.exec('COMMIT');
         applied.add(file);
+        if (options.through === file) break;
         continue;
       }
+      const adoptThisMigration = options.adoptLegacyPlaintext
+        && file === PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION;
       const opened = plan === null || storedSecrets === undefined
         ? []
-        : options.adoptLegacyPlaintext
+        : adoptThisMigration
           ? await openLegacyValues(db, file, plan)
           : await openProtectedValues(db, storedSecrets, file, plan);
       await db.exec(plan?.persistentSql ?? sql);
       if (plan !== null && storedSecrets !== undefined) {
         await sealAndRestoreProtectedValues(db, storedSecrets, file, opened);
       }
+      if (file === PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION) {
+        await db.exec('CREATE TABLE IF NOT EXISTS _protected_storage_cleanup (id INTEGER PRIMARY KEY CHECK (id = 1))');
+        await db.exec('INSERT OR IGNORE INTO _protected_storage_cleanup (id) VALUES (1)');
+      }
       await db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind(file).run();
       await db.exec('COMMIT');
       applied.add(file);
-      if (options.adoptLegacyPlaintext) await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      if (options.through === file) break;
     } catch (error) {
       // SQLite may auto-rollback a hard error. Do not let recovery replace the
       // migration, codec, or storage-plan cause visible to the operator.
       try { await db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
       throw error;
+    }
+  }
+  if (options.adoptLegacyPlaintext || applied.has(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)) {
+    const checkpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
+      .first<{ busy: number; checkpointed: number; log: number }>();
+    if (checkpoint?.busy !== 0) {
+      throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented WAL truncation');
     }
   }
 };

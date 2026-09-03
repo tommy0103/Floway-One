@@ -41,8 +41,17 @@ if (mode === 'same-process') {
     await released;
   });
   await entered;
-  setImmediate(release);
-  await Promise.all([first, secondLock.run(async () => undefined)]);
+  let secondEntered = false;
+  const second = secondLock.run(async () => {
+    secondEntered = true;
+    process.stdout.write('SECOND_ENTERED\n');
+  });
+  process.stdout.write('SECOND_ATTEMPTING\n');
+  await new Promise(resolveTurn => setImmediate(resolveTurn));
+  if (secondEntered) throw new Error('second callback entered before the first released');
+  process.stdout.write('SECOND_EXCLUDED\n');
+  release();
+  await Promise.all([first, second]);
   process.stdout.write('SAME_PROCESS_SERIALIZED\n');
   process.exit(0);
 }

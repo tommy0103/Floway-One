@@ -135,6 +135,9 @@ test('production default resolver gives divergent environments and two Floway da
 
 test('two lock instances in one process serialize without blocking the event loop', () => withTempState(async state => {
   const child = spawnChild('same-process', state.firstDatabasePath, state.credentialPath, 1, state.lockDatabasePath);
+  await waitForLine(child, /^SECOND_ATTEMPTING$/u);
+  await waitForLine(child, /^SECOND_EXCLUDED$/u);
+  await waitForLine(child, /^SECOND_ENTERED$/u);
   await waitForLine(child, /^SAME_PROCESS_SERIALIZED$/u);
   await once(child, 'exit');
   children.delete(child);
