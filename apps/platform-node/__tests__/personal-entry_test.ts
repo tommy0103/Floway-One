@@ -24,7 +24,13 @@ const STORAGE_INITIALIZATION_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_INITIALIZED';
 const STORAGE_TREE_ACL_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_TREE_ACL_APPLIED';
 const STORAGE_ROOT_MKDIR_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_ROOT_MKDIR:';
 const STORAGE_ROOT_CHMOD_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_ROOT_CHMOD:';
+const MIGRATION_COMPLETE_BOUNDARY = 'PERSONAL_ENTRY_MIGRATION_AND_PROFILE_VALIDATION_COMPLETE';
 const DASHBOARD_BOOTSTRAP_BOUNDARY = 'PERSONAL_ENTRY_DASHBOARD_BOOTSTRAP_INITIALIZED';
+const WINDOWS_PATH_CHILD_BOUNDARY = 'PERSONAL_ENTRY_WINDOWS_PATH_CHILD_TOKEN_ABSENT';
+const WINDOWS_STORAGE_CHILD_BOUNDARY = 'PERSONAL_ENTRY_WINDOWS_STORAGE_CHILD_TOKEN_ABSENT';
+const FORCED_MIGRATION_BOUNDARY = 'PERSONAL_ENTRY_FORCED_MIGRATION_REACHED';
+const FORCED_MIGRATION_ERROR = 'forced original migration error';
+const FORCED_MIGRATION_CAUSE = 'forced original SQLite migration cause';
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
 const ownerCases: readonly {
@@ -84,6 +90,7 @@ for (const { ownerCase, storageCase } of startupCases) {
       await writeFile(entry, `
 import { runNodeEntry } from ${JSON.stringify(RUN_NODE_ENTRY_URL)};
 import { initializePersonalStorage } from ${JSON.stringify(PERSONAL_STORAGE_URL)};
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { assertRuntimeProfileData } from '@floway-dev/gateway';
@@ -92,6 +99,14 @@ const paths = JSON.parse(process.env.FLOWAY_TEST_PERSONAL_PATHS);
 const storagePlatform = process.env.FLOWAY_TEST_STORAGE_PLATFORM;
 if (storagePlatform !== 'win32' && storagePlatform !== 'linux') throw new Error('Missing storage platform');
 const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(${MASTER_KEY_BYTE}));
+const assertBootstrapAbsentFromChild = boundary => {
+  const inherited = execFileSync(process.execPath, [
+    '-e',
+    "process.stdout.write(process.env.FLOWAY_BOOTSTRAP_TOKEN ?? '')",
+  ], { encoding: 'utf8' });
+  if (inherited !== '') throw new Error(boundary + ' inherited the personal Dashboard bootstrap token');
+  console.log(boundary);
+};
 await runNodeEntry({
   initPersonalDashboardBootstrap: configuration => {
     if (configuration?.origin !== 'http://127.0.0.1:8788') throw new Error('Unexpected personal Dashboard origin');
@@ -100,6 +115,7 @@ await runNodeEntry({
     console.log(${JSON.stringify(DASHBOARD_BOOTSTRAP_BOUNDARY)});
   },
   initializePersonalStorage: paths => {
+    if (storagePlatform === 'win32') assertBootstrapAbsentFromChild(${JSON.stringify(WINDOWS_STORAGE_CHILD_BOUNDARY)});
     console.log(${JSON.stringify(STORAGE_INITIALIZATION_BOUNDARY)});
     const roots = new Set([paths.dataDir, paths.filesDir, paths.logsDir]);
     return initializePersonalStorage(paths, storagePlatform === 'win32'
@@ -124,7 +140,10 @@ await runNodeEntry({
           },
         });
   },
-  resolvePersonalRuntimePaths: () => paths,
+  resolvePersonalRuntimePaths: () => {
+    if (storagePlatform === 'win32') assertBootstrapAbsentFromChild(${JSON.stringify(WINDOWS_PATH_CHILD_BOUNDARY)});
+    return paths;
+  },
   createNodeStoredSecretCodec: () => Promise.resolve(codec),
   assertRuntimeProfileData: async repo => {
     const upstream = await repo.upstreams.getById('up_personal_entry');
@@ -132,6 +151,7 @@ await runNodeEntry({
       throw new Error('Codec-backed repository was not installed before profile validation');
     }
     await assertRuntimeProfileData();
+    console.log(${JSON.stringify(MIGRATION_COMPLETE_BOUNDARY)});
   },
   createLocalApp: () => {
     console.log(${JSON.stringify(APP_CONSTRUCTION_BOUNDARY)});
@@ -181,6 +201,9 @@ await runNodeEntry({
         storageCase.platform === 'win32' ? 1 : 0,
       );
       const outputLines = output.split(/\r?\n/u);
+      for (const marker of [WINDOWS_PATH_CHILD_BOUNDARY, WINDOWS_STORAGE_CHILD_BOUNDARY]) {
+        expect(outputLines.filter(line => line === marker)).toHaveLength(storageCase.platform === 'win32' ? 1 : 0);
+      }
       for (const root of [paths.dataDir, paths.filesDir, paths.logsDir]) {
         expect(outputLines.filter(line => line === STORAGE_ROOT_MKDIR_BOUNDARY + root)).toHaveLength(
           storageCase.platform === 'linux' ? 1 : 0,
@@ -192,11 +215,21 @@ await runNodeEntry({
 
       if (ownerCase.expectedError === null) {
         expect(failure).toBeUndefined();
-        expect(output).toContain(APP_CONSTRUCTION_BOUNDARY);
-        expect(output).toContain(LISTENER_BIND_BOUNDARY);
+        let previousPhase = -1;
+        for (const marker of [
+          MIGRATION_COMPLETE_BOUNDARY,
+          DASHBOARD_BOOTSTRAP_BOUNDARY,
+          APP_CONSTRUCTION_BOUNDARY,
+          LISTENER_BIND_BOUNDARY,
+        ]) {
+          const phase = outputLines.indexOf(marker);
+          expect(phase, `${marker} was not observed`).toBeGreaterThan(previousPhase);
+          previousPhase = phase;
+        }
       } else {
         expect(failure).toBeInstanceOf(Error);
         expect(output).toContain(ownerCase.expectedError);
+        expect(output).not.toContain(MIGRATION_COMPLETE_BOUNDARY);
         expect(output).not.toContain(APP_CONSTRUCTION_BOUNDARY);
         expect(output).not.toContain(LISTENER_BIND_BOUNDARY);
       }
@@ -206,3 +239,66 @@ await runNodeEntry({
     }
   });
 }
+
+test('a migration failure preserves its cause and prevents bootstrap activation, app construction, and listener binding', async () => {
+  const dir = await mkdtemp(join(APP_ROOT, '.tmp-personal-entry-migration-failure-'));
+  try {
+    const paths = resolvePersonalRuntimePaths({ dataDir: join(dir, 'personal-data') });
+    const entry = join(dir, 'personal-entry-migration-failure.mts');
+    await writeFile(entry, `
+import { runNodeEntry } from ${JSON.stringify(RUN_NODE_ENTRY_URL)};
+const paths = JSON.parse(process.env.FLOWAY_TEST_PERSONAL_PATHS);
+await runNodeEntry({
+  applyMigrations: async () => {
+    console.log(${JSON.stringify(FORCED_MIGRATION_BOUNDARY)});
+    throw new Error(${JSON.stringify(FORCED_MIGRATION_ERROR)}, {
+      cause: new Error(${JSON.stringify(FORCED_MIGRATION_CAUSE)}),
+    });
+  },
+  resolvePersonalRuntimePaths: () => paths,
+  initPersonalDashboardBootstrap: () => console.log(${JSON.stringify(DASHBOARD_BOOTSTRAP_BOUNDARY)}),
+  createLocalApp: () => {
+    console.log(${JSON.stringify(APP_CONSTRUCTION_BOUNDARY)});
+    return { fetch: () => Promise.resolve(new Response('listener instrument')) };
+  },
+  serve: async () => {
+    console.log(${JSON.stringify(LISTENER_BIND_BOUNDARY)});
+    return { port: 8788 };
+  },
+});
+`);
+
+    let failure: unknown;
+    let output = '';
+    try {
+      const result = await execFileAsync(process.execPath, ['--import', 'tsx', entry], {
+        cwd: APP_ROOT,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          FLOWAY_BOOTSTRAP_TOKEN: BOOTSTRAP_TOKEN,
+          FLOWAY_PROFILE: 'personal',
+          FLOWAY_TEST_PERSONAL_PATHS: JSON.stringify(paths),
+          NODE_ENV: 'production',
+        },
+        timeout: 10_000,
+      });
+      output = result.stdout + result.stderr;
+    } catch (error) {
+      failure = error;
+      output = String((error as { stdout?: string }).stdout ?? '')
+        + String((error as { stderr?: string }).stderr ?? '');
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(output).toContain(FORCED_MIGRATION_BOUNDARY);
+    expect(output).toContain(FORCED_MIGRATION_ERROR);
+    expect(output).toContain(FORCED_MIGRATION_CAUSE);
+    expect(output).not.toContain(DASHBOARD_BOOTSTRAP_BOUNDARY);
+    expect(output).not.toContain(APP_CONSTRUCTION_BOUNDARY);
+    expect(output).not.toContain(LISTENER_BIND_BOUNDARY);
+    expect(output).not.toContain(BOOTSTRAP_TOKEN);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

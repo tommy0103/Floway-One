@@ -1,9 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
-import {
-  consumePersonalDashboardBootstrap,
-  initPersonalDashboardBootstrap,
-} from '../../../src/control-plane/auth/personal-bootstrap.ts';
+import { initPersonalDashboardBootstrap } from '../../../src/control-plane/auth/personal-bootstrap.ts';
 import { getRepo } from '../../../src/repo/index.ts';
 import { requestApp, setupAppTest } from '../../test-utils/app.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
@@ -82,12 +79,43 @@ test('rejects expired and mismatched authorities without issuing sessions', asyn
   expect(createSession).toHaveBeenCalledTimes(1);
 });
 
-test('consumption is atomic before asynchronous session persistence begins', async () => {
-  await setupAppTest();
+test('two concurrent HTTP exchanges create exactly one durable owner session', async () => {
+  const { repo } = await setupAppTest();
+  await repo.sessions.deleteAll();
   initialize();
 
-  expect(consumePersonalDashboardBootstrap(TOKEN, ORIGIN)).toBe(true);
-  expect(consumePersonalDashboardBootstrap(TOKEN, ORIGIN)).toBe(false);
+  const originalCreate = repo.sessions.create.bind(repo.sessions);
+  let releasePersistence!: () => void;
+  const persistenceReleased = new Promise<void>(resolve => { releasePersistence = resolve; });
+  let reportPersistenceEntered!: () => void;
+  const persistenceEntered = new Promise<void>(resolve => { reportPersistenceEntered = resolve; });
+  let createCalls = 0;
+  repo.sessions.create = async userId => {
+    createCalls++;
+    if (createCalls !== 1) throw new Error('a second bootstrap exchange reached session persistence');
+    reportPersistenceEntered();
+    await persistenceReleased;
+    return await originalCreate(userId);
+  };
+
+  const firstExchange = exchange();
+  await persistenceEntered;
+  const secondExchange = exchange();
+  const secondResponse = await secondExchange;
+
+  // The first request is still suspended inside real session persistence. The
+  // overlapping request must observe the already-consumed authority and reject
+  // without entering persistence itself.
+  assertEquals(secondResponse.status, 401);
+  assertEquals(createCalls, 1);
+
+  releasePersistence();
+  const firstResponse = await firstExchange;
+  assertEquals(firstResponse.status, 200);
+  const body = (await firstResponse.json()) as { token: string };
+  expect(await repo.sessions.getByIdAndTouch(body.token)).toMatchObject({ id: body.token, userId: 1 });
+  assertEquals(await repo.sessions.deleteByUserId(1), 1);
+  assertEquals(createCalls, 1);
 });
 
 test('seals a failed exchange while retaining the redacted internal error chain', async () => {
