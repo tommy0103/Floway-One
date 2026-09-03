@@ -1,8 +1,9 @@
 import { test, vi } from 'vitest';
 
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
+import { assertRuntimeProfileData } from '../../../src/runtime/profile-policy.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
-import { buildCustomUpstreamRecord, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { buildCustomUpstreamRecord, requestApp, setupAppTest, setupPersonalAppTest } from '../../test-utils/app.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
 import { assertEquals, assertExists } from '@floway-dev/test-utils';
 
@@ -10,6 +11,13 @@ const ownerPatch = (id: string, body: unknown, rawKey: string) =>
   requestApp(`/api/keys/${id}`, {
     method: 'PATCH',
     headers: { 'x-api-key': rawKey, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const ownerSessionPatch = (id: string, body: unknown, session: string) =>
+  requestApp(`/api/keys/${id}`, {
+    method: 'PATCH',
+    headers: { 'x-floway-session': session, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 
@@ -38,27 +46,24 @@ test('POST /api/keys defaults durable OpenAI Responses persistence off', async (
 });
 
 test('POST /api/keys assigns every personal-profile key to the seed owner', async () => {
-  const { repo, apiKey } = await setupAppTest();
-  initRuntimeProfile('personal');
+  const { repo, adminSession: ownerSession } = await setupPersonalAppTest();
   try {
     const response = await requestApp('/api/keys', {
       method: 'POST',
-      headers: { 'x-api-key': apiKey.key, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'personal-key' }),
     });
     assertEquals(response.status, 201);
     const body = (await response.json()) as { id: string };
     assertEquals((await repo.apiKeys.getById(body.id))?.userId, 1);
+    await assertRuntimeProfileData();
   } finally {
     initRuntimeProfile('server');
   }
 });
 
 test('personal profile keeps multiple key lifecycles, routing, capture, and Agent Setup independent', async () => {
-  const { repo, adminSession } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_a', name: 'Personal A' }));
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_b', name: 'Personal B' }));
-  initRuntimeProfile('personal');
+  const { repo, adminSession: ownerSession } = await setupPersonalAppTest();
 
   type KeyResponse = {
     id: string;
@@ -71,7 +76,7 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
   const create = async (body: Record<string, unknown>): Promise<KeyResponse> => {
     const response = await requestApp('/api/keys', {
       method: 'POST',
-      headers: { 'x-floway-session': adminSession, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     assertEquals(response.status, 201);
@@ -79,6 +84,17 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
   };
 
   try {
+    await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_a', name: 'Personal A' }));
+    await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_b', name: 'Personal B' }));
+    assertEquals((await repo.users.listIncludingDeleted()).map(user => ({
+      id: user.id,
+      isAdmin: user.isAdmin,
+      upstreamIds: user.upstreamIds,
+      deletedAt: user.deletedAt,
+    })), [{ id: 1, isAdmin: true, upstreamIds: null, deletedAt: null }]);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), []);
+    await assertRuntimeProfileData();
+
     const codex = await create({ name: 'Codex project' });
     const claude = await create({
       name: 'Claude project',
@@ -93,10 +109,10 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
     assertEquals(claude.dump_retention_seconds, 3600);
     assertEquals((await repo.apiKeys.listByUserId(1)).filter(key => [codex.id, claude.id].includes(key.id)).length, 2);
 
-    const renamed = await ownerPatch(codex.id, {
+    const renamed = await ownerSessionPatch(codex.id, {
       name: 'Codex rotated project',
       upstream_ids: ['up_personal_a'],
-    }, claude.key);
+    }, ownerSession);
     assertEquals(renamed.status, 200);
     assertEquals(((await renamed.json()) as KeyResponse).name, 'Codex rotated project');
 
@@ -104,7 +120,7 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
     assertExists(beforeClaude);
     const rotated = await requestApp(`/api/keys/${codex.id}/rotate`, {
       method: 'POST',
-      headers: { 'x-api-key': claude.key, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
     assertEquals(rotated.status, 200);
@@ -118,12 +134,12 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
 
     const setup = await requestApp('/api/setup', {
       method: 'POST',
-      headers: { 'x-api-key': claude.key, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
       body: JSON.stringify({ apiKeyId: claude.id }),
     });
     assertEquals(setup.status, 200);
     const lease = (await setup.json()) as { scripts: { codex: { sh: string } } };
-    const script = await requestApp(lease.scripts.codex.sh, {});
+    const script = await requestApp(lease.scripts.codex.sh, { headers: { 'x-floway-session': ownerSession } });
     assertEquals(script.status, 200);
     const scriptText = await script.text();
     if (!scriptText.includes(claude.key) || !scriptText.includes(claude.name)) {
@@ -132,18 +148,56 @@ test('personal profile keeps multiple key lifecycles, routing, capture, and Agen
 
     const deleted = await requestApp(`/api/keys/${codex.id}`, {
       method: 'DELETE',
-      headers: { 'x-api-key': claude.key },
+      headers: { 'x-floway-session': ownerSession },
     });
     assertEquals(deleted.status, 200);
     assertEquals(await repo.apiKeys.getById(codex.id), null);
     assertEquals(await repo.apiKeys.getById(claude.id), beforeClaude);
+    await assertRuntimeProfileData();
 
-    const surviving = await requestApp('/api/keys', { headers: { 'x-api-key': claude.key } });
+    const surviving = await requestApp('/api/keys', { headers: { 'x-floway-session': ownerSession } });
     assertEquals(surviving.status, 200);
     assertEquals(((await surviving.json()) as KeyResponse[]).map(key => key.id), [claude.id]);
   } finally {
     initRuntimeProfile('server');
   }
+});
+
+test('server fixture preserves multi-user key creation through user sessions', async () => {
+  const { repo, apiKey } = await setupAppTest();
+  assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [1, 2]);
+  assertEquals(apiKey.userId, 2);
+  await assertRuntimeProfileData();
+
+  const userSession = (await repo.sessions.create(2)).id;
+  const response = await requestApp('/api/keys', {
+    method: 'POST',
+    headers: { 'x-floway-session': userSession, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Server user key' }),
+  });
+  assertEquals(response.status, 201);
+  const created = (await response.json()) as {
+    id: string;
+    upstream_ids: string[] | null;
+    dump_retention_seconds: number | null;
+    responses_retention_seconds: number;
+  };
+  const stored = await repo.apiKeys.getById(created.id);
+  assertExists(stored);
+  assertEquals({
+    userId: stored.userId,
+    upstreamIds: stored.upstreamIds,
+    dumpRetentionSeconds: stored.dumpRetentionSeconds,
+    openaiResponsesRetentionSeconds: stored.openaiResponsesRetentionSeconds,
+  }, {
+    userId: 2,
+    upstreamIds: null,
+    dumpRetentionSeconds: null,
+    openaiResponsesRetentionSeconds: 0,
+  });
+  assertEquals(created.upstream_ids, null);
+  assertEquals(created.dump_retention_seconds, null);
+  assertEquals(created.responses_retention_seconds, 0);
 });
 
 test('PATCH /api/keys/:id changes only the rolling OpenAI Responses duration', async () => {
