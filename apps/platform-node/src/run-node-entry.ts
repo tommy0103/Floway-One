@@ -33,7 +33,7 @@ import {
   SqlRepo,
   validateStoredSecrets,
 } from '@floway-dev/gateway';
-import { getEnvOptional, type RuntimeProfileMode } from '@floway-dev/platform';
+import type { RuntimeProfileMode } from '@floway-dev/platform';
 
 // Copilot data-plane hosts close their keep-alive socket right after each
 // response; reusing it surfaces as UND_ERR_SOCKET or
@@ -170,7 +170,7 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
         warn: warning => startupWarnings.push(warning),
       });
   for (const warning of startupWarnings) console.warn(warning);
-  const port = personalRuntime?.port ?? Number(getEnvOptional('PORT', '8788'));
+  const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
 
   // Passwordless admin login is a dev-only shortcut. Refuse production Node
   // startup without ADMIN_KEY so misconfiguration surfaces before listening.
