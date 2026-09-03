@@ -1,4 +1,5 @@
 import type { ZodType } from 'zod';
+
 import { secretSafeJsonSyntaxError } from '@floway-dev/platform';
 
 interface StoredJsonMessages {
