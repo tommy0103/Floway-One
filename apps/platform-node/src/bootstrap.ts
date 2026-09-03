@@ -29,22 +29,31 @@ import {
   type SqlDatabase,
 } from '@floway-dev/platform';
 
+interface NodeStoragePaths {
+  readonly databasePath: string;
+  readonly filesDir: string;
+}
+
+export type BootstrapNodePlatformOptions =
+  | { readonly profile: 'personal'; readonly storage: NodeStoragePaths }
+  | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
+
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
   const profile = value ?? 'server';
   if (profile === 'personal' || profile === 'server') return profile;
   throw new Error(`Unsupported FLOWAY_PROFILE: ${JSON.stringify(profile)}`);
 };
 
-export const bootstrapNodePlatform = (profile: RuntimeProfileMode): { db: SqlDatabase } => {
+export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): { db: SqlDatabase } => {
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
-  initRuntimeProfile(profile);
+  initRuntimeProfile(options.profile);
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
   initFetch(nodeFetch);
 
-  const filesDir = getEnvOptional('FLOWAY_FILES_DIR', './data/files');
-  const dbPath = getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
+  const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
+  const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
 
   const files = new FsFileStore(filesDir);
   initFileStore(files);

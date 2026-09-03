@@ -12,7 +12,7 @@ import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 
 const execFileAsync = promisify(execFile);
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const ENTRY = fileURLToPath(new URL('../entry.ts', import.meta.url));
+const ENTRY = fileURLToPath(new URL('./fixtures/personal-entry-failure-child.ts', import.meta.url));
 
 test('production personal entry rejects an invalid multi-user SQLite database before serving', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'personal-entry-test-'));
@@ -27,16 +27,14 @@ test('production personal entry rejects an invalid multi-user SQLite database be
 
     let failure: unknown;
     try {
-      await execFileAsync(process.execPath, ['--import', 'tsx', ENTRY], {
+      await execFileAsync(process.execPath, ['--import', 'tsx', ENTRY, 'profile-invariant', dir], {
         cwd: APP_ROOT,
         env: {
           ...process.env,
           ADMIN_KEY: 'personal-entry-test',
-          FLOWAY_DB_PATH: databasePath,
-          FLOWAY_FILES_DIR: join(dir, 'files'),
           FLOWAY_PROFILE: 'personal',
           NODE_ENV: 'production',
-          PORT: '0',
+          PORT: '8788',
         },
         timeout: 10_000,
       });
