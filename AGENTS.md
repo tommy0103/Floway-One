@@ -56,6 +56,7 @@
 | Skill | `$deploy-to-cloudflare` | Deploys Floway to Cloudflare. |
 | Skill | `$fetching-models-pricing` | Researches provider model pricing. |
 | Skill | `$probing-copilot` | Probes Copilot upstream behavior. |
+| Package | `apps/desktop` | Packages the Floway desktop application. |
 | Package | `apps/platform-cloudflare` | Hosts Floway on Cloudflare. |
 | Package | `apps/platform-node` | Hosts Floway on Node. |
 | Package | `apps/web` | Provides the operator dashboard. |

@@ -26,6 +26,8 @@ jobs:
             run: pnpm run typecheck
           - name: test
             run: pnpm run test
+          - name: desktop
+            run: pnpm run test:desktop
           - name: installers
             run: pnpm run test:installers
           - name: generated-assets

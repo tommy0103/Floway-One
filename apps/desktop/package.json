@@ -1,0 +1,18 @@
+{
+  "name": "@floway-dev/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --dir ../.. run build:web && tauri build && pnpm run test:packaged:macos",
+    "prepare:bundle": "jiti entry.ts",
+    "test:packaged:macos": "jiti __tests__/packaged-desktop-verifier.ts",
+    "test:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "^22",
+    "typescript": "^5.9.3"
+  }
+}

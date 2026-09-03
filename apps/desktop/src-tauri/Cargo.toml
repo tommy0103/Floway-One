@@ -1,0 +1,38 @@
+[package]
+name = "floway-desktop"
+version = "0.1.0"
+description = "Floway desktop application shell"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+autobins = false
+default-run = "floway-one"
+
+[lib]
+name = "floway_desktop"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "floway-one"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[test]]
+name = "bundle_contract"
+path = "__tests__/bundle_contract_test.rs"
+
+[features]
+default = ["desktop"]
+desktop = [
+  "dep:getrandom",
+  "dep:tauri",
+  "dep:tauri-build",
+  "dep:tauri-plugin-shell",
+]
+
+[dependencies]
+getrandom = { version = "0.3.3", optional = true }
+tauri = { version = "2.11.5", optional = true }
+tauri-plugin-shell = { version = "2.3.6", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", optional = true }

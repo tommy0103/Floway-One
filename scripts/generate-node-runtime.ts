@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputArgument = process.argv[2];
-if (outputArgument === undefined) throw new Error('Usage: generate-node-runtime.ts <output-directory>');
+const layoutArgument = process.argv[3];
+if (outputArgument === undefined || (layoutArgument !== undefined && layoutArgument !== '--node-linker=hoisted')) {
+  throw new Error('Usage: generate-node-runtime.ts <output-directory> [--node-linker=hoisted]');
+}
 
 const outputRoot = resolve(outputArgument);
 const platformNodeRoot = resolve(outputRoot, 'apps/platform-node');
@@ -25,12 +28,17 @@ try {
     // shell-backed spawn as the supported launch path:
     // https://nodejs.org/docs/latest-v22.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows
     const deployTarget = windows ? relative(ROOT, platformNodeRoot) : platformNodeRoot;
+    // Legacy deploy deliberately disables lockfile use for a hoisted linker.
+    // The desktop path instead uses pnpm's modern, injected-workspace deploy,
+    // which creates a dedicated frozen lockfile and physical dependencies.
+    // https://github.com/pnpm/pnpm/blob/bcc678c257797bdca86db4d535fd9d9614b2197c/pnpm11/releasing/commands/src/deploy/deploy.ts#L209-L214
     const child = spawn(windows ? 'pnpm.cmd' : 'pnpm', [
+      ...(layoutArgument === '--node-linker=hoisted' ? ['--config.node-linker=hoisted'] : []),
       '--filter',
       '@floway-dev/platform-node',
       'deploy',
       '--prod',
-      '--legacy',
+      ...(layoutArgument === undefined ? ['--legacy'] : []),
       '--ignore-scripts',
       deployTarget,
     ], { cwd: ROOT, env: process.env, shell: windows, stdio: 'inherit' });
