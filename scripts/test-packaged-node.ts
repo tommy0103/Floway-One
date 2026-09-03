@@ -406,14 +406,29 @@ const assertPersonalStartupFailure = async (
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
   const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+  let resolveListenerOpened: (() => void) | undefined;
+  const listenerOpened = new Promise<void>(resolveOpened => { resolveListenerOpened = resolveOpened; });
+  const inspectListener = (): void => {
+    if (output.includes('Floway listening on ')) resolveListenerOpened?.();
+  };
+  child.stdout.on('data', inspectListener);
   let timeout: NodeJS.Timeout | undefined;
   const outcome = await Promise.race([
     exited.then(result => ({ kind: 'exit' as const, result })),
+    listenerOpened.then(() => ({ kind: 'listener' as const })),
     new Promise<{ kind: 'timeout' }>(resolveTimeout => {
-      timeout = setTimeout(() => resolveTimeout({ kind: 'timeout' }), 10_000);
+      timeout = setTimeout(
+        () => resolveTimeout({ kind: 'timeout' }),
+        process.platform === 'win32' ? 120_000 : 10_000,
+      );
     }),
   ]);
   if (timeout !== undefined) clearTimeout(timeout);
+  child.stdout.off('data', inspectListener);
+  if (outcome.kind === 'listener') {
+    await stopRuntime(child);
+    return fail(`${name} personal runtime opened its listener before reporting startup failure\n${output}`);
+  }
   if (outcome.kind === 'timeout') {
     await stopRuntime(child);
     return fail(`${name} personal runtime did not fail before its startup deadline\n${output}`);
