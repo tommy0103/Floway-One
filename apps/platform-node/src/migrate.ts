@@ -187,11 +187,23 @@ export const applyMigrations = async (
       throw error;
     }
   }
-  if (options.adoptLegacyPlaintext || applied.has(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)) {
+  const cleanupTable = await db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_protected_storage_cleanup'",
+  ).first<{ name: string }>();
+  const cleanupPending = cleanupTable !== null
+    && await db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first<{ id: number }>() !== null;
+  if (cleanupPending) {
     const checkpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
       .first<{ busy: number; checkpointed: number; log: number }>();
     if (checkpoint?.busy !== 0) {
       throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented WAL truncation');
+    }
+    await db.exec('VACUUM');
+    await db.exec('DELETE FROM _protected_storage_cleanup WHERE id = 1');
+    const finalCheckpoint = await db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
+      .first<{ busy: number; checkpointed: number; log: number }>();
+    if (finalCheckpoint?.busy !== 0) {
+      throw new Error('Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation');
     }
   }
 };
