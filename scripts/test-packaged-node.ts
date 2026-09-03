@@ -675,7 +675,7 @@ $ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.Inheri
 $Acl = if ($IsDirectory) { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
 $Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited -ne $ExpectedInherited) {
-  throw "ACL verification failed for $Target as $Expectation (protected=$($Acl.AreAccessRulesProtected), inherited=$($Rules[0].IsInherited), inheritance=$($Rules[0].InheritanceFlags), propagation=$($Rules[0].PropagationFlags), rules=$($Rules.Count))"
+  throw "ACL verification failed for $Target as $Expectation (owner=$($Acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value), sid=$($Sid.Value), identity=$($Rules[0].IdentityReference.Value), access=$($Rules[0].AccessControlType), rights=$($Rules[0].FileSystemRights), protected=$($Acl.AreAccessRulesProtected), inherited=$($Rules[0].IsInherited), inheritance=$($Rules[0].InheritanceFlags), propagation=$($Rules[0].PropagationFlags), rules=$($Rules.Count))"
 }
 `], {
     env: {
