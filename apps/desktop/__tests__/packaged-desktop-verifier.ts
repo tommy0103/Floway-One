@@ -64,11 +64,11 @@ const errorOutput = (error: unknown): string => {
 const runExpectedFailure = async (
   executable: string,
   expectedFragments: readonly string[],
-  environment?: NodeJS.ProcessEnv,
+  launchArguments = ['--verify-package'],
 ): Promise<string> => {
   let output: string;
   try {
-    await execFileAsync(executable, ['--verify-package'], { env: environment, timeout: 30_000 });
+    await execFileAsync(executable, launchArguments, { timeout: 30_000 });
     throw new Error('Expected packaged application verification to fail');
   } catch (error) {
     output = errorOutput(error);
@@ -204,20 +204,17 @@ try {
     await rename(missingEntry, installedEntry);
   }
 
-  const missingKeyring = resolve(isolatedRoot, 'missing-keyring.node');
+  const missingKeyring = resolve(installedPlatformNode, 'missing-keyring.node');
   try {
     await access(missingKeyring);
     throw new Error(`Broken Keyring fault path unexpectedly exists: ${missingKeyring}`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  // Keyring's loader exclusively tries this override when it is present, making
-  // a proven-missing path a deterministic native-load fault rather than a layout guess.
-  // https://github.com/Brooooooklyn/keyring-node/blob/f3449416a1b4bf11b0570f0a49395aacc84c8608/index.js#L63-L70
   const output = await runExpectedFailure(
     installedExecutable,
     ['keyring', 'verification sidecar exited'],
-    { ...process.env, NAPI_RS_NATIVE_LIBRARY_PATH: missingKeyring },
+    ['--verify-package', '--verify-broken-keyring'],
   );
   const failedPid = readSidecarPid(output);
   if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
