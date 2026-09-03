@@ -143,7 +143,7 @@ await import('@floway-dev/gateway');
 await import('./entry.js');
 clearTimeout(watchdog);
 if (blockUntilKilled) {
-  console.log('Floway package verification sidecar is blocking until parent timeout');
+  writeSync(process.stdout.fd, 'Floway package verification sidecar is blocking until parent timeout\n');
   setInterval(() => {}, 60_000);
 }
 "#;
