@@ -8,6 +8,7 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
 } from 'node:fs/promises';
@@ -170,7 +171,10 @@ for (const name of externalDependencies) {
   }
 }
 
-const isolatedRoot = await mkdtemp(join(tmpdir(), 'floway-desktop-installed-'));
+// Tauri rejects a starting executable with a symlink in any macOS path ancestor;
+// canonicalize the system temp root before the direct executable launch.
+// https://github.com/tauri-apps/tauri/blob/6f6ab1207bb3923c2721fbc67d2fdb1c8deb0c7a/crates/tauri-utils/src/platform/starting_binary.rs#L61-L75
+const isolatedRoot = await mkdtemp(join(await realpath(tmpdir()), 'floway-desktop-installed-'));
 const installedApp = resolve(isolatedRoot, 'Applications/Floway One.app');
 try {
   await mkdir(dirname(installedApp), { recursive: true });
