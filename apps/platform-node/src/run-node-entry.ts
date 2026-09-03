@@ -84,11 +84,14 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
   });
 
+  const personalHostname = profile === 'personal' ? '127.0.0.1' : undefined;
   serve({
     fetch: localApp.fetch,
+    ...(personalHostname === undefined ? {} : { hostname: personalHostname }),
     port,
     websocket: { server: new WebSocketServer({ noServer: true }) },
   }, info => {
-    console.log(`Floway listening on http://localhost:${info.port}`);
+    const displayedHostname = personalHostname === undefined ? 'localhost' : info.address;
+    console.log(`Floway listening on http://${displayedHostname}:${info.port}`);
   });
 };

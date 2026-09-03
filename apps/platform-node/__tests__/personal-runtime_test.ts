@@ -6,13 +6,25 @@ import {
 } from '../src/personal-runtime.ts';
 import { assertEquals } from '@floway-dev/test-utils';
 
+const withXdgDataHome = <T>(value: string | undefined, operation: () => T): T => {
+  const previous = process.env.XDG_DATA_HOME;
+  if (value === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = value;
+  try {
+    return operation();
+  } finally {
+    if (previous === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous;
+  }
+};
+
 test('POSIX personal application data uses the platform-standard suffix beneath the stable OS user home', () => {
   assertEquals(
     resolveDefaultPersonalDataDir({ platform: 'darwin', stableUserHome: '/Users/stable' }),
     '/Users/stable/Library/Application Support/Floway One',
   );
   assertEquals(
-    resolveDefaultPersonalDataDir({ platform: 'linux', stableUserHome: '/home/stable' }),
+    withXdgDataHome(undefined, () => resolveDefaultPersonalDataDir({ platform: 'linux', stableUserHome: '/home/stable' })),
     '/home/stable/.local/share/floway-one',
   );
 });
@@ -20,7 +32,10 @@ test('POSIX personal application data uses the platform-standard suffix beneath 
 test('Windows personal application data follows the operating-system Known Folder when it is redirected', () => {
   const paths = resolvePersonalRuntimePaths({
     platform: 'win32',
-    resolveWindowsRoamingAppData: () => 'R:\\Redirected\\Roaming',
+    windowsKnownFolders: {
+      resolveRoamingAppData: () => ({ hresult: 0, path: 'R:\\Redirected\\Roaming' }),
+      throwForHresult: hresult => { throw new Error(`Unexpected HRESULT ${hresult}`); },
+    },
   });
 
   assertEquals(paths.dataDir, 'R:\\Redirected\\Roaming\\Floway One');
@@ -31,13 +46,20 @@ test('Windows personal application data follows the operating-system Known Folde
 });
 
 test('Windows Known Folder lookup failures preserve the operating-system cause', () => {
-  const unavailable = new Error('Windows Known Folder unavailable');
+  const unavailable = Object.assign(new Error('Access is denied'), { hresult: -2147024891 });
+  let observedHresult: number | undefined;
 
   let error: unknown;
   try {
     resolvePersonalRuntimePaths({
       platform: 'win32',
-      resolveWindowsRoamingAppData: () => { throw unavailable; },
+      windowsKnownFolders: {
+        resolveRoamingAppData: () => ({ hresult: unavailable.hresult, path: null }),
+        throwForHresult: hresult => {
+          observedHresult = hresult;
+          throw unavailable;
+        },
+      },
     });
   } catch (caught) {
     error = caught;
@@ -45,19 +67,64 @@ test('Windows Known Folder lookup failures preserve the operating-system cause',
 
   assert(error instanceof Error);
   assertEquals(error.message, 'Floway One could not resolve the Windows Roaming AppData Known Folder');
+  assertEquals(observedHresult, unavailable.hresult);
   assert(error.cause === unavailable);
 });
 
-test('default personal paths ignore mutable HOME and application-data environment variables', () => {
+test('Linux personal data follows an absolute XDG data root while the credential lock stays OS-user-global', () => {
+  const paths = withXdgDataHome('/mnt/redirected-data', () => resolvePersonalRuntimePaths({
+    platform: 'linux',
+    stableUserHome: '/home/stable',
+  }));
+
+  assertEquals(paths.dataDir, '/mnt/redirected-data/floway-one');
+  assertEquals(
+    paths.credentialLockDatabasePath,
+    '/home/stable/.local/share/floway-one/credential-lock/device-master-key-v1.creation-lock.db',
+  );
+});
+
+test('Linux ignores a relative XDG data root and falls back to the stable OS home', () => {
+  const paths = withXdgDataHome('relative/data', () => resolvePersonalRuntimePaths({
+    platform: 'linux',
+    stableUserHome: '/home/stable',
+  }));
+
+  assertEquals(paths.dataDir, '/home/stable/.local/share/floway-one');
+});
+
+test('Linux falls back to the stable OS home when XDG data root is unset', () => {
+  const paths = withXdgDataHome(undefined, () => resolvePersonalRuntimePaths({
+    platform: 'linux',
+    stableUserHome: '/home/stable',
+  }));
+
+  assertEquals(paths.dataDir, '/home/stable/.local/share/floway-one');
+});
+
+test('distinct absolute Linux XDG data roots share one device-global credential lock', () => {
+  const first = withXdgDataHome('/mnt/first', () => resolvePersonalRuntimePaths({
+    platform: 'linux',
+    stableUserHome: '/home/stable',
+  }));
+  const second = withXdgDataHome('/mnt/second', () => resolvePersonalRuntimePaths({
+    platform: 'linux',
+    stableUserHome: '/home/stable',
+  }));
+
+  assertEquals(first.dataDir, '/mnt/first/floway-one');
+  assertEquals(second.dataDir, '/mnt/second/floway-one');
+  assertEquals(first.credentialLockDatabasePath, second.credentialLockDatabasePath);
+});
+
+test('default personal paths ignore mutable HOME and APPDATA environment variables', () => {
   const before = resolvePersonalRuntimePaths();
   const previous = {
     APPDATA: process.env.APPDATA,
     HOME: process.env.HOME,
-    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
   };
   process.env.APPDATA = '/tmp/divergent-appdata';
   process.env.HOME = '/tmp/divergent-home';
-  process.env.XDG_DATA_HOME = '/tmp/divergent-xdg';
   try {
     assertEquals(resolvePersonalRuntimePaths(), before);
   } finally {

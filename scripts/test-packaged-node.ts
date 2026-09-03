@@ -61,7 +61,7 @@ const exerciseIsolatedCredentialStore = async (): Promise<boolean> => {
   const account = `test-${randomUUID()}`;
   let credential: DeviceMasterKeyCredential;
   try {
-    credential = createOperatingSystemCredential(service, account);
+    credential = await createOperatingSystemCredential(service, account);
     const expected = randomBytes(32);
     await credential.setSecret(expected);
     const loaded = await readCredential(credential);
@@ -209,7 +209,7 @@ const startIsolatedLinuxSecretService = async (): Promise<() => Promise<void>> =
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
-      createOperatingSystemCredential(`Floway Secret Service readiness ${randomUUID()}`, 'probe');
+      await createOperatingSystemCredential(`Floway Secret Service readiness ${randomUUID()}`, 'probe');
       lastError = undefined;
       break;
     } catch (error) {
@@ -244,7 +244,7 @@ const startRuntime = async (
   profile: 'server' | 'personal',
   extraEnv: NodeJS.ProcessEnv = {},
   personalPaths?: PersonalRuntimePaths,
-): Promise<{ child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
+): Promise<{ boundHost: string; child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
   const command = profile === 'personal'
     ? [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal']
     : serverCommand.slice(1);
@@ -271,13 +271,13 @@ const startRuntime = async (
   child.stdout.on('data', chunk => { combinedOutput += chunk; });
   child.stderr.on('data', chunk => { combinedOutput += chunk; });
 
-  const readyPort = await new Promise<number>((resolveReady, rejectReady) => {
+  const ready = await new Promise<{ host: string; port: number }>((resolveReady, rejectReady) => {
     const timeout = setTimeout(() => rejectReady(new Error(`${profile} startup timed out\n${combinedOutput}`)), 30_000);
     const inspect = () => {
-      const port = /Floway listening on http:\/\/localhost:(\d+)/.exec(combinedOutput)?.[1];
-      if (port === undefined) return;
+      const match = /Floway listening on http:\/\/([^:]+):(\d+)/.exec(combinedOutput);
+      if (match === null) return;
       clearTimeout(timeout);
-      resolveReady(Number(port));
+      resolveReady({ host: match[1]!, port: Number(match[2]) });
     };
     child.stdout.on('data', inspect);
     child.once('exit', (code, signal) => {
@@ -289,9 +289,14 @@ const startRuntime = async (
       rejectReady(error);
     });
   });
+  if (profile === 'personal' && ready.host !== '127.0.0.1') {
+    await stopRuntime(child);
+    fail(`personal runtime bound ${ready.host} instead of 127.0.0.1`);
+  }
   return {
+    boundHost: ready.host,
     child,
-    origin: `http://127.0.0.1:${readyPort}`,
+    origin: `http://127.0.0.1:${ready.port}`,
     output: () => combinedOutput,
   };
 };
@@ -470,6 +475,29 @@ const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
   );
 };
 
+const withUnavailablePackagedKeyring = async (
+  sentinel: string,
+  operation: () => Promise<void>,
+): Promise<void> => {
+  const packagedRequire = createRequire(resolve(packageRoot, 'apps/platform-node/package.json'));
+  const keyringModulePath = packagedRequire.resolve('@napi-rs/keyring');
+  const relativeKeyringPath = relative(await realpath(packageRoot), keyringModulePath);
+  if (relativeKeyringPath.startsWith('..') || isAbsolute(relativeKeyringPath)) {
+    fail(`resolved packaged keyring outside the temporary runtime: ${keyringModulePath}`);
+  }
+  const originalKeyringModule = await readFile(keyringModulePath);
+  try {
+    // Replace only the deployed package's CommonJS entry with a module-load
+    // failure. Server mode must never evaluate it; personal mode must retain
+    // the native-loader failure in its startup cause chain.
+    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L5
+    await writeFile(keyringModulePath, `'use strict';\nthrow new Error(${JSON.stringify(sentinel)});\n`);
+    await operation();
+  } finally {
+    await writeFile(keyringModulePath, originalKeyringModule);
+  }
+};
+
 const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
   const outer = 'Failed to read the Floway One device master key from the operating system credential store';
   const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'unavailable-credential-store') });
@@ -486,28 +514,14 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
   const sentinel = process.platform === 'darwin'
     ? 'macOS Keychain locked sentinel'
     : 'Windows Credential Manager unavailable sentinel';
-  const packagedRequire = createRequire(resolve(packageRoot, 'apps/platform-node/package.json'));
-  const keyringModulePath = packagedRequire.resolve('@napi-rs/keyring');
-  const relativeKeyringPath = relative(await realpath(packageRoot), keyringModulePath);
-  if (relativeKeyringPath.startsWith('..') || isAbsolute(relativeKeyringPath)) {
-    fail(`resolved packaged keyring outside the temporary runtime: ${keyringModulePath}`);
-  }
-  const originalKeyringModule = await readFile(keyringModulePath);
-  try {
-    // pnpm deploy's temporary package retains keyring-node's documented
-    // CommonJS entry. Replacing only that packaged copy makes the native
-    // facility unavailable without adding a test-only branch to production.
-    // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/package.json#L5
-    await writeFile(keyringModulePath, `'use strict';\nconst unavailable = () => { throw new Error(${JSON.stringify(sentinel)}); };\nexports.Entry = class Entry { constructor() { unavailable(); } };\nexports.findCredentials = unavailable;\n`);
+  await withUnavailablePackagedKeyring(sentinel, async () => {
     await assertPersonalStartupFailure(
       `unavailable-${process.platform}-credential-store`,
       personalPaths,
       {},
       [outer, sentinel],
     );
-  } finally {
-    await writeFile(keyringModulePath, originalKeyringModule);
-  }
+  });
 };
 
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
@@ -646,7 +660,35 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
   }
 };
 
-const assertPrivatePersonalStorage = async (paths: PersonalRuntimePaths, contentPath: string): Promise<void> => {
+type WindowsAclExpectation = 'directory' | 'inherited-file' | 'protected-file';
+
+const assertWindowsOwnerOnlyAcl = async (target: string, expectation: WindowsAclExpectation): Promise<void> => {
+  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
+$ErrorActionPreference = 'Stop'
+$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_TARGET')
+$Expectation = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_EXPECTATION')
+$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$IsDirectory = $Expectation -eq 'directory'
+$ExpectedProtected = $Expectation -ne 'inherited-file'
+$ExpectedInherited = $Expectation -eq 'inherited-file'
+$ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
+$Acl = if ($IsDirectory) { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
+$Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited -ne $ExpectedInherited) { throw "ACL verification failed for $Target" }
+`], {
+    env: {
+      ...process.env,
+      FLOWAY_ACL_VERIFY_EXPECTATION: expectation,
+      FLOWAY_ACL_VERIFY_TARGET: target,
+    },
+  });
+};
+
+const assertPrivatePersonalStorage = async (
+  paths: PersonalRuntimePaths,
+  contentPath: string,
+  hardener: PersonalStorageHardener,
+): Promise<void> => {
   if (process.platform !== 'win32') {
     for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
       if (((await stat(directory)).mode & 0o777) !== 0o700) fail(`personal directory is not mode 0700: ${directory}`);
@@ -657,25 +699,44 @@ const assertPrivatePersonalStorage = async (paths: PersonalRuntimePaths, content
     return;
   }
 
-  const targets = [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath), paths.databasePath, contentPath];
-  for (const target of targets) {
-    const kind = (await stat(target)).isDirectory() ? 'directory' : 'file';
-    await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
-$ErrorActionPreference = 'Stop'
-$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_TARGET')
-$Kind = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_VERIFY_KIND')
-$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$Acl = if ($Kind -eq 'directory') { [System.IO.Directory]::GetAccessControl($Target) } else { [System.IO.File]::GetAccessControl($Target) }
-$Rules = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if (-not $Acl.AreAccessRulesProtected -or $Acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw "ACL verification failed for $Target" }
-`], {
-      env: {
-        ...process.env,
-        FLOWAY_ACL_VERIFY_KIND: kind,
-        FLOWAY_ACL_VERIFY_TARGET: target,
-      },
-    });
+  for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
+    await assertWindowsOwnerOnlyAcl(directory, 'directory');
   }
+  for (const file of [paths.databasePath, contentPath]) {
+    await assertWindowsOwnerOnlyAcl(file, 'protected-file');
+  }
+
+  const verificationDatabasePath = join(paths.dataDir, 'sqlite-acl-verification.db');
+  const journalPath = `${verificationDatabasePath}-journal`;
+  let database = new DatabaseSync(verificationDatabasePath);
+  try {
+    database.exec('PRAGMA journal_mode = DELETE; CREATE TABLE acl_probe (value INTEGER)');
+    hardener.hardenSqliteFiles(verificationDatabasePath);
+    for (const expectation of ['protected-file', 'inherited-file'] as const) {
+      database.exec('BEGIN IMMEDIATE; INSERT INTO acl_probe VALUES (1)');
+      hardener.hardenSqliteFiles(verificationDatabasePath);
+      await assertWindowsOwnerOnlyAcl(journalPath, expectation);
+      database.exec('ROLLBACK');
+    }
+  } finally {
+    database.close();
+  }
+
+  const walPath = `${verificationDatabasePath}-wal`;
+  const shmPath = `${verificationDatabasePath}-shm`;
+  for (const expectation of ['protected-file', 'inherited-file'] as const) {
+    database = new DatabaseSync(verificationDatabasePath);
+    try {
+      database.exec('PRAGMA journal_mode = WAL; INSERT INTO acl_probe VALUES (2)');
+      hardener.hardenSqliteFiles(verificationDatabasePath);
+      await assertWindowsOwnerOnlyAcl(walPath, expectation);
+      await assertWindowsOwnerOnlyAcl(shmPath, expectation);
+    } finally {
+      database.close();
+    }
+    await Promise.all([rm(walPath, { force: true }), rm(shmPath, { force: true })]);
+  }
+  await rm(verificationDatabasePath);
 };
 
 try {
@@ -719,15 +780,17 @@ await runNodeEntry({
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
-    const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
-    await assertServerSurface(server.origin);
-    await stopRuntime(server.child);
+    await withUnavailablePackagedKeyring('server native keyring loader unavailable sentinel', async () => {
+      const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
+      await assertServerSurface(server.origin);
+      await stopRuntime(server.child);
+    });
 
     await assertWindowsDefaultPersonalEntry();
 
     const systemStoreAvailable = await exerciseIsolatedCredentialStore();
     if (systemStoreAvailable) {
-      const productionCredential = createOperatingSystemCredential();
+      const productionCredential = await createOperatingSystemCredential();
       const existingMasterKey = await readCredential(productionCredential);
       try {
         const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'personal-data') });
@@ -748,7 +811,7 @@ await runNodeEntry({
         const restarted = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
         await assertPersistedPersonalSecret(restarted.origin);
         await stopRuntime(restarted.child);
-        await assertPrivatePersonalStorage(personalPaths, contentPath);
+        await assertPrivatePersonalStorage(personalPaths, contentPath, hardener);
         await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);
 
         const hardeningFailurePaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'hardening-failure') });

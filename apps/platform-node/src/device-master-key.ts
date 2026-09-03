@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { Entry, findCredentials, type Credential } from '@napi-rs/keyring';
+import type { Credential } from '@napi-rs/keyring';
 
 import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
@@ -26,7 +26,10 @@ interface KeyringBindings {
   findCredentials(service: string): Credential[];
 }
 
-const defaultKeyringBindings: KeyringBindings = { Entry, findCredentials };
+const loadDefaultKeyringBindings = async (): Promise<KeyringBindings> => {
+  const { Entry, findCredentials } = await import('@napi-rs/keyring');
+  return { Entry, findCredentials };
+};
 
 const encodeLinuxSecret = (secret: Uint8Array): string => Buffer.from(secret).toString('base64');
 
@@ -42,14 +45,15 @@ const decodeLinuxSecret = (stored: string): Uint8Array => {
 // Credential Manager, and the Linux system keyring backend without writing a
 // key file beside SQLite.
 // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
-export const createOperatingSystemCredential = (
+export const createOperatingSystemCredential = async (
   service: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service,
   account: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account,
   platform: NodeJS.Platform = process.platform,
-  bindings: KeyringBindings = defaultKeyringBindings,
-): DeviceMasterKeyCredential => {
+  bindings?: KeyringBindings,
+): Promise<DeviceMasterKeyCredential> => {
+  const resolvedBindings = bindings ?? await loadDefaultKeyringBindings();
   if (platform !== 'linux') {
-    const entry = new bindings.Entry(service, account);
+    const entry = new resolvedBindings.Entry(service, account);
     return {
       getSecret: () => entry.getSecret(),
       setSecret: secret => entry.setSecret(secret),
@@ -66,7 +70,7 @@ export const createOperatingSystemCredential = (
   // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L527-L553
   const listFromSecretService = (): Credential[] => {
     try {
-      return bindings.findCredentials(service);
+      return resolvedBindings.findCredentials(service);
     } catch (cause) {
       throw new Error('Linux Secret Service is unavailable for the Floway One device master key', { cause });
     }
@@ -80,7 +84,7 @@ export const createOperatingSystemCredential = (
   };
 
   listFromSecretService();
-  const entry = new bindings.Entry(service, account);
+  const entry = new resolvedBindings.Entry(service, account);
   return {
     getSecret: () => {
       const password = readPassword();
@@ -120,7 +124,7 @@ export const loadDeviceMasterKey = async (
   let resolvedCredential: DeviceMasterKeyCredential;
   let stored: ArrayLike<number> | null;
   try {
-    resolvedCredential = credential ?? createOperatingSystemCredential();
+    resolvedCredential = credential ?? await createOperatingSystemCredential();
     stored = await resolvedCredential.getSecret();
   } catch (cause) {
     throw new Error('Failed to read the Floway One device master key from the operating system credential store', { cause });

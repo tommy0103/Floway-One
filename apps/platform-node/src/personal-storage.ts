@@ -9,7 +9,7 @@ import {
   type Stats,
 } from 'node:fs';
 import { userInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
 
@@ -52,7 +52,8 @@ function Protect-FlowayPath([string] $Target, [bool] $IsDirectory) {
     $Verified = [System.IO.File]::GetAccessControl($Target)
   }
   $Rules = @($Verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-  if (-not $Verified.AreAccessRulesProtected -or $Verified.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) {
+  $ExpectedInheritance = if ($IsDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
+  if (-not $Verified.AreAccessRulesProtected -or $Verified.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $Sid -or $Rules.Count -ne 1 -or $Rules[0].IdentityReference -ne $Sid -or $Rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $Rules[0].InheritanceFlags -ne $ExpectedInheritance -or $Rules[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or $Rules[0].IsInherited) {
     throw "Floway One failed to verify the owner-only ACL for $Target"
   }
 }
@@ -102,6 +103,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   private readonly posixUid: number;
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
   private readonly hardenedWindowsPaths = new Map<string, string>();
+  private readonly verifiedWindowsInheritableDirectories = new Set<string>();
   private readonly verifiedWindowsSqlitePaths = new Set<string>();
 
   constructor(
@@ -124,7 +126,10 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
       } catch (cause) {
         throw new Error(`Floway One could not enforce current-user-only access on directory ${this.paths.dataDir}`, { cause });
       }
-      for (const entry of entries) this.hardenedWindowsPaths.set(entry.path, entry.identity);
+      for (const entry of entries) {
+        this.hardenedWindowsPaths.set(entry.path, entry.identity);
+        if (entry.isDirectory) this.verifiedWindowsInheritableDirectories.add(entry.path);
+      }
       return;
     }
     this.ensureDirectory(this.paths.dataDir);
@@ -156,11 +161,12 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   hardenSqliteFiles(databasePath: string): void {
     for (const path of sqliteFiles(databasePath)) {
       if (!existsSync(path)) continue;
-      // The data directory's exact owner-only DACL is inheritable, so a
-      // rollback journal recreated for each transaction is already private.
-      // Verify each SQLite pathname once per process instead of launching a
-      // PowerShell ACL transaction for every journal incarnation.
-      if (this.platform === 'win32' && this.verifiedWindowsSqlitePaths.has(path)) continue;
+      // A parent directory whose exact owner-only inheritance flags were
+      // verified makes a recreated SQLite auxiliary private before SQLite can
+      // expose bytes. Cache that pathname only under such a verified parent.
+      if (this.platform === 'win32'
+        && this.verifiedWindowsInheritableDirectories.has(dirname(path))
+        && this.verifiedWindowsSqlitePaths.has(path)) continue;
       this.hardenFile(path);
       if (this.platform === 'win32') this.verifiedWindowsSqlitePaths.add(path);
     }
@@ -174,12 +180,12 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     }
   }
 
-  private windowsTreeEntries(root: string): Array<{ identity: string; path: string }> {
-    const entries: Array<{ identity: string; path: string }> = [];
+  private windowsTreeEntries(root: string): Array<{ identity: string; isDirectory: boolean; path: string }> {
+    const entries: Array<{ identity: string; isDirectory: boolean; path: string }> = [];
     const visit = (path: string): void => {
       const metadata = lstatSync(path);
       if (metadata.isSymbolicLink()) throw new Error(`Floway One personal storage cannot contain symbolic links: ${path}`);
-      entries.push({ identity: this.fileIdentity(metadata), path });
+      entries.push({ identity: this.fileIdentity(metadata), isDirectory: metadata.isDirectory(), path });
       if (metadata.isDirectory()) {
         for (const child of readdirSync(path)) visit(join(path, child));
       }
@@ -214,6 +220,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
       if (this.hardenedWindowsPaths.get(path) === identity) return;
       this.applyWindowsAcl(path, kind);
       this.hardenedWindowsPaths.set(path, identity);
+      if (kind === 'directory') this.verifiedWindowsInheritableDirectories.add(path);
       return;
     }
 
