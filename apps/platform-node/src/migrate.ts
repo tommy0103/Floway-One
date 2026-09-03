@@ -137,7 +137,10 @@ export const applyMigrations = async (
   const files = (await readdir(dir)).filter(file => file.endsWith('.sql')).toSorted();
 
   for (const file of files) {
-    if (applied.has(file)) continue;
+    if (applied.has(file)) {
+      if (options.through === file) break;
+      continue;
+    }
     const sql = await readFile(join(dir, file), 'utf8');
     let plan: ProtectedMigrationPlan | null = null;
     if (storedSecrets !== undefined) {
