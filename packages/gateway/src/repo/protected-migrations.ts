@@ -24,6 +24,7 @@ export interface ProtectedMigrationFieldPlan {
 export interface ProtectedMigrationPlan {
   readonly name: string;
   readonly fields: readonly ProtectedMigrationFieldPlan[];
+  readonly inputMode: 'ciphertext' | 'legacy-plaintext';
   readonly persistentSql: string;
 }
 
@@ -58,6 +59,7 @@ ALTER TABLE search_config_protected RENAME TO search_config;
 export const PROTECTED_MIGRATION_PLANS: readonly ProtectedMigrationPlan[] = Object.freeze([
   Object.freeze({
     name: PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
+    inputMode: 'legacy-plaintext',
     persistentSql: PERSONAL_PROTECTED_SEARCH_REBUILD_SQL,
     fields: Object.freeze(PROTECTED_STORED_SECRET_FIELDS.map(field => Object.freeze({
       field,

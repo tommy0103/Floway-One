@@ -159,8 +159,7 @@ export const applyMigrations = async (
         if (options.through === file) break;
         continue;
       }
-      const adoptThisMigration = options.adoptLegacyPlaintext
-        && file === PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION;
+      const adoptThisMigration = plan?.inputMode === 'legacy-plaintext';
       const opened = plan === null || storedSecrets === undefined
         ? []
         : adoptThisMigration
