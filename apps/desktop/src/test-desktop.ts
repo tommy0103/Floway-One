@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { acquireNodeDistribution } from './node-distribution.ts';
-import { MACOS_TARGET_TRIPLES, readPackagedNodeVersion } from './release-contract.ts';
+import {
+  architectureForTargetTriple,
+  MACOS_TARGET_TRIPLES,
+  readPackagedNodeVersion,
+} from './release-contract.ts';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -80,7 +84,14 @@ try {
     const targetOutput = resolve(desktopRoot, 'src-tauri/target', targetTriple);
     try {
       const nodeExecutable = await acquireNodeDistribution(packagedNodeVersion, targetTriple, distributionRoot);
-      const launch = await canExecuteNode(nodeExecutable);
+      const targetArchitecture = architectureForTargetTriple(targetTriple);
+      const launch = process.arch === targetArchitecture;
+      if (launch && !(await canExecuteNode(nodeExecutable))) {
+        throw new Error(`Floway desktop verifier could not execute native ${targetArchitecture} Node.js ${packagedNodeVersion}`);
+      }
+      console.log(
+        `Floway desktop verifier target ${targetTriple} (${targetArchitecture}) on ${process.arch}: ${launch ? 'launch' : 'static inspection'}`,
+      );
       const environment = {
         ...process.env,
         CARGO_BUILD_JOBS: '1',
