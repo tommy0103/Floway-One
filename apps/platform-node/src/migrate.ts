@@ -165,7 +165,6 @@ export const applyMigrations = async (
         : adoptThisMigration
           ? await openLegacyValues(db, file, plan)
           : await openProtectedValues(db, storedSecrets, file, plan);
-      if (file === PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION) console.error('DEBUG_PLAN', plan?.inputMode, opened.length);
       await db.exec(plan?.persistentSql ?? sql);
       if (plan !== null && storedSecrets !== undefined) {
         await sealAndRestoreProtectedValues(db, storedSecrets, file, opened);
