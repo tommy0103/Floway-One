@@ -64,8 +64,10 @@ const errorOutput = (error: unknown): string => {
 const runExpectedFailure = async (executable: string, expectedFragments: readonly string[]): Promise<string> => {
   let output: string;
   try {
-    await execFileAsync(executable, ['--verify-package'], { timeout: 30_000 });
-    throw new Error('Expected packaged application verification to fail');
+    const unexpectedSuccess = await execFileAsync(executable, ['--verify-package'], { timeout: 30_000 });
+    throw new Error(
+      `Expected packaged application verification to fail\nstdout:\n${unexpectedSuccess.stdout}\nstderr:\n${unexpectedSuccess.stderr}`,
+    );
   } catch (error) {
     output = errorOutput(error);
     if (output.includes('Expected packaged application verification to fail')) throw error;
