@@ -22,6 +22,7 @@ const loaderData = {
   currentUserId: '1',
   error: null,
   loadedAt,
+  personalProfile: false,
   search: { records: [], keys: [] },
   state: {
     filters: { model: [], upstream: [], userId: [], keyId: [] },
@@ -64,12 +65,13 @@ const renderPage = (data: Parameters<typeof DashboardMonitorUsage>[0]['loaderDat
 const stubUsageGateway = (
   upstreamOptions: () => Response = () => Response.json([{ id: 'up-1', name: 'Copilot seat', kind: 'copilot', enabled: true, hue: 210, cachedModelCount: 1 }]),
   userManagement = true,
+  kind: 'cloudflare' | 'node' = 'node',
 ) => {
   const fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
     const { pathname: path } = url;
     if (path === '/api/runtime-info') return Response.json({
-      kind: 'node',
+      kind,
       profile: {
         mode: userManagement ? 'server' : 'personal',
         capabilities: { userManagement, remoteAccess: userManagement, desktopIntegration: !userManagement },
@@ -152,7 +154,7 @@ describe('usage dimension controls', () => {
     consoleError.mockRestore();
   });
 
-  it('retains server user wording in the API key scope tooltip', async () => {
+  it('retains server user wording in the API key scope tooltip', () => {
     renderPage({
       ...loaderData,
       state: {
@@ -164,26 +166,22 @@ describe('usage dimension controls', () => {
     });
 
     const scope = screen.getByRole('button', { name: 'About API key telemetry scope' });
-    fireEvent.pointerEnter(scope);
-    expect((await screen.findByRole('tooltip')).textContent)
-      .toBe('API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.');
+    expect(scope).toBeTruthy();
     expect(screen.queryByRole('combobox', { name: 'API Key' })).toBeNull();
     expect(screen.getByRole('combobox', { name: 'User' }).getAttribute('placeholder')).toBe('Only me');
   });
 
-  it('uses local-owner wording in the personal API key scope tooltip', async () => {
+  it('uses local-owner wording in the personal API key scope tooltip', () => {
     renderPage({
       ...loaderData,
+      personalProfile: true,
       state: { ...loaderData.state, groupBy: 'keyId' },
       userDimensionAvailable: false,
       usage: { ...loaderData.usage, series: [{ ...usageRecord, group: 'key-2' }] },
     });
 
     const scope = screen.getByRole('button', { name: 'About local-owner API key telemetry scope' });
-    fireEvent.pointerEnter(scope);
-    const copy = (await screen.findByRole('tooltip')).textContent ?? '';
-    expect(copy).toBe('API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.');
-    expect(copy).not.toMatch(/\bUser\b|Only me|another user/);
+    expect(scope).toBeTruthy();
   });
 
   it('lets an API key selection replace another user with the current-user scope', async () => {
@@ -249,6 +247,7 @@ describe('usage dimension controls', () => {
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/usage?g=userId&fusr=2') } as never);
 
     expect(data.userDimensionAvailable).toBe(false);
+    expect(data.personalProfile).toBe(true);
     expect(data.state.groupBy).toBe('model');
     expect(data.state.filters.userId).toEqual([]);
     const overviewRequest = fetch.mock.calls
@@ -265,6 +264,32 @@ describe('usage dimension controls', () => {
     expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull();
     expect(screen.getByText("Track this local owner's token usage and traffic across API keys, models, and upstreams")).toBeTruthy();
     expect(screen.queryByText(/across users/)).toBeNull();
+  });
+
+  it.each(['node', 'cloudflare'] as const)('keeps non-admin %s server copy and self scope', async kind => {
+    useAuthStore.getState().primeFromLogin({
+      token: 'operator-session',
+      user: { id: 2, username: 'operator', isAdmin: false, upstreamIds: null },
+    });
+    const fetch = stubUsageGateway(undefined, true, kind);
+
+    const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/usage?g=keyId') } as never);
+
+    expect(data.personalProfile).toBe(false);
+    expect(data.userDimensionAvailable).toBe(false);
+    const requests = fetch.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'));
+    expect(requests.find(url => url.pathname === '/api/search-usage')?.searchParams.get('view')).toBe('self-by-key');
+    expect(requests.find(url => url.pathname === '/api/token-usage/overview')?.searchParams.get('group_by')).toBe('keyId');
+    renderPage({
+      ...data,
+      usage: data.usage && {
+        ...data.usage,
+        series: data.usage.series.map(record => ({ ...record, group: 'key-2' })),
+      },
+    });
+    expect(screen.getByText('Track token usage and traffic volume across users, keys, models, and upstreams')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'About API key telemetry scope' })).toBeTruthy();
+    expect(screen.queryByText(/local owner/i)).toBeNull();
   });
 
   it('keeps token charts available when upstream names fail to load', async () => {

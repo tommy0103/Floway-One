@@ -1,4 +1,3 @@
-import { InfoRegular } from '@fluentui/react-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -9,6 +8,7 @@ import { revalidateOnPathnameChange } from './revalidation';
 import type { GlobalError } from '../api/client';
 import { loadRuntimeInfo } from '../api/runtime-info';
 import { SEARCH_PROVIDER_LABEL_KEYS } from '../components/search/provider';
+import { ApiKeyScopeTooltip } from '../components/telemetry/api-key-scope-tooltip';
 import {
   TelemetryFilterFields,
   TelemetryGroupByField,
@@ -18,7 +18,7 @@ import { changeTelemetryFilter, changeTelemetryGroupBy, scopeTelemetryIdentity }
 import { ChoiceGroup } from '../components/ui/choice-group';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyStateLine } from '../components/ui/empty-state';
-import { CONTROL_ROW_CLASS, PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { Panel } from '../components/ui/panel';
 import { ResourceListActions } from '../components/ui/resource-list';
@@ -31,17 +31,15 @@ import { buildSearchChart, buildTokenChart, dashboardBuckets, summarizeUsage } f
 import { SummaryMetrics } from '../components/usage/summary-metrics';
 import type { UsageGroupBy, UsageMetric, UsageRange } from '../components/usage/types';
 import { parseUsageUrlState, serializeUsageUrlState, type UsageUrlState } from '../components/usage/url-state';
-import { fluentComponents } from '../fluent';
 import { formatCount } from '../lib/format-number';
 import { useEntryRewrite } from '../lib/page-navigation';
 import { useLocale } from '../lib/use-locale';
 import { tokenUsageUnattributedUserId, usageUpstreamDimensionValue, usageUpstreamFromDimensionValue } from '@floway-dev/protocols/common';
 
-const { Button, Tooltip } = fluentComponents;
-
 type LoaderData = Awaited<ReturnType<typeof loadUsagePageData>> & {
   currentUserId: string;
   loadedAt: number;
+  personalProfile: boolean;
   state: UsageUrlState;
   userDimensionAvailable: boolean;
 };
@@ -55,6 +53,7 @@ const requiredLabel = (labels: ReadonlyMap<string, string>, value: string, dimen
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
   const user = await requireDashboardUser();
   const runtime = await loadRuntimeInfo();
+  const personalProfile = runtime.profile.mode === 'personal';
   const userDimensionAvailable = user.isAdmin && runtime.profile.capabilities.userManagement;
   const parsed = parseUsageUrlState(new URL(request.url).searchParams);
   const scoped = scopeTelemetryIdentity(parsed.groupBy, parsed.filters, {
@@ -67,6 +66,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     ...await loadUsagePageData(userDimensionAvailable, parsed.range, scoped.groupBy, scoped.filters, loadedAt),
     currentUserId: String(user.id),
     loadedAt,
+    personalProfile,
     state: { ...parsed, ...scoped },
     userDimensionAvailable,
   };
@@ -220,9 +220,9 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   return <section className="dashboard-page">
     <DashboardPageHeader
       actions={<ResourceListActions appearance="subtle" onRefresh={() => void refresh()} refreshLabel={t('dashboard.usage.actions.refresh')} refreshing={refreshing} />}
-      description={t(loaderData.userDimensionAvailable
-        ? 'dashboard.pages.usage'
-        : 'dashboard.pages.personalUsage')}
+      description={t(loaderData.personalProfile
+        ? 'dashboard.pages.personalUsage'
+        : 'dashboard.pages.usage')}
       title={t('dashboard.nav.usage')}
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}
@@ -233,18 +233,8 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
           disabled={refreshing}
           dimensions={availableDimensions}
           groupBy={loadedQuery.groupBy}
-          groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t(loaderData.userDimensionAvailable
-            ? 'dashboard.usage.apiKeyScopeInfo'
-            : 'dashboard.usage.personalApiKeyScopeInfo')} relationship="description">
-            <Button
-              appearance="subtle"
-              aria-label={t(loaderData.userDimensionAvailable
-                ? 'dashboard.usage.apiKeyScopeLabel'
-                : 'dashboard.usage.personalApiKeyScopeLabel')}
-              className={CONTROL_ROW_CLASS}
-              icon={<InfoRegular />}
-            />
-          </Tooltip>}
+          groupByAdornment={loadedQuery.groupBy === 'keyId'
+            && <ApiKeyScopeTooltip personalProfile={loaderData.personalProfile} />}
           groupByLabel={t('dashboard.usage.groupBy.label')}
           onGroupByChange={changeGroupBy}
         />}

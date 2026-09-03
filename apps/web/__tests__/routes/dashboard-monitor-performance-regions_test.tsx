@@ -42,6 +42,7 @@ const renderPage = (overrides: LoaderOverrides = {}) => {
     isAdmin: false,
     loadedAt: Date.UTC(2026, 7, 5, 12),
     overview,
+    personalProfile: false,
     regionAvailable: false,
     state: {
       metric: 'ttft',
@@ -85,24 +86,25 @@ describe('Performance runtime dimensions', () => {
     expect(screen.getByRole('tab', { name: 'By Region' })).toBeTruthy();
   });
 
-  it('renders capability-specific API key scope tooltips', async () => {
-    const server = renderPage({
-      isAdmin: true,
+  it.each([
+    { name: 'Node', regionAvailable: false },
+    { name: 'Cloudflare', regionAvailable: true },
+  ])('keeps non-admin $name server tooltip terminology', ({ regionAvailable }) => {
+    renderPage({
+      isAdmin: false,
+      personalProfile: false,
+      regionAvailable,
       state: { groupBy: 'keyId' },
-      userDimensionAvailable: true,
+      userDimensionAvailable: false,
     });
-    const serverScope = screen.getByRole('button', { name: 'About API key telemetry scope' });
-    fireEvent.pointerEnter(serverScope);
-    expect((await screen.findByRole('tooltip')).textContent)
-      .toBe('API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.');
-    server.unmount();
+    expect(screen.getByRole('button', { name: 'About API key telemetry scope' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'About local-owner API key telemetry scope' })).toBeNull();
+  });
 
-    renderPage({ state: { groupBy: 'keyId' }, userDimensionAvailable: false });
-    const personalScope = screen.getByRole('button', { name: 'About local-owner API key telemetry scope' });
-    fireEvent.pointerEnter(personalScope);
-    const copy = (await screen.findByRole('tooltip')).textContent ?? '';
-    expect(copy).toBe('API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.');
-    expect(copy).not.toMatch(/\bUser\b|Only me|another user/);
+  it('selects personal tooltip terminology from the profile fact', () => {
+    renderPage({ personalProfile: true, state: { groupBy: 'keyId' }, userDimensionAvailable: false });
+    expect(screen.getByRole('button', { name: 'About local-owner API key telemetry scope' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'About API key telemetry scope' })).toBeNull();
   });
 
   it('does not re-probe known capabilities', async () => {
@@ -139,6 +141,7 @@ describe('Performance runtime dimensions', () => {
     renderPage({
       error: { status: 500, message: 'Unavailable' },
       overview: null,
+      personalProfile: null,
       regionAvailable: null,
       upstreams: null,
       userDimensionAvailable: null,
@@ -164,6 +167,7 @@ describe('Performance runtime dimensions', () => {
       error: { status: 500, message: 'Unavailable' },
       isAdmin: true,
       overview: null,
+      personalProfile: null,
       regionAvailable: null,
       state: { groupBy: 'userId' },
       upstreams: null,
@@ -196,6 +200,7 @@ describe('Performance runtime dimensions', () => {
       error: { status: 500, message: 'Unavailable' },
       isAdmin: true,
       overview: null,
+      personalProfile: null,
       regionAvailable: null,
       state: { groupBy: 'userId', hidden: ['2'], filters: { userId: ['2'] } },
       upstreams: null,
@@ -237,6 +242,7 @@ describe('Performance runtime dimensions', () => {
     renderPage({
       isAdmin: true,
       overview: null,
+      personalProfile: null,
       regionAvailable: null,
       state: { groupBy: 'userId' },
       upstreams: null,

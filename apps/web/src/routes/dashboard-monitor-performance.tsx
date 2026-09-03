@@ -1,4 +1,3 @@
-import { InfoRegular } from '@fluentui/react-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -24,12 +23,13 @@ import {
 } from '../components/performance/overview';
 import { buildPerformanceChart, performanceBuckets } from '../components/performance/plot';
 import { PerformanceTable } from '../components/performance/table';
+import { ApiKeyScopeTooltip } from '../components/telemetry/api-key-scope-tooltip';
 import { TelemetryDimensionControls, type TelemetryDimension } from '../components/telemetry/dimension-controls';
 import { changeTelemetryFilter, changeTelemetryGroupBy } from '../components/telemetry/filter-state';
 import { ChoiceGroup } from '../components/ui/choice-group';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyStateLine } from '../components/ui/empty-state';
-import { CONTROL_ROW_CLASS, PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { Panel } from '../components/ui/panel';
 import { ResourceListActions } from '../components/ui/resource-list';
@@ -42,7 +42,7 @@ import { formatCount, formatTokenRateFromTpot } from '../lib/format-number';
 import { useEntryRewrite } from '../lib/page-navigation';
 import { useLocale } from '../lib/use-locale';
 
-const { Button, Tab, TabList, Text, Tooltip } = fluentComponents;
+const { Tab, TabList, Text } = fluentComponents;
 
 interface UpstreamMetadata { id: string; name: string; hue: number }
 
@@ -54,6 +54,7 @@ interface LoaderData {
   // `null` is a failed fetch, not a quiet gateway: an empty overview would
   // render zeroes the page does not know to be true.
   overview: PerformanceOverviewResponse | null;
+  personalProfile: boolean | null;
   state: PerformanceUrlState;
   // Null on the same terms: upstream metadata owns both the visible name and
   // the series hue, so a partial response cannot faithfully render the group.
@@ -75,6 +76,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
       isAdmin: user.isAdmin,
       loadedAt,
       overview: null,
+      personalProfile: null,
       regionAvailable: null,
       state,
       upstreams: null,
@@ -82,6 +84,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     };
   }
   const regionAvailable = runtime.data.kind === 'cloudflare';
+  const personalProfile = runtime.data.profile.mode === 'personal';
   const userDimensionAvailable = user.isAdmin
     && runtime.data.profile.capabilities.userManagement;
   const normalization = normalizePerformanceDimensionsForCapabilities(state, {
@@ -108,6 +111,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     isAdmin: user.isAdmin,
     loadedAt,
     overview: overview.data ?? null,
+    personalProfile,
     regionAvailable,
     state: normalization.state,
     upstreams: upstreams.data?.map(({ id, name, hue }) => ({ id, name, hue })) ?? null,
@@ -122,6 +126,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [, setSearchParams] = useSearchParams();
   const rewrite = useEntryRewrite();
   const initialState = loaderData.state;
+  const [personalProfile, setPersonalProfile] = useState(loaderData.personalProfile);
   const [regionAvailable, setRegionAvailable] = useState(loaderData.regionAvailable);
   const [userDimensionAvailable, setUserDimensionAvailable] = useState(loaderData.userDimensionAvailable);
   const [query, setQuery] = useState(() => ({
@@ -137,6 +142,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [upstreams, setUpstreams] = useState(loaderData.upstreams);
   const [error, setError] = useState<GlobalError | null>(loaderData.error);
   const pendingRuntimeCapabilitiesRef = useRef<{
+    personalProfile: boolean;
     regionAvailable: boolean;
     userDimensionAvailable: boolean;
   } | null>(null);
@@ -151,7 +157,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const reload = useCallback(async (signal: AbortSignal, { background, requestedAt }: { background: boolean; requestedAt: number }) => {
     if (!background) setError(null);
     const search = buildPerformanceQuery(query.range, query.groupBy, query.filters, requestedAt);
-    if (regionAvailable !== null && userDimensionAvailable !== null) {
+    if (personalProfile !== null && regionAvailable !== null && userDimensionAvailable !== null) {
       const result = await callApi(() => api.api.performance.overview.$get(
         { query: search },
         { init: { signal } },
@@ -179,6 +185,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
         return false;
       }
       nextCapabilities = {
+        personalProfile: runtimeResult.data.profile.mode === 'personal',
         regionAvailable: runtimeResult.data.kind === 'cloudflare',
         userDimensionAvailable: loaderData.isAdmin
           && runtimeResult.data.profile.capabilities.userManagement,
@@ -214,12 +221,13 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
       return false;
     }
     pendingRuntimeCapabilitiesRef.current = null;
+    setPersonalProfile(nextCapabilities.personalProfile);
     setRegionAvailable(nextCapabilities.regionAvailable);
     setUserDimensionAvailable(nextCapabilities.userDimensionAvailable);
     setOverview(result.data);
     setUpstreams(upstreamsResult.data.map(({ id, name, hue }) => ({ id, name, hue })));
     return normalization.changed ? committedQuery : true;
-  }, [loaderData.currentUserId, loaderData.isAdmin, query, regionAvailable, userDimensionAvailable]);
+  }, [loaderData.currentUserId, loaderData.isAdmin, personalProfile, query, regionAvailable, userDimensionAvailable]);
 
   const onQueryCommit = useCallback((previous: typeof query, next: typeof query) => {
     if (previous.groupBy !== next.groupBy) setHiddenSeries(new Set());
@@ -288,7 +296,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}
     {(() => {
-      if (overview === null || chart === null || labels === null || regionAvailable === null || userDimensionAvailable === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
+      if (overview === null || chart === null || labels === null || personalProfile === null || regionAvailable === null || userDimensionAvailable === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
       const dimensions: Array<TelemetryDimension<PerformanceGroupBy>> = [
         { key: 'model', groupLabel: t('dashboard.performance.groupBy.model'), filterLabel: t('dashboard.performance.filters.model'), allLabel: t('dashboard.performance.filters.all.model'), options: overview.dimensionValues.models.map(value => ({ value, label: value })) },
         { key: 'upstream', groupLabel: t('dashboard.performance.groupBy.upstream'), filterLabel: t('dashboard.performance.filters.upstream'), allLabel: t('dashboard.performance.filters.all.upstream'), options: overview.dimensionValues.upstreams.map(value => ({ value, label: labels.upstreams.get(value) ?? value })) },
@@ -321,18 +329,8 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
             dimensions={availableDimensions}
             filters={loadedQuery.filters}
             groupBy={loadedQuery.groupBy}
-            groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t(userDimensionAvailable
-              ? 'dashboard.performance.apiKeyScopeInfo'
-              : 'dashboard.performance.personalApiKeyScopeInfo')} relationship="description">
-              <Button
-                appearance="subtle"
-                aria-label={t(userDimensionAvailable
-                  ? 'dashboard.performance.apiKeyScopeLabel'
-                  : 'dashboard.performance.personalApiKeyScopeLabel')}
-                className={CONTROL_ROW_CLASS}
-                icon={<InfoRegular />}
-              />
-            </Tooltip>}
+            groupByAdornment={loadedQuery.groupBy === 'keyId'
+              && <ApiKeyScopeTooltip personalProfile={personalProfile} />}
             groupByLabel={t('dashboard.performance.groupBy.label')}
             onFilterChange={setFilter}
             onGroupByChange={changeGroupBy}
