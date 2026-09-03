@@ -13,7 +13,8 @@ import {
   PERSONAL_STDERR_LOG,
   PERSONAL_STDOUT_LOG,
 } from '../src/personal-logging.ts';
-import type { PrivateStoragePermissions } from '../src/personal-storage.ts';
+import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
+import { initializePersonalStorage } from '../src/personal-storage.ts';
 
 const execFileAsync = promisify(execFile);
 const PLATFORM_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -33,17 +34,16 @@ afterEach(async () => {
   await rm(logsDir, { recursive: true, force: true });
 });
 
-test('personal logging hardens its directory and every rotated log-file incarnation', () => {
-  const ensuredDirectories: string[] = [];
-  const hardenedFiles: string[] = [];
-  const permissions: PrivateStoragePermissions = {
-    ensureDirectory: path => ensuredDirectories.push(path),
-    hardenFile: path => hardenedFiles.push(path),
-    hardenSqliteFiles: () => {},
-  };
+test('personal logging consumes one initialized tree and hardens every rotated log-file incarnation', () => {
+  const paths = resolvePersonalRuntimePaths({ dataDir: logsDir, platform: 'linux', stableUserHome: logsDir });
+  const aclCalls: Array<{ kind: 'directory' | 'file' | 'tree'; path: string }> = [];
+  const permissions = initializePersonalStorage(paths, {
+    platform: 'win32',
+    applyWindowsAcl: (path, kind) => aclCalls.push({ kind, path }),
+  });
   const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
   const stderr = new PassThrough() as unknown as NodeJS.WriteStream;
-  const installed = installPersonalLogging(logsDir, {
+  const installed = installPersonalLogging(paths.logsDir, {
     maxBytes: 16,
     maxFiles: 2,
     permissions,
@@ -57,9 +57,9 @@ test('personal logging hardens its directory and every rotated log-file incarnat
     installed.restore();
   }
 
-  expect(ensuredDirectories).toEqual([logsDir]);
-  expect(hardenedFiles.filter(path => path === join(logsDir, PERSONAL_STDOUT_LOG))).toHaveLength(2);
-  expect(hardenedFiles.filter(path => path === join(logsDir, PERSONAL_STDERR_LOG))).toHaveLength(1);
+  expect(aclCalls.filter(call => call.kind === 'tree')).toEqual([{ kind: 'tree', path: paths.dataDir }]);
+  expect(aclCalls.filter(call => call.path === join(paths.logsDir, PERSONAL_STDOUT_LOG))).toHaveLength(2);
+  expect(aclCalls.filter(call => call.path === join(paths.logsDir, PERSONAL_STDERR_LOG))).toHaveLength(1);
 });
 
 test('personal logging tees application streams into bounded rotating files', async () => {

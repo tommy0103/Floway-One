@@ -18,7 +18,7 @@ import {
   resolvePersonalRuntimePaths,
   type PersonalRuntime,
 } from './personal-runtime.ts';
-import { PersonalStorageHardener } from './personal-storage.ts';
+import { initializePersonalStorage } from './personal-storage.ts';
 import { selectNodeRuntimeProfile } from './runtime-profile.ts';
 import { startScheduledMaintenance } from './scheduled-maintenance.ts';
 import { startNodeRuntime } from './start-runtime.ts';
@@ -81,6 +81,7 @@ export interface NodeEntryOverrides {
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
+  readonly initializePersonalStorage?: typeof initializePersonalStorage;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
   readonly serve?: NodeServe;
@@ -153,20 +154,22 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const profile = args.length === 0
     ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
     : selectNodeRuntimeProfile(args);
-  const personalPaths = profile === 'personal'
-    ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
+  const personal = profile === 'personal'
+    ? (() => {
+        const paths = (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)();
+        const storage = (overrides.initializePersonalStorage ?? initializePersonalStorage)(paths);
+        return { paths, storage };
+      })()
     : null;
-  const personalStorage = personalPaths === null ? null : new PersonalStorageHardener(personalPaths);
-  personalStorage?.initialize();
-  if (personalPaths !== null && personalStorage !== null) {
-    installPersonalLogging(personalPaths.logsDir, { permissions: personalStorage });
+  if (personal !== null) {
+    installPersonalLogging(personal.paths.logsDir, { permissions: personal.storage });
   }
   const startupWarnings: string[] = [];
-  const personalRuntime = personalPaths === null
+  const personalRuntime = personal === null
     ? null
     : (overrides.loadPersonalRuntime ?? loadPersonalRuntime)({
-        paths: personalPaths,
-        ...(personalStorage === null ? {} : { permissions: personalStorage }),
+        paths: personal.paths,
+        permissions: personal.storage,
         warn: warning => startupWarnings.push(warning),
       });
   for (const warning of startupWarnings) console.warn(warning);
@@ -181,19 +184,19 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
 
   const start = overrides.start ?? (async () => await startNodeRuntime({
     bootstrap: () => (overrides.bootstrapNodePlatform ?? bootstrapNodePlatform)(
-      personalPaths === null
+      personal === null
         ? { profile: 'server' }
         : {
             profile: 'personal',
-            storage: personalPaths,
-            ...(personalStorage === null ? {} : { personalStorage }),
+            storage: personal.paths,
+            personalStorage: personal.storage,
           },
     ),
     migrate: async bootstrapped => await prepareNodePlatform(
       bootstrapped,
       profile,
       overrides,
-      personalPaths?.databasePath,
+      personal?.paths.databasePath,
     ),
     listen: async () => {
       const info = await startNodeListener(profile, personalRuntime, port, overrides);

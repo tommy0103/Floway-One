@@ -7,7 +7,7 @@ import { test } from 'vitest';
 import { FsFileStore } from '../src/fs-file-store.ts';
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
-import { PersonalStorageHardener } from '../src/personal-storage.ts';
+import { initializePersonalStorage } from '../src/personal-storage.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const mode = async (path: string): Promise<number> => (await stat(path)).mode & 0o777;
@@ -43,8 +43,7 @@ test('personal storage recursively hardens existing directories, SQLite files, l
     ]);
   }
 
-  const hardener = new PersonalStorageHardener(paths);
-  hardener.initialize();
+  const hardener = initializePersonalStorage(paths);
   const store = new FsFileStore(paths.filesDir, hardener);
   await store.put('new/nested/body.bin', new TextEncoder().encode('new-secret'));
   const database = createNodeSqliteDatabase(paths.databasePath, { permissions: hardener });
@@ -69,7 +68,7 @@ test('personal storage preserves the original hardening failure as its cause', (
   await writeFile(paths.filesDir, 'occupied');
 
   const error = await assertRejects(
-    async () => new PersonalStorageHardener(paths).initialize(),
+    async () => initializePersonalStorage(paths),
     Error,
     `Floway could not enforce current-user-only access on directory ${paths.filesDir}`,
   );
@@ -79,11 +78,10 @@ test('personal storage preserves the original hardening failure as its cause', (
 
 test('Windows hardening caches an unchanged SQLite file identity and re-hardens each replacement once', () => withTempPaths(async paths => {
   const calls: Array<{ kind: 'directory' | 'file' | 'tree'; path: string }> = [];
-  const hardener = new PersonalStorageHardener(paths, {
+  const hardener = initializePersonalStorage(paths, {
     platform: 'win32',
     applyWindowsAcl: (path, kind) => calls.push({ kind, path }),
   });
-  hardener.initialize();
   const store = new FsFileStore(paths.filesDir, hardener);
   await store.put('nested/body.bin', new Uint8Array([1]));
   const auxiliaries = ['-journal', '-wal', '-shm'].map(suffix => `${paths.databasePath}${suffix}`);

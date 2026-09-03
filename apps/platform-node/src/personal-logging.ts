@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import type { PrivateStoragePermissions } from './personal-storage.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 
 export const PERSONAL_STDOUT_LOG = 'floway.stdout.log';
 export const PERSONAL_STDERR_LOG = 'floway.stderr.log';
@@ -21,7 +21,7 @@ export const DEFAULT_LOG_FILE_COUNT = 3;
 interface PersonalLoggingOptions {
   readonly maxBytes?: number;
   readonly maxFiles?: number;
-  readonly permissions?: PrivateStoragePermissions;
+  readonly permissions?: InitializedPersonalStorage;
   readonly stderr?: NodeJS.WriteStream;
   readonly stdout?: NodeJS.WriteStream;
 }
@@ -39,7 +39,7 @@ class RotatingFileSink {
     private readonly path: string,
     private readonly maxBytes: number,
     private readonly maxFiles: number,
-    private readonly permissions?: PrivateStoragePermissions,
+    private readonly permissions?: InitializedPersonalStorage,
   ) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Log maxBytes must be a positive integer');
     if (!Number.isSafeInteger(maxFiles) || maxFiles < 1) throw new Error('Log maxFiles must be a positive integer');
@@ -151,8 +151,6 @@ export const installPersonalLogging = (
     if (options.permissions === undefined) {
       mkdirSync(logsDir, { recursive: true, mode: 0o700 });
       if (process.platform !== 'win32') chmodSync(logsDir, 0o700);
-    } else {
-      options.permissions.ensureDirectory(logsDir);
     }
     const stdoutSink = new RotatingFileSink(
       join(logsDir, PERSONAL_STDOUT_LOG),

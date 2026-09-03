@@ -24,7 +24,8 @@ import {
   FsFileStore,
   resolvePersonalRuntimePaths,
   type PersonalRuntimePaths,
-  PersonalStorageHardener,
+  initializePersonalStorage,
+  type InitializedPersonalStorage,
 } from './support/packaged-test-support.ts';
 import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION, WEB_SEARCH_STORED_SECRET_FIELDS } from '@floway-dev/gateway';
 import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '@floway-dev/platform';
@@ -730,7 +731,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
 const assertPrivatePersonalStorage = async (
   paths: PersonalRuntimePaths,
   contentPath: string,
-  hardener: PersonalStorageHardener,
+  hardener: InitializedPersonalStorage,
 ): Promise<void> => {
   if (process.platform !== 'win32') {
     for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
@@ -882,8 +883,7 @@ await runNodeEntry({
           'packaged-access',
         ]);
 
-        const hardener = new PersonalStorageHardener(personalPaths);
-        hardener.initialize();
+        const hardener = initializePersonalStorage(personalPaths);
         const fileStore = new FsFileStore(personalPaths.filesDir, hardener);
         const contentPath = join(personalPaths.filesDir, 'packaged', 'body.bin');
         await fileStore.put('packaged/body.bin', new TextEncoder().encode('private-content'));

@@ -5,7 +5,7 @@ import { nodeFetch } from './fetch.ts';
 import { FsFileStore } from './fs-file-store.ts';
 import { createNodeSqliteDatabase } from './node-sqlite-database.ts';
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
-import { PersonalStorageHardener } from './personal-storage.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 import { nodeRuntimeRootCAs } from './runtime-root-cas.ts';
 import { createSharpImageProcessor } from './sharp-image-processor.ts';
 import { nodeSocketDial } from './socket-dial.ts';
@@ -39,7 +39,7 @@ interface NodeStoragePaths {
 
 export type BootstrapNodePlatformOptions =
   | {
-    readonly personalStorage?: PersonalStorageHardener;
+    readonly personalStorage: InitializedPersonalStorage;
     readonly profile: 'personal';
     readonly storage: PersonalRuntimePaths;
   }
@@ -52,7 +52,7 @@ export interface BootstrapNodePlatformDependencies {
 export interface BootstrappedNodePlatform {
   readonly db: SqlDatabase;
   readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
-  readonly personalStorage?: PersonalStorageHardener;
+  readonly personalStorage?: InitializedPersonalStorage;
 }
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
   const profile = value ?? 'server';
@@ -74,10 +74,7 @@ export const bootstrapNodePlatform = (
 
   const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
   const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
-  const personalStorage = profile === 'personal'
-    ? (options.personalStorage ?? new PersonalStorageHardener(options.storage))
-    : undefined;
-  personalStorage?.initialize();
+  const personalStorage = profile === 'personal' ? options.personalStorage : undefined;
 
   const files = new FsFileStore(filesDir, personalStorage);
   initFileStore(files);

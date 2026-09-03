@@ -14,10 +14,13 @@ import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '@flo
 const execFileAsync = promisify(execFile);
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RUN_NODE_ENTRY_URL = new URL('../src/run-node-entry.ts', import.meta.url).href;
+const PERSONAL_STORAGE_URL = new URL('../src/personal-storage.ts', import.meta.url).href;
 const MASTER_KEY_BYTE = 29;
 const PROTECTED_SENTINEL = 'personal-entry-encrypted-upstream-secret';
 const APP_CONSTRUCTION_BOUNDARY = 'PERSONAL_ENTRY_APP_CONSTRUCTION_REACHED';
 const LISTENER_BIND_BOUNDARY = 'PERSONAL_ENTRY_LISTENER_BIND_REACHED';
+const STORAGE_INITIALIZATION_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_INITIALIZED';
+const STORAGE_TREE_ACL_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_TREE_ACL_APPLIED';
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
 const ownerCases: readonly {
@@ -68,11 +71,21 @@ for (const ownerCase of ownerCases) {
       const entry = join(dir, 'personal-entry-verification.mts');
       await writeFile(entry, `
 import { runNodeEntry } from ${JSON.stringify(RUN_NODE_ENTRY_URL)};
+import { initializePersonalStorage } from ${JSON.stringify(PERSONAL_STORAGE_URL)};
 import { assertRuntimeProfileData } from '@floway-dev/gateway';
 import { createAes256GcmStoredSecretCodec } from '@floway-dev/platform';
 const paths = JSON.parse(process.env.FLOWAY_TEST_PERSONAL_PATHS);
 const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(${MASTER_KEY_BYTE}));
 await runNodeEntry({
+  initializePersonalStorage: paths => {
+    console.log(${JSON.stringify(STORAGE_INITIALIZATION_BOUNDARY)});
+    return initializePersonalStorage(paths, {
+      platform: 'win32',
+      applyWindowsAcl: (_path, kind) => {
+        if (kind === 'tree') console.log(${JSON.stringify(STORAGE_TREE_ACL_BOUNDARY)});
+      },
+    });
+  },
   resolvePersonalRuntimePaths: () => paths,
   createNodeStoredSecretCodec: () => Promise.resolve(codec),
   assertRuntimeProfileData: async repo => {
@@ -118,6 +131,9 @@ await runNodeEntry({
         stderr = String((error as { stderr?: string }).stderr ?? '');
       }
       const output = stdout + stderr;
+
+      expect(output.match(new RegExp(STORAGE_INITIALIZATION_BOUNDARY, 'g'))).toHaveLength(1);
+      expect(output.match(new RegExp(STORAGE_TREE_ACL_BOUNDARY, 'g'))).toHaveLength(1);
 
       if (ownerCase.expectedError === null) {
         expect(failure).toBeUndefined();

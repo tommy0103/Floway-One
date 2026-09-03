@@ -11,6 +11,7 @@ import {
   resolvePersonalRuntimePaths,
   type PersonalRuntimePaths,
 } from '../src/personal-runtime.ts';
+import { initializePersonalStorage } from '../src/personal-storage.ts';
 import { assertEquals } from '@floway-dev/test-utils';
 
 const withXdgDataHome = <T>(value: string | undefined, operation: () => T): T => {
@@ -177,15 +178,12 @@ afterEach(async () => {
 
 test('personal runtime creates a stable loopback endpoint and complete private data layout', async () => {
   if (process.platform !== 'win32') await chmod(dataDir, 0o755);
-  const hardenedFiles: string[] = [];
+  const paths = runtimePaths();
+  const permissions = initializePersonalStorage(paths);
   const runtime = loadPersonalRuntime({
-    paths: runtimePaths(),
+    paths,
     env: {},
-    permissions: {
-      ensureDirectory: () => {},
-      hardenFile: path => hardenedFiles.push(path),
-      hardenSqliteFiles: () => {},
-    },
+    permissions,
   });
 
   expect(runtime).toMatchObject({
@@ -196,7 +194,6 @@ test('personal runtime creates a stable loopback endpoint and complete private d
     ...runtimePaths(),
   });
   expect(JSON.parse(await readFile(runtime.runtimeStatePath, 'utf8'))).toEqual({ version: 1, port: 8788 });
-  expect(hardenedFiles).toEqual([runtime.runtimeStatePath]);
   if (process.platform !== 'win32') {
     expect((await stat(runtime.dataDir)).mode & 0o777).toBe(0o700);
     expect((await stat(runtime.filesDir)).mode & 0o777).toBe(0o700);

@@ -13,7 +13,7 @@ import { platform as currentPlatform, userInfo } from 'node:os';
 import { posix, win32 } from 'node:path';
 
 import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
-import type { PrivateStoragePermissions } from './personal-storage.ts';
+import type { InitializedPersonalStorage } from './personal-storage.ts';
 
 export const PERSONAL_HOSTNAME = '127.0.0.1' as const;
 export const DEFAULT_PERSONAL_PORT = 8788;
@@ -207,7 +207,7 @@ export interface PersonalRuntime extends PersonalRuntimePaths {
 
 export interface PersonalRuntimeOptions extends PersonalRuntimePathOptions {
   readonly paths?: PersonalRuntimePaths;
-  readonly permissions?: PrivateStoragePermissions;
+  readonly permissions?: InitializedPersonalStorage;
   readonly warn?: (message: string) => void;
 }
 
@@ -275,7 +275,7 @@ const readRuntimeState = (path: string): PersistedRuntimeState | null => {
 const writeRuntimeState = (
   path: string,
   state: PersistedRuntimeState,
-  permissions?: PrivateStoragePermissions,
+  permissions?: InitializedPersonalStorage,
 ): void => {
   const temporaryPath = `${path}.${process.pid}.tmp`;
   try {
@@ -294,12 +294,14 @@ export const loadPersonalRuntime = (options: PersonalRuntimeOptions = {}): Perso
   const paths = options.paths ?? resolvePersonalRuntimePaths(options);
   const { dataDir, filesDir, logsDir, runtimeStatePath } = paths;
   try {
-    mkdirSync(filesDir, { recursive: true, mode: 0o700 });
-    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') {
-      chmodSync(dataDir, 0o700);
-      chmodSync(filesDir, 0o700);
-      chmodSync(logsDir, 0o700);
+    if (options.permissions === undefined) {
+      mkdirSync(filesDir, { recursive: true, mode: 0o700 });
+      mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+      if (process.platform !== 'win32') {
+        chmodSync(dataDir, 0o700);
+        chmodSync(filesDir, 0o700);
+        chmodSync(logsDir, 0o700);
+      }
     }
     accessSync(dataDir, constants.R_OK | constants.W_OK);
   } catch (cause) {

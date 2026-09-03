@@ -66,7 +66,7 @@ if ($Kind -eq 'tree') {
 }
 `;
 
-type WindowsAclKind = 'directory' | 'file' | 'tree';
+export type WindowsAclKind = 'directory' | 'file' | 'tree';
 
 const applyWindowsOwnerOnlyAcl = (path: string, kind: WindowsAclKind): void => {
   execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_OWNER_ONLY_ACL_SCRIPT], {
@@ -85,7 +85,13 @@ export interface PrivateStoragePermissions {
   hardenSqliteFiles(databasePath: string): void;
 }
 
-interface PersonalStorageHardenerOptions {
+const initializedPersonalStorageBrand: unique symbol = Symbol('initializedPersonalStorage');
+
+export interface InitializedPersonalStorage extends PrivateStoragePermissions {
+  readonly [initializedPersonalStorageBrand]: true;
+}
+
+export interface PersonalStorageHardenerOptions {
   readonly platform?: NodeJS.Platform;
   readonly posixUid?: number;
   readonly applyWindowsAcl?: (path: string, kind: WindowsAclKind) => void;
@@ -98,7 +104,8 @@ const sqliteFiles = (databasePath: string): readonly string[] => [
   `${databasePath}-shm`,
 ];
 
-export class PersonalStorageHardener implements PrivateStoragePermissions {
+class PersonalStorageHardener implements InitializedPersonalStorage {
+  readonly [initializedPersonalStorageBrand] = true;
   private readonly platform: NodeJS.Platform;
   private readonly posixUid: number;
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
@@ -106,7 +113,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   private readonly verifiedWindowsInheritableDirectories = new Set<string>();
   private readonly verifiedWindowsSqlitePaths = new Map<string, string>();
 
-  constructor(
+  private constructor(
     private readonly paths: PersonalRuntimePaths,
     options: PersonalStorageHardenerOptions = {},
   ) {
@@ -115,7 +122,16 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     this.applyWindowsAcl = options.applyWindowsAcl ?? applyWindowsOwnerOnlyAcl;
   }
 
-  initialize(): void {
+  static initialize(
+    paths: PersonalRuntimePaths,
+    options: PersonalStorageHardenerOptions = {},
+  ): InitializedPersonalStorage {
+    const storage = new PersonalStorageHardener(paths, options);
+    storage.initialize();
+    return storage;
+  }
+
+  private initialize(): void {
     if (this.platform === 'win32') {
       this.createDirectory(this.paths.dataDir);
       this.createDirectory(this.paths.filesDir);
@@ -239,3 +255,8 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
     return `${metadata.dev}:${metadata.ino}:${metadata.birthtimeMs}`;
   }
 }
+
+export const initializePersonalStorage = (
+  paths: PersonalRuntimePaths,
+  options: PersonalStorageHardenerOptions = {},
+): InitializedPersonalStorage => PersonalStorageHardener.initialize(paths, options);
