@@ -267,44 +267,48 @@ if (blockUntilKilled) {
             .spawn()?;
         println!("Floway package verification sidecar pid {}", child.pid());
         let child = manage_child(app, child);
-        if blocking {
-            let timed_child = Arc::clone(&child);
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(750)).await;
-                let child = timed_child
-                    .lock()
-                    .expect("verification child mutex poisoned")
-                    .take();
-                match child {
-                    Some(child) => match child.kill() {
-                        Ok(()) => eprintln!(
-                            "Floway package verification timed out and terminated its live sidecar"
-                        ),
-                        Err(error) => {
-                            eprintln!(
-                                "Floway package verification could not terminate its live sidecar: {error}"
-                            );
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!(
-                            "Floway package verification lost its live sidecar handle before timeout"
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            });
-        }
+        let event_child = Arc::clone(&child);
         tauri::async_runtime::spawn(async move {
             let mut command_error = None;
+            let mut blocking_timeout_started = false;
             while let Some(event) = events.recv().await {
                 match event {
                     CommandEvent::Stdout(bytes) => {
-                        println!(
-                            "[Floway package verification stdout] {}",
-                            String::from_utf8_lossy(&bytes)
-                        );
+                        let output = String::from_utf8_lossy(&bytes);
+                        println!("[Floway package verification stdout] {}", output);
+                        if blocking
+                            && !blocking_timeout_started
+                            && output.contains("blocking until parent timeout")
+                        {
+                            blocking_timeout_started = true;
+                            let timed_child = Arc::clone(&event_child);
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(750)).await;
+                                let child = timed_child
+                                    .lock()
+                                    .expect("verification child mutex poisoned")
+                                    .take();
+                                match child {
+                                    Some(child) => match child.kill() {
+                                        Ok(()) => eprintln!(
+                                            "Floway package verification timed out and terminated its live sidecar"
+                                        ),
+                                        Err(error) => {
+                                            eprintln!(
+                                                "Floway package verification could not terminate its live sidecar: {error}"
+                                            );
+                                            std::process::exit(1);
+                                        }
+                                    },
+                                    None => {
+                                        eprintln!(
+                                            "Floway package verification lost its live sidecar handle before timeout"
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+                            });
+                        }
                     }
                     CommandEvent::Stderr(bytes) => {
                         eprintln!(
