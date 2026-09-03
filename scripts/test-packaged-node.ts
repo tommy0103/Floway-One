@@ -539,7 +539,7 @@ const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
       {},
       [
         'Floway One could not resolve the Windows Roaming AppData Known Folder',
-        '0x80070057',
+        '0x80070002',
       ],
       packagedDefaultPersonalEntry,
     );
