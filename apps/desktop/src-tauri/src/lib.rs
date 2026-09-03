@@ -142,7 +142,7 @@ await import('./entry.js');
 clearTimeout(watchdog);
 if (blockUntilKilled) {
   console.log('Floway package verification sidecar is blocking until parent timeout');
-  await new Promise(() => {});
+  setInterval(() => {}, 60_000);
 }
 "#;
 
