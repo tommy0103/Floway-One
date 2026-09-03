@@ -14,4 +14,5 @@ export const loadRuntimeInfo = async (signal?: AbortSignal) => {
   return result.data;
 };
 
-export type DashboardRuntimeCapabilities = Awaited<ReturnType<typeof loadRuntimeInfo>>['profile']['capabilities'];
+export type DashboardRuntimeInfo = Awaited<ReturnType<typeof loadRuntimeInfo>>;
+export type DashboardRuntimeCapabilities = DashboardRuntimeInfo['profile']['capabilities'];

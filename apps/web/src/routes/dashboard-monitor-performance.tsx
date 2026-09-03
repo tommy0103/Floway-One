@@ -6,6 +6,7 @@ import type { Route } from './+types/dashboard-monitor-performance';
 import { requireDashboardUser } from './guards';
 import { revalidateOnPathnameChange } from './revalidation';
 import { api, callApi, type GlobalError } from '../api/client';
+import type { DashboardRuntimeInfo } from '../api/runtime-info';
 import { PerformanceChartSection } from '../components/performance/chart';
 import {
   buildPerformanceQuery,
@@ -46,6 +47,18 @@ const { Tab, TabList, Text } = fluentComponents;
 
 interface UpstreamMetadata { id: string; name: string; hue: number }
 
+interface RuntimeFacts {
+  personalProfile: boolean;
+  regionAvailable: boolean;
+  userDimensionAvailable: boolean;
+}
+
+const runtimeFactsFrom = (runtime: DashboardRuntimeInfo, isAdmin: boolean): RuntimeFacts => ({
+  personalProfile: runtime.profile.mode === 'personal',
+  regionAvailable: runtime.kind === 'cloudflare',
+  userDimensionAvailable: isAdmin && runtime.profile.capabilities.userManagement,
+});
+
 interface LoaderData {
   currentUserId: string;
   error: GlobalError | null;
@@ -54,13 +67,11 @@ interface LoaderData {
   // `null` is a failed fetch, not a quiet gateway: an empty overview would
   // render zeroes the page does not know to be true.
   overview: PerformanceOverviewResponse | null;
-  personalProfile: boolean | null;
+  runtimeFacts: RuntimeFacts | null;
   state: PerformanceUrlState;
   // Null on the same terms: upstream metadata owns both the visible name and
   // the series hue, so a partial response cannot faithfully render the group.
   upstreams: UpstreamMetadata[] | null;
-  regionAvailable: boolean | null;
-  userDimensionAvailable: boolean | null;
 }
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
@@ -76,21 +87,16 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
       isAdmin: user.isAdmin,
       loadedAt,
       overview: null,
-      personalProfile: null,
-      regionAvailable: null,
+      runtimeFacts: null,
       state,
       upstreams: null,
-      userDimensionAvailable: null,
     };
   }
-  const regionAvailable = runtime.data.kind === 'cloudflare';
-  const personalProfile = runtime.data.profile.mode === 'personal';
-  const userDimensionAvailable = user.isAdmin
-    && runtime.data.profile.capabilities.userManagement;
+  const runtimeFacts = runtimeFactsFrom(runtime.data, user.isAdmin);
   const normalization = normalizePerformanceDimensionsForCapabilities(state, {
     currentUserId,
-    regionAvailable,
-    userDimensionAvailable,
+    regionAvailable: runtimeFacts.regionAvailable,
+    userDimensionAvailable: runtimeFacts.userDimensionAvailable,
   });
   const query = buildPerformanceQuery(
     normalization.state.range,
@@ -111,11 +117,9 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     isAdmin: user.isAdmin,
     loadedAt,
     overview: overview.data ?? null,
-    personalProfile,
-    regionAvailable,
+    runtimeFacts,
     state: normalization.state,
     upstreams: upstreams.data?.map(({ id, name, hue }) => ({ id, name, hue })) ?? null,
-    userDimensionAvailable,
   };
 }
 
@@ -126,9 +130,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [, setSearchParams] = useSearchParams();
   const rewrite = useEntryRewrite();
   const initialState = loaderData.state;
-  const [personalProfile, setPersonalProfile] = useState(loaderData.personalProfile);
-  const [regionAvailable, setRegionAvailable] = useState(loaderData.regionAvailable);
-  const [userDimensionAvailable, setUserDimensionAvailable] = useState(loaderData.userDimensionAvailable);
+  const [runtimeFacts, setRuntimeFacts] = useState(loaderData.runtimeFacts);
   const [query, setQuery] = useState(() => ({
     filters: initialState.filters,
     groupBy: initialState.groupBy,
@@ -141,23 +143,19 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [overview, setOverview] = useState<PerformanceOverviewResponse | null>(loaderData.overview);
   const [upstreams, setUpstreams] = useState(loaderData.upstreams);
   const [error, setError] = useState<GlobalError | null>(loaderData.error);
-  const pendingRuntimeCapabilitiesRef = useRef<{
-    personalProfile: boolean;
-    regionAvailable: boolean;
-    userDimensionAvailable: boolean;
-  } | null>(null);
+  const pendingRuntimeFactsRef = useRef<RuntimeFacts | null>(null);
   const locale = useLocale();
   const identityContext = {
     currentUserId: loaderData.currentUserId,
     fallbackGroup: 'model' as const,
-    userDimensionAvailable: userDimensionAvailable ?? false,
+    userDimensionAvailable: runtimeFacts?.userDimensionAvailable ?? false,
   };
 
   // A background poll must not clear a failure the operator has not read.
   const reload = useCallback(async (signal: AbortSignal, { background, requestedAt }: { background: boolean; requestedAt: number }) => {
     if (!background) setError(null);
     const search = buildPerformanceQuery(query.range, query.groupBy, query.filters, requestedAt);
-    if (personalProfile !== null && regionAvailable !== null && userDimensionAvailable !== null) {
+    if (runtimeFacts !== null) {
       const result = await callApi(() => api.api.performance.overview.$get(
         { query: search },
         { init: { signal } },
@@ -171,8 +169,8 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
       return true;
     }
 
-    let nextCapabilities: NonNullable<typeof pendingRuntimeCapabilitiesRef.current>;
-    if (pendingRuntimeCapabilitiesRef.current === null) {
+    let nextRuntimeFacts: NonNullable<typeof pendingRuntimeFactsRef.current>;
+    if (pendingRuntimeFactsRef.current === null) {
       // Capability discovery is deliberately awaited before telemetry. Until
       // the backend answers, stale user URL state has no safe request scope.
       const runtimeResult = await callApi(() => api.api['runtime-info'].$get(
@@ -184,22 +182,18 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
         setError(runtimeResult.error);
         return false;
       }
-      nextCapabilities = {
-        personalProfile: runtimeResult.data.profile.mode === 'personal',
-        regionAvailable: runtimeResult.data.kind === 'cloudflare',
-        userDimensionAvailable: loaderData.isAdmin
-          && runtimeResult.data.profile.capabilities.userManagement,
-      };
-      pendingRuntimeCapabilitiesRef.current = nextCapabilities;
+      nextRuntimeFacts = runtimeFactsFrom(runtimeResult.data, loaderData.isAdmin);
+      pendingRuntimeFactsRef.current = nextRuntimeFacts;
     } else {
-      nextCapabilities = pendingRuntimeCapabilitiesRef.current;
+      nextRuntimeFacts = pendingRuntimeFactsRef.current;
     }
     const normalization = normalizePerformanceDimensionsForCapabilities({
       ...query,
       hidden: [] as string[],
     }, {
       currentUserId: loaderData.currentUserId,
-      ...nextCapabilities,
+      regionAvailable: nextRuntimeFacts.regionAvailable,
+      userDimensionAvailable: nextRuntimeFacts.userDimensionAvailable,
     });
     const committedQuery = normalization.changed
       ? {
@@ -220,14 +214,12 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
       setError(result.error ?? upstreamsResult.error ?? null);
       return false;
     }
-    pendingRuntimeCapabilitiesRef.current = null;
-    setPersonalProfile(nextCapabilities.personalProfile);
-    setRegionAvailable(nextCapabilities.regionAvailable);
-    setUserDimensionAvailable(nextCapabilities.userDimensionAvailable);
+    pendingRuntimeFactsRef.current = null;
+    setRuntimeFacts(nextRuntimeFacts);
     setOverview(result.data);
     setUpstreams(upstreamsResult.data.map(({ id, name, hue }) => ({ id, name, hue })));
     return normalization.changed ? committedQuery : true;
-  }, [loaderData.currentUserId, loaderData.isAdmin, personalProfile, query, regionAvailable, userDimensionAvailable]);
+  }, [loaderData.currentUserId, loaderData.isAdmin, query, runtimeFacts]);
 
   const onQueryCommit = useCallback((previous: typeof query, next: typeof query) => {
     if (previous.groupBy !== next.groupBy) setHiddenSeries(new Set());
@@ -296,7 +288,8 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}
     {(() => {
-      if (overview === null || chart === null || labels === null || personalProfile === null || regionAvailable === null || userDimensionAvailable === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
+      if (overview === null || chart === null || labels === null || runtimeFacts === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
+      const { personalProfile, regionAvailable, userDimensionAvailable } = runtimeFacts;
       const dimensions: Array<TelemetryDimension<PerformanceGroupBy>> = [
         { key: 'model', groupLabel: t('dashboard.performance.groupBy.model'), filterLabel: t('dashboard.performance.filters.model'), allLabel: t('dashboard.performance.filters.all.model'), options: overview.dimensionValues.models.map(value => ({ value, label: value })) },
         { key: 'upstream', groupLabel: t('dashboard.performance.groupBy.upstream'), filterLabel: t('dashboard.performance.filters.upstream'), allLabel: t('dashboard.performance.filters.all.upstream'), options: overview.dimensionValues.upstreams.map(value => ({ value, label: labels.upstreams.get(value) ?? value })) },

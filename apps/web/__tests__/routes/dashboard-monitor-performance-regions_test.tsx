@@ -19,8 +19,8 @@ const overview: PerformanceOverviewResponse = {
   keys: [],
 };
 
-const runtimeInfo = (userManagement: boolean) => ({
-  kind: 'node',
+const runtimeInfo = (userManagement: boolean, kind: 'node' | 'cloudflare' = 'node') => ({
+  kind,
   profile: {
     mode: userManagement ? 'server' : 'personal',
     capabilities: { userManagement, remoteAccess: userManagement, desktopIntegration: !userManagement },
@@ -42,8 +42,11 @@ const renderPage = (overrides: LoaderOverrides = {}) => {
     isAdmin: false,
     loadedAt: Date.UTC(2026, 7, 5, 12),
     overview,
-    personalProfile: false,
-    regionAvailable: false,
+    runtimeFacts: {
+      personalProfile: false,
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    },
     state: {
       metric: 'ttft',
       percentile: 'p95',
@@ -53,7 +56,6 @@ const renderPage = (overrides: LoaderOverrides = {}) => {
       hidden: [],
     },
     upstreams: [],
-    userDimensionAvailable: false,
   };
   const loaderData: PerformanceLoaderData = {
     ...base,
@@ -80,7 +82,7 @@ describe('Performance runtime dimensions', () => {
   });
 
   it('keeps Region controls and breakdowns on Cloudflare', () => {
-    renderPage({ regionAvailable: true });
+    renderPage({ runtimeFacts: { personalProfile: false, regionAvailable: true, userDimensionAvailable: false } });
 
     expect(screen.getByRole('combobox', { name: 'Region' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'By Region' })).toBeTruthy();
@@ -92,17 +94,18 @@ describe('Performance runtime dimensions', () => {
   ])('keeps non-admin $name server tooltip terminology', ({ regionAvailable }) => {
     renderPage({
       isAdmin: false,
-      personalProfile: false,
-      regionAvailable,
+      runtimeFacts: { personalProfile: false, regionAvailable, userDimensionAvailable: false },
       state: { groupBy: 'keyId' },
-      userDimensionAvailable: false,
     });
     expect(screen.getByRole('button', { name: 'About API key telemetry scope' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'About local-owner API key telemetry scope' })).toBeNull();
   });
 
   it('selects personal tooltip terminology from the profile fact', () => {
-    renderPage({ personalProfile: true, state: { groupBy: 'keyId' }, userDimensionAvailable: false });
+    renderPage({
+      runtimeFacts: { personalProfile: true, regionAvailable: false, userDimensionAvailable: false },
+      state: { groupBy: 'keyId' },
+    });
     expect(screen.getByRole('button', { name: 'About local-owner API key telemetry scope' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'About API key telemetry scope' })).toBeNull();
   });
@@ -130,7 +133,7 @@ describe('Performance runtime dimensions', () => {
     expect(runtimeRequests).toBe(0);
   });
 
-  it('keeps telemetry idle when a capability retry still fails', async () => {
+  it('keeps the complete runtime fact view unknown when a capability retry still fails', async () => {
     const requestedPaths: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(String(input), 'http://localhost').pathname;
@@ -141,16 +144,16 @@ describe('Performance runtime dimensions', () => {
     renderPage({
       error: { status: 500, message: 'Unavailable' },
       overview: null,
-      personalProfile: null,
-      regionAvailable: null,
+      runtimeFacts: null,
       upstreams: null,
-      userDimensionAvailable: null,
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh performance' }));
 
     await waitFor(() => expect(requestedPaths).toEqual(['/api/runtime-info']));
     expect(screen.getByText('This view could not be loaded')).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Region' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull();
   });
 
   it('recovers server user grouping only after capability discovery', async () => {
@@ -167,11 +170,9 @@ describe('Performance runtime dimensions', () => {
       error: { status: 500, message: 'Unavailable' },
       isAdmin: true,
       overview: null,
-      personalProfile: null,
-      regionAvailable: null,
+      runtimeFacts: null,
       state: { groupBy: 'userId' },
       upstreams: null,
-      userDimensionAvailable: null,
     });
 
     expect(requests).toEqual([]);
@@ -184,6 +185,43 @@ describe('Performance runtime dimensions', () => {
       '/api/upstream-options',
     ]);
     expect(requests[1].searchParams.get('group_by')).toBe('userId');
+  });
+
+  it('commits the discovered runtime facts as one capability view', async () => {
+    const requests: URL[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      requests.push(url);
+      if (url.pathname === '/api/runtime-info') return Response.json(runtimeInfo(true, 'cloudflare'));
+      if (url.pathname === '/api/performance/overview') return Response.json(overview);
+      if (url.pathname === '/api/upstream-options') return Response.json([]);
+      throw new Error(`Unexpected request to ${url.pathname}`);
+    }));
+    renderPage({
+      error: { status: 500, message: 'Unavailable' },
+      isAdmin: true,
+      overview: null,
+      runtimeFacts: null,
+      state: { groupBy: 'keyId' },
+      upstreams: null,
+    });
+
+    expect(screen.queryByRole('combobox', { name: 'Region' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'About API key telemetry scope' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh performance' }));
+
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Region' })).toBeTruthy());
+    expect(screen.getByRole('combobox', { name: 'User' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'About API key telemetry scope' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'About local-owner API key telemetry scope' })).toBeNull();
+    expect(requests.map(url => url.pathname)).toEqual([
+      '/api/runtime-info',
+      '/api/performance/overview',
+      '/api/upstream-options',
+    ]);
+    expect(requests[1].searchParams.get('group_by')).toBe('keyId');
   });
 
   it('normalizes personal user state before the first recovered telemetry request', async () => {
@@ -200,11 +238,9 @@ describe('Performance runtime dimensions', () => {
       error: { status: 500, message: 'Unavailable' },
       isAdmin: true,
       overview: null,
-      personalProfile: null,
-      regionAvailable: null,
+      runtimeFacts: null,
       state: { groupBy: 'userId', hidden: ['2'], filters: { userId: ['2'] } },
       upstreams: null,
-      userDimensionAvailable: null,
     });
 
     expect(requests).toEqual([]);
@@ -242,11 +278,9 @@ describe('Performance runtime dimensions', () => {
     renderPage({
       isAdmin: true,
       overview: null,
-      personalProfile: null,
-      regionAvailable: null,
+      runtimeFacts: null,
       state: { groupBy: 'userId' },
       upstreams: null,
-      userDimensionAvailable: null,
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh performance' }));

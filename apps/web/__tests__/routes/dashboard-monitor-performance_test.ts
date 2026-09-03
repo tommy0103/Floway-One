@@ -38,8 +38,14 @@ describe('where the performance page reads upstream names from', () => {
 
     expect(data.upstreams).toEqual([{ id: 'up-1', name: 'Copilot seat', hue: 210 }]);
     expect(data.error).toBeNull();
-    expect(data.personalProfile).toBe(false);
-    expect(data.userDimensionAvailable).toBe(false);
+    expect(data.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    });
+    expect(data).not.toHaveProperty('personalProfile');
+    expect(data).not.toHaveProperty('regionAvailable');
+    expect(data).not.toHaveProperty('userDimensionAvailable');
   });
 
   it('makes API key grouping explicitly current-user scoped for an administrator', async () => {
@@ -65,7 +71,7 @@ describe('where the performance page reads upstream names from', () => {
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBe(false);
+    expect(data.runtimeFacts?.regionAvailable).toBe(false);
     expect(data.state.groupBy).toBe('model');
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
@@ -87,9 +93,11 @@ describe('where the performance page reads upstream names from', () => {
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBe(true);
-    expect(data.personalProfile).toBe(false);
-    expect(data.userDimensionAvailable).toBe(false);
+    expect(data.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: true,
+      userDimensionAvailable: false,
+    });
     expect(data.state.groupBy).toBe('runtimeLocation');
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
@@ -107,9 +115,7 @@ describe('where the performance page reads upstream names from', () => {
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBeNull();
-    expect(data.personalProfile).toBeNull();
-    expect(data.userDimensionAvailable).toBeNull();
+    expect(data.runtimeFacts).toBeNull();
     expect(data.state.groupBy).toBe('runtimeLocation');
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(data.error?.message).toBe('Unavailable');
@@ -130,8 +136,11 @@ describe('where the performance page reads upstream names from', () => {
     const grouped = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=userId') } as never);
     const filtered = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?fusr=2') } as never);
 
-    expect(grouped.userDimensionAvailable).toBe(true);
-    expect(grouped.personalProfile).toBe(false);
+    expect(grouped.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: false,
+      userDimensionAvailable: true,
+    });
     expect(grouped.state.groupBy).toBe('userId');
     expect(filtered.state.filters.userId).toEqual(['2']);
     expect(performanceQueries).toHaveLength(2);
@@ -156,8 +165,11 @@ describe('where the performance page reads upstream names from', () => {
     const grouped = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=userId') } as never);
     const filtered = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?fusr=2') } as never);
 
-    expect(grouped.userDimensionAvailable).toBe(false);
-    expect(grouped.personalProfile).toBe(true);
+    expect(grouped.runtimeFacts).toEqual({
+      personalProfile: true,
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    });
     expect(grouped.state.groupBy).toBe('model');
     expect(filtered.state.filters.userId).toEqual([]);
     expect(performanceQueries).toHaveLength(2);
