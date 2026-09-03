@@ -70,6 +70,9 @@ const parseEnvelope = (stored: string, context: StoredSecretContext): StoredSecr
   const envelope = value.$flowayEncrypted;
   const keys = Object.keys(envelope).toSorted();
   if (keys.join(',') !== 'algorithm,ciphertext,nonce,version') throw invalidEnvelope(context);
+  if (typeof envelope.version !== 'number') {
+    throw new Error(`Invalid encrypted stored secret version for ${context}`);
+  }
   if (envelope.version !== STORED_SECRET_VERSION) {
     throw new Error(`Unsupported encrypted stored secret version ${String(envelope.version)} for ${context}`);
   }

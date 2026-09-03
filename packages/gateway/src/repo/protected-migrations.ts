@@ -176,7 +176,7 @@ export const databaseHasProtectedValues = async (db: SqlDatabase): Promise<boole
 
 export interface ProtectedStorageStatus {
   readonly hasProtectedValues: boolean;
-  readonly requiresLegacyAdoption: boolean;
+  readonly inputMode: ProtectedMigrationPlan['inputMode'];
 }
 
 export const inspectProtectedStorage = async (db: SqlDatabase): Promise<ProtectedStorageStatus> => {
@@ -188,10 +188,10 @@ export const inspectProtectedStorage = async (db: SqlDatabase): Promise<Protecte
         `Floway One cannot adopt protected storage before ${LEGACY_PLAINTEXT_SCHEMA_MIGRATION}`,
       );
     }
-    return { hasProtectedValues: true, requiresLegacyAdoption: true };
+    return { hasProtectedValues: true, inputMode: 'legacy-plaintext' };
   }
   return {
     hasProtectedValues: await databaseHasProtectedValues(db),
-    requiresLegacyAdoption: false,
+    inputMode: 'ciphertext',
   };
 };

@@ -73,6 +73,28 @@ test('stored secret codec rejects missing keys, unsupported versions, and plaint
   assertEquals(plaintextError.message.includes('plaintext'), false);
 });
 
+test('stored secret codec rejects nonnumeric versions without exposing the value', async () => {
+  const codec = createAes256GcmStoredSecretCodec(masterKey);
+  const sentinel = 'VERSIONLEAK13';
+  const error = await assertRejects(
+    () => codec.open(
+      JSON.stringify({
+        $flowayEncrypted: {
+          version: sentinel,
+          algorithm: 'AES-256-GCM',
+          nonce: '',
+          ciphertext: '',
+        },
+      }),
+      testContext('upstream:one:config'),
+    ),
+    Error,
+    'Invalid encrypted stored secret version for upstream:one:config',
+  );
+
+  assertEquals(`${error.stack}\n${String(error.cause)}`.includes(sentinel), false);
+});
+
 test('stored secret codec preserves malformed base64 decoding failures', async () => {
   const codec = createAes256GcmStoredSecretCodec(masterKey);
   const decodingFailure = new Error('sentinel base64 decoder failure');

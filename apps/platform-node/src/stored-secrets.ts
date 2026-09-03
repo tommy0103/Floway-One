@@ -9,30 +9,23 @@ import {
   type StoredSecretCodec,
 } from '@floway-dev/platform';
 
-export interface NodeStoredSecretCodec extends StoredSecretCodec {
-  readonly requiresLegacyAdoption: boolean;
-}
-
 export const createNodeStoredSecretCodec = async (
   profile: RuntimeProfileMode,
   db: SqlDatabase,
   creationLock?: DeviceMasterKeyCreationLock,
   credential?: DeviceMasterKeyCredential,
   options: { readonly validate?: boolean } = {},
-): Promise<NodeStoredSecretCodec> => {
-  if (profile === 'server') return { ...plaintextStoredSecretCodec, requiresLegacyAdoption: false };
+): Promise<StoredSecretCodec> => {
+  if (profile === 'server') return plaintextStoredSecretCodec;
   if (creationLock === undefined) throw new Error('Personal profile requires a device master key creation lock');
 
   const status = await inspectProtectedStorage(db);
   const masterKey = await loadDeviceMasterKey(
     creationLock,
-    status.requiresLegacyAdoption || !status.hasProtectedValues,
+    status.inputMode === 'legacy-plaintext' || !status.hasProtectedValues,
     credential,
   );
-  const storedSecrets = {
-    ...createAes256GcmStoredSecretCodec(masterKey),
-    requiresLegacyAdoption: status.requiresLegacyAdoption,
-  };
+  const storedSecrets = createAes256GcmStoredSecretCodec(masterKey);
   if (options.validate !== false) await validateStoredSecrets(db, storedSecrets);
   return storedSecrets;
 };

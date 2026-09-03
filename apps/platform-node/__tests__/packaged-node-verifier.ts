@@ -612,6 +612,12 @@ const unsupportedEnvelope = (stored: string): string => {
   return JSON.stringify(envelope);
 };
 
+const nonnumericVersionEnvelope = (stored: string, version: string): string => {
+  const envelope = JSON.parse(stored) as { $flowayEncrypted: { version: unknown } };
+  envelope.$flowayEncrypted.version = version;
+  return JSON.stringify(envelope);
+};
+
 const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey: Uint8Array): Promise<void> => {
   const base = new DatabaseSync(baseDatabasePath, { readOnly: true });
   const upstream = base.prepare('SELECT config_json, state_json FROM upstreams WHERE id = ?')
@@ -695,6 +701,12 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
       name: 'unsupported-version-search',
       expectedChain: ['Unsupported encrypted stored secret version 2 for web-search:tavily:api-key'],
       mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run(unsupportedEnvelope(search.tavily_api_key)); },
+    },
+    {
+      name: 'nonnumeric-version-upstream',
+      expectedChain: ['Invalid encrypted stored secret version for upstream:up_packaged_entry:config'],
+      forbiddenOutput: ['VERSIONLEAK13'],
+      mutate: database => { database.prepare('UPDATE upstreams SET config_json = ? WHERE id = ?').run(nonnumericVersionEnvelope(upstream.config_json, 'VERSIONLEAK13'), 'up_packaged_entry'); },
     },
   ];
 
@@ -857,12 +869,12 @@ await runNodeEntry({
         const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
         if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
         assertCiphertextAtRest(personalPaths.databasePath);
+        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
         await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
         const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
         await assertPersistedPersonalSecret(migrated.origin);
         await stopRuntime(migrated.child);
         assertCiphertextAtRest(personalPaths.databasePath);
-        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
         await assertRawSecretsAbsent(personalPaths.databasePath, [
           PERSONAL_SECRET,
           'packaged-api-key',

@@ -10,14 +10,14 @@ import { createOperatingSystemCredential, type DeviceMasterKeyCredential } from 
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
 import { MemoryDeviceMasterKeyCredential } from './support/memory-device-master-key-credential.ts';
-import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '@floway-dev/gateway';
+import { LEGACY_PLAINTEXT_SCHEMA_MIGRATION, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '@floway-dev/gateway';
 import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretContext } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const databaseWithStoredState = (
   hasUpstreams: boolean,
   hasSearchCredentials = false,
-  legacy = false,
+  appliedMigration = PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
 ): SqlDatabase => ({
   prepare: query => ({
     bind() { return this; },
@@ -33,7 +33,7 @@ const databaseWithStoredState = (
     all: <T>() => {
       if (query === 'SELECT name FROM _migrations') {
         return Promise.resolve({
-          results: [{ name: legacy ? '0083_canonical_protocol_names.sql' : PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION }] as T[],
+          results: [{ name: appliedMigration }] as T[],
           success: true,
           meta: {},
         });
@@ -128,15 +128,14 @@ test('personal profile creates an OS-held master key only when no protected prov
 
 test('personal profile creates one OS-held key for the version-gated 0083 plaintext adoption', async () => {
   const credential = new MemoryDeviceMasterKeyCredential(null);
-  const codec = await createNodeStoredSecretCodec(
+  await createNodeStoredSecretCodec(
     'personal',
-    databaseWithStoredState(true, true, true),
+    databaseWithStoredState(true, true, LEGACY_PLAINTEXT_SCHEMA_MIGRATION),
     creationLock,
     credential,
     { validate: false },
   );
 
-  assertEquals(codec.requiresLegacyAdoption, true);
   assertEquals(credential.writes.length, 1);
   assertEquals(credential.writes[0]?.byteLength, 32);
 });
@@ -151,12 +150,11 @@ test('concurrent 0083 adoption callers share one OS-held key creation', async ()
       return result;
     },
   };
-  const codecs = await Promise.all([
-    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, true), serializedLock, credential, { validate: false }),
-    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, true), serializedLock, credential, { validate: false }),
+  await Promise.all([
+    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, LEGACY_PLAINTEXT_SCHEMA_MIGRATION), serializedLock, credential, { validate: false }),
+    createNodeStoredSecretCodec('personal', databaseWithStoredState(true, true, LEGACY_PLAINTEXT_SCHEMA_MIGRATION), serializedLock, credential, { validate: false }),
   ]);
 
-  assertEquals(codecs.every(codec => codec.requiresLegacyAdoption), true);
   assertEquals(credential.writes.length, 1);
 });
 

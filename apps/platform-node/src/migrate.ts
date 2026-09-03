@@ -105,17 +105,13 @@ export const applyMigrations = async (
   db: SqlDatabase,
   dir: string = DEFAULT_MIGRATIONS_DIR,
   storedSecrets?: StoredSecretCodec,
-  options: { readonly adoptLegacyPlaintext?: boolean; readonly through?: string } = {},
+  options: { readonly through?: string } = {},
 ): Promise<void> => {
   // SQLite runs the configured busy handler for the connection when a lock
   // cannot be obtained. The PRAGMA is the connection-level form of
   // sqlite3_busy_timeout().
   // https://sqlite.org/pragma.html#pragma_busy_timeout
   await db.exec('PRAGMA busy_timeout = 30000');
-  // secure_delete overwrites deleted content with zeros so legacy plaintext
-  // is not retained in freed database pages during adoption.
-  // https://sqlite.org/pragma.html#pragma_secure_delete
-  if (options.adoptLegacyPlaintext) await db.exec('PRAGMA secure_delete = ON');
   await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
 
   const appliedRows = await db.prepare('SELECT name FROM _migrations').all<{ name: string }>();
@@ -149,6 +145,13 @@ export const applyMigrations = async (
         continue;
       }
       const adoptThisMigration = plan?.inputMode === 'legacy-plaintext';
+      if (adoptThisMigration) {
+        // secure_delete overwrites deleted content with zeros so the legacy
+        // plaintext consumed by this checked migration plan cannot remain in
+        // freed database pages.
+        // https://sqlite.org/pragma.html#pragma_secure_delete
+        await db.exec('PRAGMA secure_delete = ON');
+      }
       const opened = plan === null || storedSecrets === undefined
         ? []
         : await openMigrationValues(

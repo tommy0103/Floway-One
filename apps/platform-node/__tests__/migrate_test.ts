@@ -256,7 +256,6 @@ test('legacy plaintext adoption seal failure restores the 0083 schema and exact 
     setup.db,
     setup.migrationDir,
     failingCodec,
-    { adoptLegacyPlaintext: true },
   ));
   assert(error === sealCause);
   const columns = await setup.db.prepare('PRAGMA table_info(search_config)').all<{ name: string }>();
@@ -280,8 +279,14 @@ test('legacy plaintext adoption seals upstream and search values through 0084', 
   await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind('0083_canonical_protocol_names.sql').run();
   await setup.db.prepare('UPDATE upstreams SET config_json = ?').bind(`{"apiKey":"${sentinel}"}`).run();
   await setup.db.prepare('UPDATE search_config SET tavily_api_key = ?').bind(sentinel).run();
+  await setup.db.exec('PRAGMA secure_delete = OFF');
 
-  await applyMigrations(setup.db, setup.migrationDir, setup.codec, { adoptLegacyPlaintext: true });
+  await applyMigrations(setup.db, setup.migrationDir, setup.codec);
+  assertEquals(
+    await setup.db.prepare('PRAGMA secure_delete').first<{ secure_delete: number }>(),
+    { secure_delete: 1 },
+  );
+  await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
   const upstream = await setup.db.prepare('SELECT config_json FROM upstreams').first<{ config_json: string }>();
   assert(upstream !== null);
   assertEquals(await setup.codec.open(upstream.config_json, upstreamConfigSecretContext('up_raw_scan')), `{"apiKey":"${sentinel}"}`);
@@ -320,7 +325,7 @@ test('reader-blocked final cleanup checkpoint keeps the gate until a clean resta
   };
 
   await assertRejects(
-    () => applyMigrations(database, setup.migrationDir, setup.codec, { adoptLegacyPlaintext: true }),
+    () => applyMigrations(database, setup.migrationDir, setup.codec),
     Error,
     'Floway One protected-storage cleanup is pending because SQLite readers prevented its final WAL truncation',
   );
