@@ -4,8 +4,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-const verifier = spawn(pnpm, ['--filter', '@floway-dev/platform-node', 'run', 'test:packaged'], {
+const pnpmCli = process.env.npm_execpath;
+if (pnpmCli === undefined) throw new Error('Packaged Node verifier requires pnpm to provide npm_execpath');
+const verifier = spawn(process.execPath, [pnpmCli, '--filter', '@floway-dev/platform-node', 'run', 'test:packaged'], {
   cwd: root,
   env: process.env,
   stdio: 'inherit',
