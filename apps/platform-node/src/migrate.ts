@@ -105,7 +105,10 @@ export const applyMigrations = async (
   db: SqlDatabase,
   dir: string = DEFAULT_MIGRATIONS_DIR,
   storedSecrets?: StoredSecretCodec,
-  options: { readonly through?: string } = {},
+  options: {
+    readonly planProtectedMigration?: typeof planProtectedMigration;
+    readonly through?: string;
+  } = {},
 ): Promise<void> => {
   // SQLite runs the configured busy handler for the connection when a lock
   // cannot be obtained. The PRAGMA is the connection-level form of
@@ -127,7 +130,7 @@ export const applyMigrations = async (
     let plan: ProtectedMigrationPlan | null = null;
     if (storedSecrets !== undefined || hasProtectedMigrationPlan(file)) {
       try {
-        plan = await planProtectedMigration(file, sql, applied);
+        plan = await (options.planProtectedMigration ?? planProtectedMigration)(file, sql, applied);
       } catch (cause) {
         throw new Error(`Floway could not plan protected migration ${file}`, { cause });
       }

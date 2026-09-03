@@ -11,6 +11,7 @@ import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import {
   assertRuntimeProfileData,
   initRepo,
+  planProtectedMigration,
   PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
   SqlRepo,
   upstreamConfigSecretContext,
@@ -127,12 +128,13 @@ const prepareProtectedMigration = async (
   dir: string,
   journalMode: 'DELETE' | 'WAL',
   sentinel: string,
+  inputMode: 'ciphertext' | 'legacy-plaintext' = 'ciphertext',
 ): Promise<{
   codec: StoredSecretCodec;
   databasePath: string;
   db: ReturnType<typeof createNodeSqliteDatabase>;
   migrationDir: string;
-  originalCiphertexts: readonly string[];
+  originalStoredValues: readonly string[];
 }> => {
   const databasePath = join(dir, `protected-${journalMode.toLowerCase()}.db`);
   const db = createNodeSqliteDatabase(databasePath);
@@ -152,40 +154,55 @@ const prepareProtectedMigration = async (
     );
   `);
   const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(11));
-  const upstreamCiphertext = '{"apiKey":"upstream-ciphertext-only"}';
-  await db.prepare('INSERT INTO upstreams VALUES (?, ?, NULL)').bind('up_raw_scan', upstreamCiphertext).run();
-  const searchCiphertexts = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => `${sentinel}-${field.provider}`);
+  const upstreamPlaintext = `{"apiKey":"${sentinel}-upstream"}`;
+  const upstreamStored = inputMode === 'ciphertext'
+    ? await codec.seal(upstreamPlaintext, upstreamConfigSecretContext('up_raw_scan'))
+    : upstreamPlaintext;
+  await db.prepare('INSERT INTO upstreams VALUES (?, ?, NULL)').bind('up_raw_scan', upstreamStored).run();
+  const searchPlaintexts = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => `${sentinel}-${field.provider}`);
+  const searchStoredValues = inputMode === 'ciphertext'
+    ? await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map((field, index) =>
+        codec.seal(searchPlaintexts[index]!, field.context)))
+    : searchPlaintexts;
   await db.prepare(
     `INSERT INTO search_config
      (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, updated_at)
      VALUES (1, 'tavily', ?, ?, ?, '2026-09-03T00:00:00.000Z')`,
-  ).bind(...searchCiphertexts).run();
+  ).bind(...searchStoredValues).run();
   const migrationDir = join(dir, 'migrations');
   await mkdir(migrationDir);
   await copyFile(
     join(fileURLToPath(migrationsDir), PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION),
     join(migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION),
   );
-  return { codec, databasePath, db, migrationDir, originalCiphertexts: searchCiphertexts };
+  return { codec, databasePath, db, migrationDir, originalStoredValues: searchStoredValues };
 };
 
-const assertPlaintextAbsentFromSqliteFiles = async (databasePath: string, sentinel: string): Promise<void> => {
+const ciphertextMigrationPlanner: typeof planProtectedMigration = async (file, sql, applied) => {
+  const plan = await planProtectedMigration(file, sql, applied);
+  return plan === null ? null : { ...plan, inputMode: 'ciphertext' };
+};
+
+const assertPlaintextAbsentFromSqliteFiles = async (databasePath: string, sentinel: string): Promise<readonly string[]> => {
   const needle = Buffer.from(sentinel);
+  const observed: string[] = [];
   for (const path of [databasePath, `${databasePath}-journal`, `${databasePath}-wal`, `${databasePath}-shm`]) {
     try {
       assertEquals(Buffer.from(await readFile(path)).includes(needle), false, `${path} contains migration plaintext`);
+      observed.push(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
+  return observed;
 };
 
 test('server 0084 uses the same schema as personal without personal cleanup state', () => withTemp(async dir => {
   const serverDir = join(dir, 'server');
   const personalDir = join(dir, 'personal');
   await Promise.all([mkdir(serverDir), mkdir(personalDir)]);
-  const server = await prepareProtectedMigration(serverDir, 'DELETE', 'server-transition');
-  const personal = await prepareProtectedMigration(personalDir, 'DELETE', 'personal-transition');
+  const server = await prepareProtectedMigration(serverDir, 'DELETE', 'server-transition', 'legacy-plaintext');
+  const personal = await prepareProtectedMigration(personalDir, 'DELETE', 'personal-transition', 'legacy-plaintext');
   for (const setup of [server, personal]) {
     await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
     await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)')
@@ -218,7 +235,7 @@ test('server 0084 uses the same schema as personal without personal cleanup stat
 }));
 
 test('server rejects changed content under the checked 0084 migration name', () => withTemp(async dir => {
-  const setup = await prepareProtectedMigration(dir, 'DELETE', 'marker-mismatch');
+  const setup = await prepareProtectedMigration(dir, 'DELETE', 'marker-mismatch', 'legacy-plaintext');
   await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
   await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)')
     .bind('0083_canonical_protocol_names.sql')
@@ -250,14 +267,22 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
   test(`personal ${journalMode} migration keeps opened values out of every SQLite file`, () => withTemp(async dir => {
     const sentinel = `raw-migration-sentinel-${journalMode.toLowerCase()}`;
     const setup = await prepareProtectedMigration(dir, journalMode, sentinel);
+    let sealingScans = 0;
     const inspectingCodec: StoredSecretCodec = {
       open: (value, context) => setup.codec.open(value, context),
       seal: async (value, context) => {
+        const observed = await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+        assert(observed.includes(setup.databasePath));
+        assert(observed.includes(`${setup.databasePath}-${journalMode === 'DELETE' ? 'journal' : 'wal'}`));
+        sealingScans++;
         return await setup.codec.seal(value, context);
       },
     };
 
-    await applyMigrations(setup.db, setup.migrationDir, inspectingCodec);
+    await applyMigrations(setup.db, setup.migrationDir, inspectingCodec, {
+      planProtectedMigration: ciphertextMigrationPlanner,
+    });
+    assert(sealingScans > 0);
     await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 
     const row = await setup.db.prepare(
@@ -274,15 +299,24 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
     const sentinel = `raw-rollback-sentinel-${journalMode.toLowerCase()}`;
     const setup = await prepareProtectedMigration(dir, journalMode, sentinel);
     const sealCause = new Error(`${journalMode} post-SQL seal failure`);
+    let failureWindowScans = 0;
     const failingCodec: StoredSecretCodec = {
       open: (value, context) => setup.codec.open(value, context),
       seal: async () => {
+        const observed = await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+        assert(observed.includes(setup.databasePath));
+        assert(observed.includes(`${setup.databasePath}-${journalMode === 'DELETE' ? 'journal' : 'wal'}`));
+        failureWindowScans++;
         throw sealCause;
       },
     };
 
-    const error = await assertRejects(() => applyMigrations(setup.db, setup.migrationDir, failingCodec));
+    const error = await assertRejects(() => applyMigrations(setup.db, setup.migrationDir, failingCodec, {
+      planProtectedMigration: ciphertextMigrationPlanner,
+    }));
     assert(error === sealCause);
+    assertEquals(failureWindowScans, 1);
+    await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
     const oldColumns = await setup.db.prepare('PRAGMA table_info(search_config)').all<{ name: string }>();
     assertEquals(oldColumns.results.some(column => column.name === 'tavily_api_key'), true);
     assertEquals(oldColumns.results.some(column => column.name === 'protected_tavily_api_key'), false);
@@ -292,7 +326,7 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
     assert(oldRow !== null);
     assertEquals(
       WEB_SEARCH_STORED_SECRET_FIELDS.map(field => oldRow[legacySearchColumns[field.provider]]),
-      setup.originalCiphertexts,
+      setup.originalStoredValues,
     );
     assertEquals(
       await setup.db.prepare('SELECT name FROM _migrations WHERE name = ?')
@@ -305,7 +339,7 @@ for (const journalMode of ['DELETE', 'WAL'] as const) {
 
 test('personal migration rejects protected SQL without a checked-in plan and preserves its cause', () => withTemp(async dir => {
   const sentinel = 'missing-plan-sentinel';
-  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel, 'legacy-plaintext');
   await rm(join(setup.migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION));
   const migrationName = '9000_unplanned_protected_change.sql';
   await writeFile(
@@ -324,7 +358,7 @@ test('personal migration rejects protected SQL without a checked-in plan and pre
 
 test('legacy plaintext adoption seal failure restores the 0083 schema and exact cause', () => withTemp(async dir => {
   const sentinel = 'legacy-adoption-rollback-secret';
-  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel, 'legacy-plaintext');
   const searchPlaintext = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => `${sentinel}-${field.provider}`);
   await setup.db.prepare(
     'UPDATE search_config SET tavily_api_key = ?, microsoft_web_iq_api_key = ?, jina_api_key = ?',
@@ -362,7 +396,7 @@ test('legacy plaintext adoption seal failure restores the 0083 schema and exact 
 
 test('legacy plaintext adoption seals upstream and search values through 0084', () => withTemp(async dir => {
   const sentinel = 'legacy-adoption-success';
-  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel, 'legacy-plaintext');
   await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
   await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind('0083_canonical_protocol_names.sql').run();
   await setup.db.prepare('UPDATE upstreams SET config_json = ?').bind(`{"apiKey":"${sentinel}"}`).run();
@@ -386,7 +420,7 @@ test('legacy plaintext adoption seals upstream and search values through 0084', 
 
 test('reader-blocked final cleanup checkpoint keeps the gate until a clean restart', () => withTemp(async dir => {
   const sentinel = 'legacy-reader-cleanup-secret';
-  const setup = await prepareProtectedMigration(dir, 'WAL', sentinel);
+  const setup = await prepareProtectedMigration(dir, 'WAL', sentinel, 'legacy-plaintext');
   await setup.db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY)');
   await setup.db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind('0083_canonical_protocol_names.sql').run();
   await setup.db.prepare('UPDATE upstreams SET config_json = ?')
@@ -396,8 +430,12 @@ test('reader-blocked final cleanup checkpoint keeps the gate until a clean resta
 
   let blockingReader: DatabaseSync | undefined;
   let blockFinalCheckpoint = true;
+  let checkpointAttempts = 0;
   const database: SqlDatabase = {
-    prepare: query => setup.db.prepare(query),
+    prepare: query => {
+      if (query === 'PRAGMA wal_checkpoint(TRUNCATE)') checkpointAttempts++;
+      return setup.db.prepare(query);
+    },
     exec: async sql => {
       const result = await setup.db.exec(sql === 'PRAGMA busy_timeout = 30000'
         ? 'PRAGMA busy_timeout = 50'
@@ -421,6 +459,7 @@ test('reader-blocked final cleanup checkpoint keeps the gate until a clean resta
     await setup.db.prepare('SELECT id FROM _protected_storage_cleanup WHERE id = 1').first(),
     { id: 1 },
   );
+  assertEquals(checkpointAttempts, 2);
   await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 
   blockingReader?.exec('ROLLBACK');

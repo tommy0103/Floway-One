@@ -51,13 +51,22 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-const startNodeListener = (profile: RuntimeProfileMode, port: number): void => {
-  const localApp = createLocalApp({
+interface NodeListenerDependencies {
+  readonly createLocalApp: typeof createLocalApp;
+  readonly serve: typeof serve;
+}
+
+const startNodeListener = (
+  profile: RuntimeProfileMode,
+  port: number,
+  dependencies: NodeListenerDependencies,
+): void => {
+  const localApp = dependencies.createLocalApp({
     gatewayFetch: app.fetch,
     staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
   });
   const personalHostname = profile === 'personal' ? '127.0.0.1' : undefined;
-  serve({
+  dependencies.serve({
     fetch: localApp.fetch,
     ...(personalHostname === undefined ? {} : { hostname: personalHostname }),
     port,
@@ -71,9 +80,10 @@ const startNodeListener = (profile: RuntimeProfileMode, port: number): void => {
 export interface NodeEntryOverrides {
   readonly assertRuntimeProfileData?: (repo: SqlRepo) => Promise<void>;
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
+  readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
-  readonly startNodeListener?: typeof startNodeListener;
+  readonly serve?: typeof serve;
 }
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<void> => {
@@ -125,5 +135,8 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   else await overrides.assertRuntimeProfileData(repo);
 
   startScheduledMaintenance();
-  (overrides.startNodeListener ?? startNodeListener)(profile, port);
+  startNodeListener(profile, port, {
+    createLocalApp: overrides.createLocalApp ?? createLocalApp,
+    serve: overrides.serve ?? serve,
+  });
 };

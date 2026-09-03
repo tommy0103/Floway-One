@@ -16,7 +16,8 @@ const APP_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RUN_NODE_ENTRY_URL = new URL('../src/run-node-entry.ts', import.meta.url).href;
 const MASTER_KEY_BYTE = 29;
 const PROTECTED_SENTINEL = 'personal-entry-encrypted-upstream-secret';
-const LISTENER_BOUNDARY = 'PERSONAL_ENTRY_LISTENER_BOUNDARY_REACHED';
+const APP_CONSTRUCTION_BOUNDARY = 'PERSONAL_ENTRY_APP_CONSTRUCTION_REACHED';
+const LISTENER_BIND_BOUNDARY = 'PERSONAL_ENTRY_LISTENER_BIND_REACHED';
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
 const ownerCases: readonly {
@@ -45,7 +46,7 @@ const ownerCases: readonly {
 ];
 
 for (const ownerCase of ownerCases) {
-  test(`production personal entry handles ${ownerCase.name} before listener construction`, async () => {
+  test(`production personal entry handles ${ownerCase.name} before listener construction and binding`, async () => {
     const dir = await mkdtemp(join(APP_ROOT, '.tmp-personal-entry-'));
     try {
       const paths = resolvePersonalRuntimePaths({ dataDir: join(dir, 'personal-data') });
@@ -81,7 +82,11 @@ await runNodeEntry({
     }
     await assertRuntimeProfileData();
   },
-  startNodeListener: () => { console.log(${JSON.stringify(LISTENER_BOUNDARY)}); },
+  createLocalApp: () => {
+    console.log(${JSON.stringify(APP_CONSTRUCTION_BOUNDARY)});
+    return { fetch: () => Promise.resolve(new Response('listener instrument')) };
+  },
+  serve: () => { console.log(${JSON.stringify(LISTENER_BIND_BOUNDARY)}); },
 });
 `);
 
@@ -113,11 +118,13 @@ await runNodeEntry({
 
       if (ownerCase.expectedError === null) {
         expect(failure).toBeUndefined();
-        expect(output).toContain(LISTENER_BOUNDARY);
+        expect(output).toContain(APP_CONSTRUCTION_BOUNDARY);
+        expect(output).toContain(LISTENER_BIND_BOUNDARY);
       } else {
         expect(failure).toBeInstanceOf(Error);
         expect(output).toContain(ownerCase.expectedError);
-        expect(output).not.toContain(LISTENER_BOUNDARY);
+        expect(output).not.toContain(APP_CONSTRUCTION_BOUNDARY);
+        expect(output).not.toContain(LISTENER_BIND_BOUNDARY);
       }
       expect(output).not.toContain(PROTECTED_SENTINEL);
     } finally {
