@@ -73,6 +73,7 @@ const canExecuteNode = async (path: string): Promise<boolean> => {
 try {
   await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
   await runPnpm(['--filter', '@floway-dev/desktop', 'run', 'test:rust']);
+  await rm(resolve(desktopRoot, 'src-tauri/target'), { force: true, recursive: true });
   await runPnpm(['run', 'build:web']);
   for (const targetTriple of MACOS_TARGET_TRIPLES) {
     const distributionRoot = resolve(desktopRoot, 'src-tauri/.desktop-verification', targetTriple);
