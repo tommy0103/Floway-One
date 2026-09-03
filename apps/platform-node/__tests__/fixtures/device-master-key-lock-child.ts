@@ -52,7 +52,7 @@ if (mode === 'same-process') {
   process.stdout.write('SECOND_EXCLUDED\n');
   release();
   await Promise.all([first, second]);
-  process.stdout.write('SAME_PROCESS_SERIALIZED\n');
+  process.stdout.write('ORDER SECOND_ATTEMPTING SECOND_EXCLUDED SECOND_ENTERED SAME_PROCESS_SERIALIZED\n');
   process.exit(0);
 }
 if (mode === 'hold') {
