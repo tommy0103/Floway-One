@@ -1,8 +1,27 @@
 import { execFileSync } from 'node:child_process';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { platform as currentPlatform, userInfo } from 'node:os';
 import { posix, win32 } from 'node:path';
 
 import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
+import type { PrivateStoragePermissions } from './personal-storage.ts';
+
+export const PERSONAL_HOSTNAME = '127.0.0.1' as const;
+export const DEFAULT_PERSONAL_PORT = 8788;
+
+interface PersistedRuntimeState {
+  readonly version: 1;
+  readonly port: number;
+}
 
 export interface PersonalRuntimePaths {
   readonly dataDir: string;
@@ -24,6 +43,7 @@ export interface WindowsKnownFolderBoundary {
 }
 
 export interface PersonalRuntimeRootOptions {
+  readonly env?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
   readonly stableUserHome?: string;
   readonly windowsKnownFolders?: WindowsKnownFolderBoundary;
@@ -162,7 +182,7 @@ const resolvePersonalRuntimeRoots = (
   }
 
   const credentialStateDir = posix.join(normalizedHome, '.local', 'share', 'floway-one');
-  const xdgDataHome = process.env.XDG_DATA_HOME;
+  const xdgDataHome = (options.env ?? process.env).XDG_DATA_HOME;
   // XDG requires absolute paths and directs implementations to ignore relative
   // values. Keep the credential lock beneath the stable OS home so separate
   // process environments cannot split one user's OS-credential identity.
@@ -177,6 +197,30 @@ const resolvePersonalRuntimeRoots = (
 export const resolveDefaultPersonalDataDir = (
   options: PersonalRuntimeRootOptions = {},
 ): string => resolvePersonalRuntimeRoots(options).dataDir;
+
+export interface PersonalRuntime extends PersonalRuntimePaths {
+  readonly profile: 'personal';
+  readonly hostname: typeof PERSONAL_HOSTNAME;
+  readonly port: number;
+  readonly endpoint: string;
+}
+
+export interface PersonalRuntimeOptions extends PersonalRuntimePathOptions {
+  readonly paths?: PersonalRuntimePaths;
+  readonly permissions?: PrivateStoragePermissions;
+  readonly warn?: (message: string) => void;
+}
+
+const isPort = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 65_535;
+
+const parsePort = (value: string): number => {
+  const port = Number(value);
+  if (!isPort(port) || String(port) !== value.trim()) {
+    throw new Error(`Floway port must be an integer from 1 through 65535; received ${JSON.stringify(value)}`);
+  }
+  return port;
+};
 
 export const resolvePersonalRuntimePaths = (
   options: PersonalRuntimePathOptions = {},
@@ -199,4 +243,90 @@ export const resolvePersonalRuntimePaths = (
       DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.creationLockFilename,
     ),
   });
+};
+
+const readRuntimeState = (path: string): PersistedRuntimeState | null => {
+  let source: string;
+  try {
+    source = readFileSync(path, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Floway could not read runtime state at ${path}`, { cause });
+  }
+
+  try {
+    const value: unknown = JSON.parse(source);
+    if (
+      typeof value !== 'object'
+      || value === null
+      || !('version' in value)
+      || value.version !== 1
+      || !('port' in value)
+      || !isPort(value.port)
+    ) {
+      throw new Error('expected { "version": 1, "port": <1-65535> }');
+    }
+    return { version: 1, port: value.port };
+  } catch (cause) {
+    throw new Error(`Floway runtime state is invalid at ${path}`, { cause });
+  }
+};
+
+const writeRuntimeState = (
+  path: string,
+  state: PersistedRuntimeState,
+  permissions?: PrivateStoragePermissions,
+): void => {
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    renameSync(temporaryPath, path);
+    chmodSync(path, 0o600);
+    permissions?.hardenFile(path);
+  } catch (cause) {
+    try { rmSync(temporaryPath, { force: true }); } catch { /* preserve the original storage failure */ }
+    throw new Error(`Floway could not persist runtime state at ${path}`, { cause });
+  }
+};
+
+export const loadPersonalRuntime = (options: PersonalRuntimeOptions = {}): PersonalRuntime => {
+  const env = options.env ?? process.env;
+  const paths = options.paths ?? resolvePersonalRuntimePaths(options);
+  const { dataDir, filesDir, logsDir, runtimeStatePath } = paths;
+  try {
+    mkdirSync(filesDir, { recursive: true, mode: 0o700 });
+    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') {
+      chmodSync(dataDir, 0o700);
+      chmodSync(filesDir, 0o700);
+      chmodSync(logsDir, 0o700);
+    }
+    accessSync(dataDir, constants.R_OK | constants.W_OK);
+  } catch (cause) {
+    throw new Error(
+      `Floway cannot use application data directory ${dataDir}. Check that the location exists and is writable.`,
+      { cause },
+    );
+  }
+
+  const requestedPort = env.PORT === undefined ? undefined : parsePort(env.PORT);
+  const storedState = readRuntimeState(runtimeStatePath);
+  const previousPort = storedState?.port ?? DEFAULT_PERSONAL_PORT;
+  const port = requestedPort ?? previousPort;
+  if (storedState?.port !== port) writeRuntimeState(runtimeStatePath, { version: 1, port }, options.permissions);
+
+  const endpoint = `http://${PERSONAL_HOSTNAME}:${port}`;
+  if (requestedPort !== undefined && requestedPort !== previousPort) {
+    (options.warn ?? console.warn)(
+      `Floway endpoint changed from http://${PERSONAL_HOSTNAME}:${previousPort} to ${endpoint}. Update configured client endpoints before reconnecting.`,
+    );
+  }
+
+  return {
+    profile: 'personal',
+    hostname: PERSONAL_HOSTNAME,
+    port,
+    endpoint,
+    ...paths,
+  };
 };

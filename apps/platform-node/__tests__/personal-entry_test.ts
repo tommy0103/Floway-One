@@ -86,7 +86,10 @@ await runNodeEntry({
     console.log(${JSON.stringify(APP_CONSTRUCTION_BOUNDARY)});
     return { fetch: () => Promise.resolve(new Response('listener instrument')) };
   },
-  serve: () => { console.log(${JSON.stringify(LISTENER_BIND_BOUNDARY)}); },
+  serve: async () => {
+    console.log(${JSON.stringify(LISTENER_BIND_BOUNDARY)});
+    return { port: 8788 };
+  },
 });
 `);
 
@@ -103,7 +106,7 @@ await runNodeEntry({
             FLOWAY_TEST_PERSONAL_PATHS: JSON.stringify(paths),
             FLOWAY_PROFILE: 'personal',
             NODE_ENV: 'production',
-            PORT: '0',
+            PORT: '8788',
           },
           timeout: 10_000,
         });

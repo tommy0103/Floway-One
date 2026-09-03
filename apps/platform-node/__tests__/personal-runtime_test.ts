@@ -1,8 +1,15 @@
-import { assert, test } from 'vitest';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, assert, beforeEach, expect, test, vi } from 'vitest';
 
 import {
+  DEFAULT_PERSONAL_PORT,
+  loadPersonalRuntime,
   resolveDefaultPersonalDataDir,
   resolvePersonalRuntimePaths,
+  type PersonalRuntimePaths,
 } from '../src/personal-runtime.ts';
 import { assertEquals } from '@floway-dev/test-utils';
 
@@ -24,7 +31,7 @@ test('POSIX personal application data uses the platform-standard suffix beneath 
     '/Users/stable/Library/Application Support/Floway One',
   );
   assertEquals(
-    withXdgDataHome(undefined, () => resolveDefaultPersonalDataDir({ platform: 'linux', stableUserHome: '/home/stable' })),
+    resolveDefaultPersonalDataDir({ platform: 'linux', stableUserHome: '/home/stable', env: {} }),
     '/home/stable/.local/share/floway-one',
   );
 });
@@ -72,10 +79,11 @@ test('Windows Known Folder lookup failures preserve the operating-system cause',
 });
 
 test('Linux personal data follows an absolute XDG data root while the credential lock stays OS-user-global', () => {
-  const paths = withXdgDataHome('/mnt/redirected-data', () => resolvePersonalRuntimePaths({
+  const paths = resolvePersonalRuntimePaths({
     platform: 'linux',
     stableUserHome: '/home/stable',
-  }));
+    env: { XDG_DATA_HOME: '/mnt/redirected-data' },
+  });
 
   assertEquals(paths.dataDir, '/mnt/redirected-data/floway-one');
   assertEquals(
@@ -85,10 +93,11 @@ test('Linux personal data follows an absolute XDG data root while the credential
 });
 
 test('Linux ignores a relative XDG data root and falls back to the stable OS home', () => {
-  const paths = withXdgDataHome('relative/data', () => resolvePersonalRuntimePaths({
+  const paths = resolvePersonalRuntimePaths({
     platform: 'linux',
     stableUserHome: '/home/stable',
-  }));
+    env: { XDG_DATA_HOME: 'relative/data' },
+  });
 
   assertEquals(paths.dataDir, '/home/stable/.local/share/floway-one');
 });
@@ -103,14 +112,16 @@ test('Linux falls back to the stable OS home when XDG data root is unset', () =>
 });
 
 test('distinct absolute Linux XDG data roots share one device-global credential lock', () => {
-  const first = withXdgDataHome('/mnt/first', () => resolvePersonalRuntimePaths({
+  const first = resolvePersonalRuntimePaths({
     platform: 'linux',
     stableUserHome: '/home/stable',
-  }));
-  const second = withXdgDataHome('/mnt/second', () => resolvePersonalRuntimePaths({
+    env: { XDG_DATA_HOME: '/mnt/first' },
+  });
+  const second = resolvePersonalRuntimePaths({
     platform: 'linux',
     stableUserHome: '/home/stable',
-  }));
+    env: { XDG_DATA_HOME: '/mnt/second' },
+  });
 
   assertEquals(first.dataDir, '/mnt/first/floway-one');
   assertEquals(second.dataDir, '/mnt/second/floway-one');
@@ -143,4 +154,111 @@ test('a test data override never changes the device-global credential lock ident
   assertEquals(second.databasePath, '/tmp/second/floway.db');
   assertEquals(first.credentialLockDatabasePath, second.credentialLockDatabasePath);
   assertEquals(first.credentialLockDatabasePath, '/home/stable/.local/share/floway-one/credential-lock/device-master-key-v1.creation-lock.db');
+});
+
+let dataDir: string;
+
+const runtimePaths = (root: string = dataDir): PersonalRuntimePaths => ({
+  dataDir: root,
+  databasePath: join(root, 'floway.db'),
+  filesDir: join(root, 'files'),
+  logsDir: join(root, 'logs'),
+  runtimeStatePath: join(root, 'runtime.json'),
+  credentialLockDatabasePath: join(root, 'credential-lock', 'device-master-key-v1.creation-lock.db'),
+});
+
+beforeEach(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), 'floway-one-runtime-'));
+});
+
+afterEach(async () => {
+  await rm(dataDir, { recursive: true, force: true });
+});
+
+test('personal runtime creates a stable loopback endpoint and complete private data layout', async () => {
+  if (process.platform !== 'win32') await chmod(dataDir, 0o755);
+  const hardenedFiles: string[] = [];
+  const runtime = loadPersonalRuntime({
+    paths: runtimePaths(),
+    env: {},
+    permissions: {
+      ensureDirectory: () => {},
+      hardenFile: path => hardenedFiles.push(path),
+      hardenSqliteFiles: () => {},
+    },
+  });
+
+  expect(runtime).toMatchObject({
+    profile: 'personal',
+    hostname: '127.0.0.1',
+    port: DEFAULT_PERSONAL_PORT,
+    endpoint: 'http://127.0.0.1:8788',
+    ...runtimePaths(),
+  });
+  expect(JSON.parse(await readFile(runtime.runtimeStatePath, 'utf8'))).toEqual({ version: 1, port: 8788 });
+  expect(hardenedFiles).toEqual([runtime.runtimeStatePath]);
+  if (process.platform !== 'win32') {
+    expect((await stat(runtime.dataDir)).mode & 0o777).toBe(0o700);
+    expect((await stat(runtime.filesDir)).mode & 0o777).toBe(0o700);
+    expect((await stat(runtime.logsDir)).mode & 0o777).toBe(0o700);
+    expect((await stat(runtime.runtimeStatePath)).mode & 0o777).toBe(0o600);
+  }
+});
+
+test('personal path resolution does not load or write runtime state', async () => {
+  const paths = resolvePersonalRuntimePaths({ dataDir });
+
+  expect(paths).toMatchObject({
+    dataDir,
+    databasePath: join(dataDir, 'floway.db'),
+    filesDir: join(dataDir, 'files'),
+    logsDir: join(dataDir, 'logs'),
+    runtimeStatePath: join(dataDir, 'runtime.json'),
+  });
+  await expect(readFile(paths.runtimeStatePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test('personal runtime persists an explicit port change and warns clients once', () => {
+  const paths = runtimePaths();
+  loadPersonalRuntime({ paths, env: {} });
+  const warn = vi.fn();
+
+  const changed = loadPersonalRuntime({ paths, env: { PORT: '9876' }, warn });
+  const restarted = loadPersonalRuntime({ paths, env: {}, warn });
+
+  expect(changed.endpoint).toBe('http://127.0.0.1:9876');
+  expect(restarted.port).toBe(9876);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Update configured client endpoints/));
+});
+
+test.each(['0', '65536', '1.5', 'random'])('personal runtime rejects invalid explicit port %s', port => {
+  expect(() => loadPersonalRuntime({ paths: runtimePaths(), env: { PORT: port } })).toThrow(/integer from 1 through 65535/);
+});
+
+test('personal runtime preserves the parse error behind invalid persisted runtime state', async () => {
+  await writeFile(join(dataDir, 'runtime.json'), '{');
+
+  try {
+    loadPersonalRuntime({ paths: runtimePaths(), env: {} });
+    throw new Error('expected invalid runtime state to fail');
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/runtime state is invalid/);
+    expect((error as Error & { cause?: unknown }).cause).toBeInstanceOf(SyntaxError);
+  }
+});
+
+test('personal runtime preserves the operating-system error behind an unusable data directory', async () => {
+  const file = join(dataDir, 'not-a-directory');
+  await writeFile(file, 'occupied');
+
+  try {
+    loadPersonalRuntime({ paths: runtimePaths(join(file, 'Floway One')), env: {} });
+    throw new Error('expected storage initialization to fail');
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/cannot use application data directory/);
+    expect((error as Error & { cause?: NodeJS.ErrnoException }).cause?.code).toBe('ENOTDIR');
+  }
 });

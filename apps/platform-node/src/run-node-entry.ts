@@ -1,15 +1,27 @@
 import { fileURLToPath } from 'node:url';
 
-import { serve, upgradeWebSocket } from '@hono/node-server';
+import { createAdaptorServer, upgradeWebSocket } from '@hono/node-server';
 import { Agent, Pool, setGlobalDispatcher } from 'undici';
 import { WebSocketServer } from 'ws';
 
-import { bootstrapNodePlatform, resolveNodeRuntimeProfile } from './bootstrap.ts';
+import {
+  bootstrapNodePlatform,
+  resolveNodeRuntimeProfile,
+  type BootstrappedNodePlatform,
+} from './bootstrap.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
-import { resolvePersonalRuntimePaths } from './personal-runtime.ts';
+import { listenNodeServer } from './node-listener.ts';
+import { installPersonalLogging } from './personal-logging.ts';
+import {
+  loadPersonalRuntime,
+  resolvePersonalRuntimePaths,
+  type PersonalRuntime,
+} from './personal-runtime.ts';
+import { PersonalStorageHardener } from './personal-storage.ts';
 import { selectNodeRuntimeProfile } from './runtime-profile.ts';
 import { startScheduledMaintenance } from './scheduled-maintenance.ts';
+import { startNodeRuntime } from './start-runtime.ts';
 import { createNodeStoredSecretCodec } from './stored-secrets.ts';
 import {
   LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
@@ -51,63 +63,37 @@ initBackgroundSchedulerResolver(_c => promise => {
 initOpenAIResponsesWebSocketUpgradeResolver((c, events) =>
   upgradeWebSocket(c, events, { onError: err => console.error('[websocket]', err) }));
 
-interface NodeListenerDependencies {
-  readonly createLocalApp: typeof createLocalApp;
-  readonly serve: typeof serve;
+export interface NodeEntryInfo {
+  readonly port: number;
 }
 
-const startNodeListener = (
-  profile: RuntimeProfileMode,
-  port: number,
-  dependencies: NodeListenerDependencies,
-): void => {
-  const localApp = dependencies.createLocalApp({
-    gatewayFetch: app.fetch,
-    staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
-  });
-  const personalHostname = profile === 'personal' ? '127.0.0.1' : undefined;
-  dependencies.serve({
-    fetch: localApp.fetch,
-    ...(personalHostname === undefined ? {} : { hostname: personalHostname }),
-    port,
-    websocket: { server: new WebSocketServer({ noServer: true }) },
-  }, info => {
-    const displayedHostname = personalHostname === undefined ? 'localhost' : info.address;
-    console.log(`Floway listening on http://${displayedHostname}:${info.port}`);
-  });
-};
+interface NodeServeOptions {
+  readonly displayEndpoint: string;
+  readonly hostname?: string;
+  readonly port: number;
+}
+
+type NodeServe = (options: NodeServeOptions) => Promise<NodeEntryInfo>;
 
 export interface NodeEntryOverrides {
+  readonly args?: readonly string[];
   readonly assertRuntimeProfileData?: (repo: SqlRepo) => Promise<void>;
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
+  readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
-  readonly serve?: typeof serve;
+  readonly serve?: NodeServe;
+  readonly start?: () => Promise<NodeEntryInfo>;
 }
 
-export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<void> => {
-  const args = process.argv.slice(2);
-  const profile = args.length === 0
-    ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
-    : selectNodeRuntimeProfile(args);
-  const personalPaths = profile === 'personal'
-    ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
-    : undefined;
-  const { db, deviceMasterKeyCreationLock, personalStorage } = (overrides.bootstrapNodePlatform ?? bootstrapNodePlatform)(
-    personalPaths === undefined
-      ? { profile: 'server' }
-      : { profile: 'personal', storage: personalPaths },
-  );
-  const port = Number(getEnvOptional('PORT', '8788'));
-
-  // Passwordless admin login is a dev-only shortcut. Refuse production Node
-  // startup without ADMIN_KEY so misconfiguration surfaces before listening.
-  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
-    console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
-    process.exit(1);
-  }
-
+const prepareNodePlatform = async (
+  bootstrapped: BootstrappedNodePlatform,
+  profile: RuntimeProfileMode,
+  overrides: NodeEntryOverrides,
+  personalDatabasePath?: string,
+): Promise<void> => {
+  const { db, deviceMasterKeyCreationLock, personalStorage } = bootstrapped;
   const hasExistingMigrationState = profile === 'personal'
     && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'")
       .first<{ name: string }>() !== null;
@@ -128,15 +114,94 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     await applyMigrations(db);
     storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
   }
-  if (personalPaths !== undefined) personalStorage?.hardenSqliteFiles(personalPaths.databasePath);
+  if (personalDatabasePath !== undefined) personalStorage?.hardenSqliteFiles(personalDatabasePath);
   const repo = new SqlRepo(db, { storedSecrets });
   initRepo(repo);
   if (overrides.assertRuntimeProfileData === undefined) await assertRuntimeProfileData();
   else await overrides.assertRuntimeProfileData(repo);
+};
 
-  startScheduledMaintenance();
-  startNodeListener(profile, port, {
-    createLocalApp: overrides.createLocalApp ?? createLocalApp,
-    serve: overrides.serve ?? serve,
+const startNodeListener = async (
+  profile: RuntimeProfileMode,
+  personalRuntime: PersonalRuntime | null,
+  port: number,
+  overrides: NodeEntryOverrides,
+): Promise<NodeEntryInfo> => {
+  const localApp = (overrides.createLocalApp ?? createLocalApp)({
+    gatewayFetch: app.fetch,
+    staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
   });
+  const serve = overrides.serve ?? (async (options: NodeServeOptions): Promise<NodeEntryInfo> => {
+    const server = createAdaptorServer({
+      fetch: localApp.fetch,
+      websocket: { server: new WebSocketServer({ noServer: true }) },
+    });
+    return await listenNodeServer(server, {
+      ...options,
+      serviceName: 'Floway',
+    });
+  });
+  return await serve({
+    displayEndpoint: personalRuntime?.endpoint ?? `http://localhost:${port}`,
+    ...(profile === 'personal' ? { hostname: '127.0.0.1' } : {}),
+    port,
+  });
+};
+
+export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
+  const args = overrides.args ?? process.argv.slice(2);
+  const profile = args.length === 0
+    ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
+    : selectNodeRuntimeProfile(args);
+  const personalPaths = profile === 'personal'
+    ? (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)()
+    : null;
+  const personalStorage = personalPaths === null ? null : new PersonalStorageHardener(personalPaths);
+  personalStorage?.initialize();
+  if (personalPaths !== null && personalStorage !== null) {
+    installPersonalLogging(personalPaths.logsDir, { permissions: personalStorage });
+  }
+  const startupWarnings: string[] = [];
+  const personalRuntime = personalPaths === null
+    ? null
+    : (overrides.loadPersonalRuntime ?? loadPersonalRuntime)({
+        paths: personalPaths,
+        ...(personalStorage === null ? {} : { permissions: personalStorage }),
+        warn: warning => startupWarnings.push(warning),
+      });
+  for (const warning of startupWarnings) console.warn(warning);
+  const port = personalRuntime?.port ?? Number(getEnvOptional('PORT', '8788'));
+
+  // Passwordless admin login is a dev-only shortcut. Refuse production Node
+  // startup without ADMIN_KEY so misconfiguration surfaces before listening.
+  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
+    console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
+    process.exit(1);
+  }
+
+  const start = overrides.start ?? (async () => await startNodeRuntime({
+    bootstrap: () => (overrides.bootstrapNodePlatform ?? bootstrapNodePlatform)(
+      personalPaths === null
+        ? { profile: 'server' }
+        : {
+            profile: 'personal',
+            storage: personalPaths,
+            ...(personalStorage === null ? {} : { personalStorage }),
+          },
+    ),
+    migrate: async bootstrapped => await prepareNodePlatform(
+      bootstrapped,
+      profile,
+      overrides,
+      personalPaths?.databasePath,
+    ),
+    listen: async () => {
+      const info = await startNodeListener(profile, personalRuntime, port, overrides);
+      startScheduledMaintenance();
+      return info;
+    },
+  }));
+  const info = await start();
+  console.log(`Floway listening on ${personalRuntime?.endpoint ?? `http://localhost:${info.port}`}`);
+  return info;
 };

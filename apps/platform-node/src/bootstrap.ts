@@ -38,19 +38,22 @@ interface NodeStoragePaths {
 }
 
 export type BootstrapNodePlatformOptions =
-  | { readonly profile: 'personal'; readonly storage: PersonalRuntimePaths }
+  | {
+    readonly personalStorage?: PersonalStorageHardener;
+    readonly profile: 'personal';
+    readonly storage: PersonalRuntimePaths;
+  }
   | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
 
 export interface BootstrapNodePlatformDependencies {
   readonly createDeviceMasterKeyCreationLock?: typeof createDeviceMasterKeyCreationLock;
 }
 
-interface BootstrappedNodePlatform {
+export interface BootstrappedNodePlatform {
   readonly db: SqlDatabase;
   readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
   readonly personalStorage?: PersonalStorageHardener;
 }
-
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
   const profile = value ?? 'server';
   if (profile === 'personal' || profile === 'server') return profile;
@@ -64,14 +67,16 @@ export const bootstrapNodePlatform = (
   const { profile } = options;
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
-  initRuntimeProfile(profile);
+  initRuntimeProfile(options.profile);
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
   initFetch(nodeFetch);
 
   const filesDir = options.storage?.filesDir ?? getEnvOptional('FLOWAY_FILES_DIR', './data/files');
   const dbPath = options.storage?.databasePath ?? getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
-  const personalStorage = profile === 'personal' ? new PersonalStorageHardener(options.storage) : undefined;
+  const personalStorage = profile === 'personal'
+    ? (options.personalStorage ?? new PersonalStorageHardener(options.storage))
+    : undefined;
   personalStorage?.initialize();
 
   const files = new FsFileStore(filesDir, personalStorage);

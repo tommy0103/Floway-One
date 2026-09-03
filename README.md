@@ -137,6 +137,23 @@ before starting so it also works immediately after a clean checkout.
 Production Node.js deployments must set both `NODE_ENV=production` and a
 non-empty `ADMIN_KEY`.
 
+Floway One's explicit personal profile instead binds only to
+`http://127.0.0.1:8788` and stores its database, files, logs directory, and
+`runtime.json` below the operating system's per-user application-data
+directory:
+
+```bash
+ADMIN_KEY='replace-with-a-secret' pnpm run dev:one
+```
+
+Set `PORT` when deliberately moving the personal endpoint. The selected port
+is persisted in `runtime.json`, and startup warns that configured AI clients
+must be updated. A port conflict or inaccessible application-data directory
+stops startup rather than selecting a fallback. Personal stdout and stderr are
+also retained in size-bounded rotating files under the application-data logs
+directory; ordinary Node server mode continues to use its existing console
+behavior.
+
 Podman users can instead follow the
 [systemd deployment guide](./docker/systemd/README.md).
 
