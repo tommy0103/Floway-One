@@ -946,6 +946,8 @@ const zhHansCN = {
         callout: { requests: '请求', cost: '费用', total: '总量', cached: '缓存', cachedRate: '缓存率', prefill: '预填充', output: '输出' },
         apiKeyScopeInfo: 'API 密钥分组和筛选仅包含当前账号拥有的密钥。选择“按 API 密钥”会将用户设为“仅自己”；选择其他用户会清空 API 密钥筛选并回到“按模型”。',
         apiKeyScopeLabel: '关于 API 密钥遥测范围',
+        personalApiKeyScopeInfo: 'API 密钥分组和筛选仅包含本机 Owner 拥有的密钥。选择“按 API 密钥”会保持本机 Owner 的遥测范围。',
+        personalApiKeyScopeLabel: '关于本机 Owner 的 API 密钥遥测范围',
         groupBy: { label: '分组依据', model: '按模型', upstream: '按上游', userId: '按用户', keyId: '按 API 密钥' },
         filters: {
           model: '模型',
@@ -985,6 +987,8 @@ const zhHansCN = {
         actions: { refresh: '刷新性能数据' },
         apiKeyScopeInfo: 'API 密钥分组和筛选仅包含当前账号拥有的密钥。选择“按 API 密钥”会将用户设为“仅自己”；选择其他用户会清空 API 密钥筛选并回到“按模型”。',
         apiKeyScopeLabel: '关于 API 密钥遥测范围',
+        personalApiKeyScopeInfo: 'API 密钥分组和筛选仅包含本机 Owner 拥有的密钥。选择“按 API 密钥”会保持本机 Owner 的遥测范围。',
+        personalApiKeyScopeLabel: '关于本机 Owner 的 API 密钥遥测范围',
         breakdown: '性能细分维度',
         metric: { label: '性能指标', ttft: '首 Token 时间', outputSpeed: '输出速度' },
         groupBy: { label: '分组依据', model: '按模型', upstream: '按上游', operation: '按操作', runtimeLocation: '按区域', userId: '按用户', keyId: '按 API 密钥' },

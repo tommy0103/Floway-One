@@ -994,6 +994,8 @@ const en = {
         callout: { requests: 'Req', cost: 'Cost', total: 'Total', cached: 'Cached', cachedRate: 'Cached%', prefill: 'Prefill', output: 'Output' },
         apiKeyScopeInfo: 'API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.',
         apiKeyScopeLabel: 'About API key telemetry scope',
+        personalApiKeyScopeInfo: 'API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.',
+        personalApiKeyScopeLabel: 'About local-owner API key telemetry scope',
         groupBy: { label: 'Group by', model: 'By Model', upstream: 'By Upstream', userId: 'By User', keyId: 'By API Key' },
         filters: {
           model: 'Model',
@@ -1034,6 +1036,8 @@ const en = {
         actions: { refresh: 'Refresh performance' },
         apiKeyScopeInfo: 'API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.',
         apiKeyScopeLabel: 'About API key telemetry scope',
+        personalApiKeyScopeInfo: 'API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.',
+        personalApiKeyScopeLabel: 'About local-owner API key telemetry scope',
         breakdown: 'Performance breakdown dimension',
         metric: { label: 'Performance metric', ttft: 'TTFT', outputSpeed: 'Output speed' },
         groupBy: { label: 'Group by', model: 'By Model', upstream: 'By Upstream', operation: 'By Operation', runtimeLocation: 'By Region', userId: 'By User', keyId: 'By API Key' },

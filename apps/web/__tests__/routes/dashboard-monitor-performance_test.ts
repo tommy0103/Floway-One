@@ -151,7 +151,6 @@ describe('where the performance page reads upstream names from', () => {
     const filtered = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?fusr=2') } as never);
 
     expect(grouped.userDimensionAvailable).toBe(false);
-    expect(grouped.view).toBe('self-by-key');
     expect(grouped.state.groupBy).toBe('model');
     expect(filtered.state.filters.userId).toEqual([]);
     expect(performanceQueries).toHaveLength(2);

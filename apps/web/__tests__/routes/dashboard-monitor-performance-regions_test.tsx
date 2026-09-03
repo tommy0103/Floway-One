@@ -53,7 +53,6 @@ const renderPage = (overrides: LoaderOverrides = {}) => {
     },
     upstreams: [],
     userDimensionAvailable: false,
-    view: 'self-by-key',
   };
   const loaderData: PerformanceLoaderData = {
     ...base,
@@ -84,6 +83,26 @@ describe('Performance runtime dimensions', () => {
 
     expect(screen.getByRole('combobox', { name: 'Region' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'By Region' })).toBeTruthy();
+  });
+
+  it('renders capability-specific API key scope tooltips', async () => {
+    const server = renderPage({
+      isAdmin: true,
+      state: { groupBy: 'keyId' },
+      userDimensionAvailable: true,
+    });
+    const serverScope = screen.getByRole('button', { name: 'About API key telemetry scope' });
+    fireEvent.pointerEnter(serverScope);
+    expect((await screen.findByRole('tooltip')).textContent)
+      .toBe('API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.');
+    server.unmount();
+
+    renderPage({ state: { groupBy: 'keyId' }, userDimensionAvailable: false });
+    const personalScope = screen.getByRole('button', { name: 'About local-owner API key telemetry scope' });
+    fireEvent.pointerEnter(personalScope);
+    const copy = (await screen.findByRole('tooltip')).textContent ?? '';
+    expect(copy).toBe('API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.');
+    expect(copy).not.toMatch(/\bUser\b|Only me|another user/);
   });
 
   it('does not re-probe known capabilities', async () => {

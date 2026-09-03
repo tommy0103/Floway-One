@@ -152,7 +152,7 @@ describe('usage dimension controls', () => {
     consoleError.mockRestore();
   });
 
-  it('discloses that API key grouping is account-scoped', () => {
+  it('retains server user wording in the API key scope tooltip', async () => {
     renderPage({
       ...loaderData,
       state: {
@@ -163,9 +163,27 @@ describe('usage dimension controls', () => {
       usage: { ...loaderData.usage, series: [{ ...usageRecord, group: 'key-2' }] },
     });
 
-    expect(screen.getByRole('button', { name: 'About API key telemetry scope' })).toBeTruthy();
+    const scope = screen.getByRole('button', { name: 'About API key telemetry scope' });
+    fireEvent.pointerEnter(scope);
+    expect((await screen.findByRole('tooltip')).textContent)
+      .toBe('API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.');
     expect(screen.queryByRole('combobox', { name: 'API Key' })).toBeNull();
     expect(screen.getByRole('combobox', { name: 'User' }).getAttribute('placeholder')).toBe('Only me');
+  });
+
+  it('uses local-owner wording in the personal API key scope tooltip', async () => {
+    renderPage({
+      ...loaderData,
+      state: { ...loaderData.state, groupBy: 'keyId' },
+      userDimensionAvailable: false,
+      usage: { ...loaderData.usage, series: [{ ...usageRecord, group: 'key-2' }] },
+    });
+
+    const scope = screen.getByRole('button', { name: 'About local-owner API key telemetry scope' });
+    fireEvent.pointerEnter(scope);
+    const copy = (await screen.findByRole('tooltip')).textContent ?? '';
+    expect(copy).toBe('API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.');
+    expect(copy).not.toMatch(/\bUser\b|Only me|another user/);
   });
 
   it('lets an API key selection replace another user with the current-user scope', async () => {

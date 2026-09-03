@@ -21,7 +21,6 @@ import {
   type PerformancePercentile,
   type PerformanceRange,
   type PerformanceUrlState,
-  type PerformanceView,
 } from '../components/performance/overview';
 import { buildPerformanceChart, performanceBuckets } from '../components/performance/plot';
 import { PerformanceTable } from '../components/performance/table';
@@ -61,7 +60,6 @@ interface LoaderData {
   upstreams: UpstreamMetadata[] | null;
   regionAvailable: boolean | null;
   userDimensionAvailable: boolean | null;
-  view: PerformanceView;
 }
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
@@ -81,7 +79,6 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
       state,
       upstreams: null,
       userDimensionAvailable: null,
-      view: 'self-by-key',
     };
   }
   const regionAvailable = runtime.data.kind === 'cloudflare';
@@ -92,7 +89,6 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     regionAvailable,
     userDimensionAvailable,
   });
-  const view: PerformanceView = userDimensionAvailable ? 'all-by-user' : 'self-by-key';
   const query = buildPerformanceQuery(
     normalization.state.range,
     normalization.state.groupBy,
@@ -116,7 +112,6 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise
     state: normalization.state,
     upstreams: upstreams.data?.map(({ id, name, hue }) => ({ id, name, hue })) ?? null,
     userDimensionAvailable,
-    view,
   };
 }
 
@@ -326,10 +321,14 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
             dimensions={availableDimensions}
             filters={loadedQuery.filters}
             groupBy={loadedQuery.groupBy}
-            groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t('dashboard.performance.apiKeyScopeInfo')} relationship="description">
+            groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t(userDimensionAvailable
+              ? 'dashboard.performance.apiKeyScopeInfo'
+              : 'dashboard.performance.personalApiKeyScopeInfo')} relationship="description">
               <Button
                 appearance="subtle"
-                aria-label={t('dashboard.performance.apiKeyScopeLabel')}
+                aria-label={t(userDimensionAvailable
+                  ? 'dashboard.performance.apiKeyScopeLabel'
+                  : 'dashboard.performance.personalApiKeyScopeLabel')}
                 className={CONTROL_ROW_CLASS}
                 icon={<InfoRegular />}
               />

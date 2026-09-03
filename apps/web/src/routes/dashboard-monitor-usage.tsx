@@ -233,10 +233,14 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
           disabled={refreshing}
           dimensions={availableDimensions}
           groupBy={loadedQuery.groupBy}
-          groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t('dashboard.usage.apiKeyScopeInfo')} relationship="description">
+          groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t(loaderData.userDimensionAvailable
+            ? 'dashboard.usage.apiKeyScopeInfo'
+            : 'dashboard.usage.personalApiKeyScopeInfo')} relationship="description">
             <Button
               appearance="subtle"
-              aria-label={t('dashboard.usage.apiKeyScopeLabel')}
+              aria-label={t(loaderData.userDimensionAvailable
+                ? 'dashboard.usage.apiKeyScopeLabel'
+                : 'dashboard.usage.personalApiKeyScopeLabel')}
               className={CONTROL_ROW_CLASS}
               icon={<InfoRegular />}
             />
