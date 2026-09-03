@@ -12,6 +12,10 @@ import {
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
+import {
+  preparePersonalDashboardBootstrap,
+  takePersonalDashboardBootstrapToken,
+} from './personal-dashboard-bootstrap.ts';
 import { installPersonalLogging } from './personal-logging.ts';
 import {
   loadPersonalRuntime,
@@ -28,6 +32,7 @@ import {
   app,
   assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
+  initPersonalDashboardBootstrap,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
   SqlRepo,
@@ -82,10 +87,12 @@ export interface NodeEntryOverrides {
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
+  readonly initPersonalDashboardBootstrap?: typeof initPersonalDashboardBootstrap;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
   readonly serve?: NodeServe;
   readonly start?: () => Promise<NodeEntryInfo>;
+  readonly takePersonalDashboardBootstrapToken?: typeof takePersonalDashboardBootstrapToken;
 }
 
 const prepareNodePlatform = async (
@@ -175,9 +182,20 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   for (const warning of startupWarnings) console.warn(warning);
   const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
 
-  // Passwordless admin login is a dev-only shortcut. Refuse production Node
-  // startup without ADMIN_KEY so misconfiguration surfaces before listening.
-  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
+  const dashboardBootstrap = personalRuntime === null
+    ? null
+    : preparePersonalDashboardBootstrap({
+        origin: personalRuntime.endpoint,
+        production: process.env.NODE_ENV === 'production',
+        token: (overrides.takePersonalDashboardBootstrapToken ?? takePersonalDashboardBootstrapToken)(),
+      });
+  if (dashboardBootstrap === null) {
+    (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(null);
+  }
+
+  // Passwordless admin login is a dev-only server shortcut. Personal production
+  // uses the one-time bootstrap authority resolved above instead.
+  if (profile === 'server' && process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
     console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
     process.exit(1);
   }
@@ -199,6 +217,9 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       personal?.paths.databasePath,
     ),
     listen: async () => {
+      if (dashboardBootstrap !== null) {
+        (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(dashboardBootstrap.activate());
+      }
       const info = await startNodeListener(profile, personalRuntime, port, overrides);
       startScheduledMaintenance();
       return info;

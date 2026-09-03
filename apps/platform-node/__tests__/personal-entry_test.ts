@@ -17,12 +17,14 @@ const RUN_NODE_ENTRY_URL = new URL('../src/run-node-entry.ts', import.meta.url).
 const PERSONAL_STORAGE_URL = new URL('../src/personal-storage.ts', import.meta.url).href;
 const MASTER_KEY_BYTE = 29;
 const PROTECTED_SENTINEL = 'personal-entry-encrypted-upstream-secret';
+const BOOTSTRAP_TOKEN = '71'.repeat(32);
 const APP_CONSTRUCTION_BOUNDARY = 'PERSONAL_ENTRY_APP_CONSTRUCTION_REACHED';
 const LISTENER_BIND_BOUNDARY = 'PERSONAL_ENTRY_LISTENER_BIND_REACHED';
 const STORAGE_INITIALIZATION_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_INITIALIZED';
 const STORAGE_TREE_ACL_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_TREE_ACL_APPLIED';
 const STORAGE_ROOT_MKDIR_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_ROOT_MKDIR:';
 const STORAGE_ROOT_CHMOD_BOUNDARY = 'PERSONAL_ENTRY_STORAGE_ROOT_CHMOD:';
+const DASHBOARD_BOOTSTRAP_BOUNDARY = 'PERSONAL_ENTRY_DASHBOARD_BOOTSTRAP_INITIALIZED';
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
 const ownerCases: readonly {
@@ -91,6 +93,12 @@ const storagePlatform = process.env.FLOWAY_TEST_STORAGE_PLATFORM;
 if (storagePlatform !== 'win32' && storagePlatform !== 'linux') throw new Error('Missing storage platform');
 const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(${MASTER_KEY_BYTE}));
 await runNodeEntry({
+  initPersonalDashboardBootstrap: configuration => {
+    if (configuration?.origin !== 'http://127.0.0.1:8788') throw new Error('Unexpected personal Dashboard origin');
+    if (configuration.credential?.token !== ${JSON.stringify(BOOTSTRAP_TOKEN)}) throw new Error('Bootstrap authority was not installed');
+    if (process.env.FLOWAY_BOOTSTRAP_TOKEN !== undefined) throw new Error('Bootstrap authority remained in the process environment');
+    console.log(${JSON.stringify(DASHBOARD_BOOTSTRAP_BOUNDARY)});
+  },
   initializePersonalStorage: paths => {
     console.log(${JSON.stringify(STORAGE_INITIALIZATION_BOUNDARY)});
     const roots = new Set([paths.dataDir, paths.filesDir, paths.logsDir]);
@@ -146,6 +154,7 @@ await runNodeEntry({
           env: {
             ...process.env,
             ADMIN_KEY: 'personal-entry-test',
+            FLOWAY_BOOTSTRAP_TOKEN: BOOTSTRAP_TOKEN,
             FLOWAY_TEST_PERSONAL_PATHS: JSON.stringify(paths),
             FLOWAY_TEST_STORAGE_PLATFORM: storageCase.platform,
             FLOWAY_PROFILE: 'personal',
@@ -164,6 +173,10 @@ await runNodeEntry({
       const output = stdout + stderr;
 
       expect(output.match(new RegExp(STORAGE_INITIALIZATION_BOUNDARY, 'g'))).toHaveLength(1);
+      expect(output.match(new RegExp(DASHBOARD_BOOTSTRAP_BOUNDARY, 'g')) ?? []).toHaveLength(
+        ownerCase.expectedError === null ? 1 : 0,
+      );
+      expect(output).not.toContain(BOOTSTRAP_TOKEN);
       expect(output.match(new RegExp(STORAGE_TREE_ACL_BOUNDARY, 'g')) ?? []).toHaveLength(
         storageCase.platform === 'win32' ? 1 : 0,
       );
