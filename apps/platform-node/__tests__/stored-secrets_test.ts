@@ -10,6 +10,7 @@ import { createOperatingSystemCredential, type DeviceMasterKeyCredential } from 
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
 import { MemoryDeviceMasterKeyCredential } from './support/memory-device-master-key-credential.ts';
+import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '@floway-dev/gateway';
 import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretContext } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
@@ -17,8 +18,8 @@ const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = f
   prepare: query => ({
     bind() { return this; },
     first: <T>() => {
-      if (query === 'SELECT id FROM upstreams LIMIT 1') {
-        return Promise.resolve((hasUpstreams ? { id: 'up_existing' } : null) as T | null);
+      if (query.includes('FROM upstreams WHERE')) {
+        return Promise.resolve((hasUpstreams && query.includes('config_json') ? { identity: 'up_existing' } : null) as T | null);
       }
       if (query.includes('FROM search_config')) {
         return Promise.resolve((hasSearchCredentials ? { id: 1 } : null) as T | null);
@@ -26,13 +27,9 @@ const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = f
       throw new Error(`Unexpected query: ${query}`);
     },
     all: <T>() => {
-      if (query === 'PRAGMA table_info(search_config)') {
+      if (query === 'SELECT name FROM _migrations') {
         return Promise.resolve({
-          results: [
-            { name: 'tavily_api_key' },
-            { name: 'microsoft_web_iq_api_key' },
-            { name: 'jina_api_key' },
-          ] as T[],
+          results: [{ name: PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION }] as T[],
           success: true,
           meta: {},
         });
@@ -69,10 +66,12 @@ const withSqliteStoredValues = async (
       CREATE TABLE upstreams (id TEXT PRIMARY KEY, config_json TEXT NOT NULL, state_json TEXT);
       CREATE TABLE search_config (
         id INTEGER PRIMARY KEY,
-        tavily_api_key TEXT NOT NULL,
-        microsoft_web_iq_api_key TEXT NOT NULL,
-        jina_api_key TEXT NOT NULL
+        protected_tavily_api_key TEXT NOT NULL,
+        protected_microsoft_web_iq_api_key TEXT NOT NULL,
+        protected_jina_api_key TEXT NOT NULL
       );
+      CREATE TABLE _migrations (name TEXT PRIMARY KEY);
+      INSERT INTO _migrations VALUES ('${PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION}');
     `);
     setup.prepare('INSERT INTO search_config VALUES (1, ?, ?, ?)').run(
       values.tavilyApiKey ?? '',

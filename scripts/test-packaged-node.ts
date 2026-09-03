@@ -17,6 +17,8 @@ import {
 import { FsFileStore } from '../apps/platform-node/src/fs-file-store.ts';
 import { resolvePersonalRuntimePaths, type PersonalRuntimePaths } from '../apps/platform-node/src/personal-runtime.ts';
 import { PersonalStorageHardener } from '../apps/platform-node/src/personal-storage.ts';
+import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION } from '../packages/gateway/src/repo/protected-migrations.ts';
+import { WEB_SEARCH_STORED_SECRET_FIELDS } from '../packages/gateway/src/repo/stored-secret-fields.ts';
 import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '../packages/platform/src/stored-secret-codec.ts';
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +28,13 @@ const ADMIN_KEY = 'packaged-layout-test';
 const PERSONAL_SECRET = `packaged-personal-secret-${randomUUID()}`;
 const REQUIRE_CREDENTIAL_STORE = process.env.FLOWAY_REQUIRE_CREDENTIAL_STORE === '1';
 const START_LINUX_SECRET_SERVICE = process.env.FLOWAY_START_TEST_SECRET_SERVICE === '1';
+// Microsoft documents this GUID as FOLDERID_RoamingAppData.
+// https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/shell/knownfolderid.md#folderid_roamingappdata
+const WINDOWS_ROAMING_APP_DATA_FOLDER_ID = '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D';
+// Microsoft defines S-1-5-32-544 as the built-in Administrators group.
+// https://github.com/MicrosoftDocs/win32/blob/79eaaa46b30bd0efef0d0f5a65fd7d11fdd8e2de/desktop-src/SecAuthZ/well-known-sids.md#well-known-sids
+const WINDOWS_BUILTIN_ADMINISTRATORS_SID = 'S-1-5-32-544';
+const TAVILY_STORED_SECRET_COLUMN = WEB_SEARCH_STORED_SECRET_FIELDS.find(field => field.provider === 'tavily')!.column;
 
 const fail = (message: string): never => {
   throw new Error(`packaged Node runtime: ${message}`);
@@ -342,14 +351,7 @@ const assertServerSurface = async (origin: string): Promise<void> => {
 };
 
 const persistPersonalSecret = async (origin: string): Promise<void> => {
-  const login = await fetch(`${origin}/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: '', password: ADMIN_KEY }),
-  });
-  if (!login.ok) fail(`personal admin login returned ${login.status}`);
-  const loginBody = await login.json() as { token?: unknown };
-  const sessionToken = requireString(loginBody.token, 'personal admin login returned no session token');
+  const sessionToken = await authenticate(origin);
 
   const response = await fetch(`${origin}/api/search-config`, {
     method: 'PUT',
@@ -368,11 +370,42 @@ const persistPersonalSecret = async (origin: string): Promise<void> => {
 const assertCiphertextAtRest = (databasePath: string): void => {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
-    const row = database.prepare('SELECT tavily_api_key FROM search_config WHERE id = 1').get() as { tavily_api_key?: unknown } | undefined;
+    const row = database.prepare(`SELECT ${TAVILY_STORED_SECRET_COLUMN} AS tavily_api_key FROM search_config WHERE id = 1`).get() as { tavily_api_key?: unknown } | undefined;
     const stored = requireString(row?.tavily_api_key, 'personal database contains no Tavily credential');
     if (stored.includes(PERSONAL_SECRET)) fail('personal database exposes the provider credential as plaintext');
     const parsed = JSON.parse(stored) as { $flowayEncrypted?: { version?: unknown } };
     if (parsed.$flowayEncrypted?.version !== 1) fail('personal database credential is not a version 1 encrypted envelope');
+  } finally {
+    database.close();
+  }
+};
+
+const rewindProtectedSearchMigration = (databasePath: string): void => {
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(`
+      BEGIN;
+      CREATE TABLE search_config_legacy (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        provider TEXT NOT NULL,
+        tavily_api_key TEXT NOT NULL DEFAULT '',
+        microsoft_web_iq_api_key TEXT NOT NULL DEFAULT '',
+        jina_api_key TEXT NOT NULL DEFAULT '',
+        passthrough_openai_search INTEGER NOT NULL DEFAULT 0,
+        alpha_search_upstream_id TEXT NOT NULL DEFAULT '',
+        alpha_search_model TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO search_config_legacy
+      SELECT id, provider, protected_tavily_api_key, protected_microsoft_web_iq_api_key,
+             protected_jina_api_key, passthrough_openai_search, alpha_search_upstream_id,
+             alpha_search_model, updated_at
+      FROM search_config;
+      DROP TABLE search_config;
+      ALTER TABLE search_config_legacy RENAME TO search_config;
+      DELETE FROM _migrations WHERE name = '${PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION}';
+      COMMIT;
+    `);
   } finally {
     database.close();
   }
@@ -490,7 +523,7 @@ public static class FlowayKnownFolderRedirect {
   public static extern int SHSetKnownFolderPath(ref Guid rfid, uint flags, IntPtr token, string path);
 }
 '@
-$FolderId = [Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D'
+$FolderId = [Guid]'${WINDOWS_ROAMING_APP_DATA_FOLDER_ID}'
 $Path = [Environment]::GetEnvironmentVariable('FLOWAY_REDIRECTED_KNOWN_FOLDER')
 $HResult = [FlowayKnownFolderRedirect]::SHSetKnownFolderPath([ref]$FolderId, 0, [IntPtr]::Zero, $Path)
 if ($HResult -ne 0) { [Runtime.InteropServices.Marshal]::ThrowExceptionForHR($HResult) }
@@ -540,7 +573,7 @@ const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
 
   const personalRuntimePath = resolve(packageRoot, 'apps/platform-node/src/personal-runtime.ts');
   const originalSource = await readFile(personalRuntimePath, 'utf8');
-  const roamingAppDataFolderId = '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D';
+  const roamingAppDataFolderId = WINDOWS_ROAMING_APP_DATA_FOLDER_ID;
   if (!originalSource.includes(roamingAppDataFolderId)) fail('packaged personal runtime has no Roaming AppData Known Folder ID');
   try {
     await writeFile(personalRuntimePath, originalSource.replaceAll(
@@ -674,7 +707,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
   const base = new DatabaseSync(baseDatabasePath, { readOnly: true });
   const upstream = base.prepare('SELECT config_json, state_json FROM upstreams WHERE id = ?')
     .get('up_packaged_entry') as { config_json: string; state_json: string };
-  const search = base.prepare('SELECT tavily_api_key FROM search_config WHERE id = 1')
+  const search = base.prepare(`SELECT ${TAVILY_STORED_SECRET_COLUMN} AS tavily_api_key FROM search_config WHERE id = 1`)
     .get() as { tavily_api_key: string };
   base.close();
   const wrongKey = Uint8Array.from(masterKey, byte => byte ^ 0xff);
@@ -695,7 +728,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     {
       name: 'plaintext-search',
       expectedChain: ['Invalid encrypted stored secret format for web-search:tavily:api-key'],
-      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run('plaintext'); },
+      mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run('plaintext'); },
     },
     {
       name: 'wrong-key-upstream',
@@ -705,7 +738,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     {
       name: 'wrong-key-search',
       expectedChain: ['Failed to decrypt stored secret for web-search:tavily:api-key', 'OperationError'],
-      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(wrongSearch); },
+      mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run(wrongSearch); },
     },
     {
       name: 'tampered-upstream',
@@ -715,7 +748,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     {
       name: 'tampered-search',
       expectedChain: ['Failed to decrypt stored secret for web-search:tavily:api-key', 'OperationError'],
-      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(tamperEnvelope(search.tavily_api_key)); },
+      mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run(tamperEnvelope(search.tavily_api_key)); },
     },
     {
       name: 'malformed-upstream',
@@ -725,7 +758,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     {
       name: 'malformed-search',
       expectedChain: ['Invalid encrypted stored secret format for web-search:tavily:api-key', 'SyntaxError'],
-      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run('{'); },
+      mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run('{'); },
     },
     {
       name: 'unsupported-version-upstream',
@@ -735,7 +768,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     {
       name: 'unsupported-version-search',
       expectedChain: ['Unsupported encrypted stored secret version 2 for web-search:tavily:api-key'],
-      mutate: database => { database.prepare('UPDATE search_config SET tavily_api_key = ? WHERE id = 1').run(unsupportedEnvelope(search.tavily_api_key)); },
+      mutate: database => { database.prepare(`UPDATE search_config SET ${TAVILY_STORED_SECRET_COLUMN} = ? WHERE id = 1`).run(unsupportedEnvelope(search.tavily_api_key)); },
     },
   ];
 
@@ -781,7 +814,7 @@ const setWindowsOwnerToAdministrators = async (target: string): Promise<void> =>
 $ErrorActionPreference = 'Stop'
 $Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_OWNER_TARGET')
 $Acl = [System.IO.File]::GetAccessControl($Target)
-$Acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+$Acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('${WINDOWS_BUILTIN_ADMINISTRATORS_SID}'))
 [System.IO.File]::SetAccessControl($Target, $Acl)
 `], {
     env: { ...process.env, FLOWAY_ACL_OWNER_TARGET: target },
@@ -929,6 +962,11 @@ await runNodeEntry({
         const storedMasterKey = await readCredential(productionCredential);
         const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
         if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
+        assertCiphertextAtRest(personalPaths.databasePath);
+        rewindProtectedSearchMigration(personalPaths.databasePath);
+        const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
+        await assertPersistedPersonalSecret(migrated.origin);
+        await stopRuntime(migrated.child);
         assertCiphertextAtRest(personalPaths.databasePath);
         await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
 

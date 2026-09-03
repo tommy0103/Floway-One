@@ -1,19 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { test } from 'vitest';
 
-import { applyMigrations, type ProtectedMigrationTransitions } from '../src/migrate.ts';
+import { applyMigrations } from '../src/migrate.ts';
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import {
-  SqlRepo,
-  UPSTREAM_CONFIG_STORED_SECRET_FIELD,
-  UPSTREAM_STATE_STORED_SECRET_FIELD,
+  PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION,
   upstreamConfigSecretContext,
-  upstreamStateSecretContext,
   WEB_SEARCH_STORED_SECRET_FIELDS,
 } from '@floway-dev/gateway';
+import { migrationsDir } from '@floway-dev/gateway/migrations-dir';
 import { createAes256GcmStoredSecretCodec, type StoredSecretCodec } from '@floway-dev/platform';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
@@ -95,235 +94,146 @@ test('skips already-applied migrations on partial state', () => withTemp(async d
   assertEquals(recorded.results.map(r => r.name), ['0001_a.sql', '0002_b.sql', '0003_c.sql']);
 }));
 
-test('personal encrypted upstream documents decrypt, migrate, and re-encrypt atomically', () => withTemp(async dir => {
-  const db = createNodeSqliteDatabase(join(dir, 'encrypted-upgrade.db'));
-  await applyMigrations(db);
-  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(7));
-  const id = 'up_encrypted_upgrade';
-  const config = await codec.seal(
-    '{"apiKey":"upgrade-secret","legacy":true}',
-    upstreamConfigSecretContext(id),
-  );
-  const state = await codec.seal(
-    '{"obsolete":"remove-me","refreshToken":"upgrade-refresh"}',
-    upstreamStateSecretContext(id),
-  );
-  await db.prepare(
-    `INSERT INTO upstreams (id, provider, name, created_at, updated_at, config_json, state_json, flag_overrides, hue)
-     VALUES (?, 'custom', 'Encrypted upgrade', '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z', ?, ?, '{}', 210)`,
-  ).bind(id, config, state).run();
+const legacySearchColumns = {
+  tavily: 'tavily_api_key',
+  'microsoft-web-iq': 'microsoft_web_iq_api_key',
+  jina: 'jina_api_key',
+} as const;
 
-  const migrationsDir = join(dir, 'encrypted-migrations');
-  await mkdir(migrationsDir);
-  await writeFile(join(migrationsDir, '9000_encrypted_documents.sql'), `
-    UPDATE upstreams
-    SET config_json = json_set(config_json, '$.migrated', json('true')),
-        state_json = json_remove(state_json, '$.obsolete')
-    WHERE id = '${id}';
-  `);
-
-  await applyMigrations(db, migrationsDir, codec);
-
-  const row = await db.prepare('SELECT config_json, state_json FROM upstreams WHERE id = ?')
-    .bind(id)
-    .first<{ config_json: string; state_json: string }>();
-  assert(row !== null);
-  assertEquals(row.config_json.includes('upgrade-secret'), false);
-  assertEquals(row.state_json.includes('upgrade-refresh'), false);
-  assertEquals(JSON.parse(await codec.open(row.config_json, upstreamConfigSecretContext(id))), {
-    apiKey: 'upgrade-secret',
-    legacy: true,
-    migrated: true,
-  });
-  assertEquals(JSON.parse(await codec.open(row.state_json, upstreamStateSecretContext(id))), {
-    refreshToken: 'upgrade-refresh',
-  });
-}));
-
-test('personal encrypted web-search secrets migrate as plaintext and remain readable ciphertext', () => withTemp(async dir => {
-  const db = createNodeSqliteDatabase(join(dir, 'encrypted-search-upgrade.db'));
-  await applyMigrations(db);
-  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(8));
-  const repo = new SqlRepo(db, { storedSecrets: codec });
-  await repo.webSearchConfig.save({
-    provider: 'tavily',
-    tavily: { apiKey: 'tavily-upgrade-secret' },
-    microsoftWebIq: { apiKey: 'microsoft-upgrade-secret' },
-    jina: { apiKey: 'jina-upgrade-secret' },
-    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
-  });
-
-  const migrationsDir = join(dir, 'encrypted-search-migrations');
-  await mkdir(migrationsDir);
-  await writeFile(join(migrationsDir, '9001_encrypted_search.sql'), `
-    UPDATE search_config
-    SET tavily_api_key = tavily_api_key || '-migrated',
-        microsoft_web_iq_api_key = microsoft_web_iq_api_key || '-migrated',
-        jina_api_key = jina_api_key || '-migrated'
-    WHERE id = 1;
-  `);
-
-  await applyMigrations(db, migrationsDir, codec);
-
-  const raw = await db.prepare(`SELECT ${WEB_SEARCH_STORED_SECRET_FIELDS.map(field => field.column).join(', ')} FROM search_config WHERE id = 1`)
-    .first<Record<(typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number]['column'], string>>();
-  assert(raw !== null);
-  for (const field of WEB_SEARCH_STORED_SECRET_FIELDS) {
-    assertEquals(raw[field.column].includes('upgrade-secret'), false);
-  }
-  const readable = await repo.webSearchConfig.get() as {
-    tavily: { apiKey: string };
-    microsoftWebIq: { apiKey: string };
-    jina: { apiKey: string };
-  };
-  assertEquals(readable.tavily.apiKey, 'tavily-upgrade-secret-migrated');
-  assertEquals(readable.microsoftWebIq.apiKey, 'microsoft-upgrade-secret-migrated');
-  assertEquals(readable.jina.apiKey, 'jina-upgrade-secret-migrated');
-}));
-
-test('personal protected migrations restore ciphertext after rebuilding tables and renaming columns', () => withTemp(async dir => {
-  const db = createNodeSqliteDatabase(join(dir, 'protected-schema-transition.db'));
-  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(9));
-  const upstreamId = 'up_schema_transition';
+const prepareProtectedMigration = async (
+  dir: string,
+  journalMode: 'DELETE' | 'WAL',
+  sentinel: string,
+): Promise<{
+  codec: StoredSecretCodec;
+  databasePath: string;
+  db: ReturnType<typeof createNodeSqliteDatabase>;
+  migrationDir: string;
+  originalCiphertexts: readonly string[];
+}> => {
+  const databasePath = join(dir, `protected-${journalMode.toLowerCase()}.db`);
+  const db = createNodeSqliteDatabase(databasePath);
+  await db.exec(`PRAGMA journal_mode = ${journalMode};`);
   await db.exec(`
     CREATE TABLE upstreams (id TEXT PRIMARY KEY, config_json TEXT NOT NULL, state_json TEXT NULL);
     CREATE TABLE search_config (
-      id INTEGER PRIMARY KEY,
-      tavily_api_key TEXT NOT NULL,
-      microsoft_web_iq_api_key TEXT NOT NULL,
-      jina_api_key TEXT NOT NULL
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      provider TEXT NOT NULL,
+      tavily_api_key TEXT NOT NULL DEFAULT '',
+      microsoft_web_iq_api_key TEXT NOT NULL DEFAULT '',
+      jina_api_key TEXT NOT NULL DEFAULT '',
+      passthrough_openai_search INTEGER NOT NULL DEFAULT 0,
+      alpha_search_upstream_id TEXT NOT NULL DEFAULT '',
+      alpha_search_model TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
     );
   `);
-  const configCiphertext = await codec.seal('{"apiKey":"transition-config"}', upstreamConfigSecretContext(upstreamId));
-  const stateCiphertext = await codec.seal('{"refreshToken":"transition-state"}', upstreamStateSecretContext(upstreamId));
+  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(11));
+  const upstreamCiphertext = await codec.seal('{"apiKey":"upstream-ciphertext-only"}', upstreamConfigSecretContext('up_raw_scan'));
+  await db.prepare('INSERT INTO upstreams VALUES (?, ?, NULL)').bind('up_raw_scan', upstreamCiphertext).run();
   const searchCiphertexts = await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(field =>
-    codec.seal(`${field.provider}-transition-secret`, field.context)));
-  await db.prepare('INSERT INTO upstreams (id, config_json, state_json) VALUES (?, ?, ?)')
-    .bind(upstreamId, configCiphertext, stateCiphertext)
-    .run();
-  await db.prepare('INSERT INTO search_config (id, tavily_api_key, microsoft_web_iq_api_key, jina_api_key) VALUES (1, ?, ?, ?)')
-    .bind(...searchCiphertexts)
-    .run();
-
-  const migrationsDir = join(dir, 'protected-schema-migrations');
-  await mkdir(migrationsDir);
-  const migrationName = '9002_rebuild_protected_storage.sql';
-  await writeFile(join(migrationsDir, migrationName), `
-    CREATE TABLE protected_upstreams (
-      upstream_key TEXT PRIMARY KEY,
-      protected_config TEXT NOT NULL,
-      protected_state TEXT NULL
-    );
-    INSERT INTO protected_upstreams SELECT id, config_json, state_json FROM upstreams;
-    DROP TABLE upstreams;
-    CREATE TABLE protected_search_config (
-      config_key INTEGER PRIMARY KEY,
-      protected_tavily TEXT NOT NULL,
-      protected_microsoft TEXT NOT NULL,
-      protected_jina TEXT NOT NULL
-    );
-    INSERT INTO protected_search_config
-      SELECT id, tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config;
-    DROP TABLE search_config;
-  `);
-  const protectedSearchColumns = {
-    tavily: 'protected_tavily',
-    'microsoft-web-iq': 'protected_microsoft',
-    jina: 'protected_jina',
-  } as const;
-  const transitions: ProtectedMigrationTransitions = {
-    [migrationName]: [
-      {
-        field: UPSTREAM_CONFIG_STORED_SECRET_FIELD,
-        after: { table: 'protected_upstreams', identityColumn: 'upstream_key', column: 'protected_config' },
-      },
-      {
-        field: UPSTREAM_STATE_STORED_SECRET_FIELD,
-        after: { table: 'protected_upstreams', identityColumn: 'upstream_key', column: 'protected_state' },
-      },
-      ...WEB_SEARCH_STORED_SECRET_FIELDS.map(field => ({
-        field,
-        after: {
-          table: 'protected_search_config',
-          identityColumn: 'config_key',
-          column: protectedSearchColumns[field.provider],
-        },
-      })),
-    ],
-  };
-
-  await applyMigrations(db, migrationsDir, codec, transitions);
-
-  const upstream = await db.prepare('SELECT upstream_key, protected_config, protected_state FROM protected_upstreams')
-    .first<{ upstream_key: string; protected_config: string; protected_state: string }>();
-  assert(upstream !== null);
-  assertEquals(upstream.protected_config.includes('transition-config'), false);
-  assertEquals(upstream.protected_state.includes('transition-state'), false);
-  assertEquals(
-    await codec.open(upstream.protected_config, upstreamConfigSecretContext(upstream.upstream_key)),
-    '{"apiKey":"transition-config"}',
-  );
-  assertEquals(
-    await codec.open(upstream.protected_state, upstreamStateSecretContext(upstream.upstream_key)),
-    '{"refreshToken":"transition-state"}',
-  );
-  const search = await db.prepare('SELECT config_key, protected_tavily, protected_microsoft, protected_jina FROM protected_search_config')
-    .first<{ config_key: number; protected_tavily: string; protected_microsoft: string; protected_jina: string }>();
-  assert(search !== null);
-  for (const field of WEB_SEARCH_STORED_SECRET_FIELDS) {
-    const column = protectedSearchColumns[field.provider];
-    assertEquals(search[column].includes('transition-secret'), false);
-    assertEquals(await codec.open(search[column], field.context), `${field.provider}-transition-secret`);
-  }
-}));
-
-test('personal encrypted migration preserves a re-encryption cause and rolls back SQL data and schema', () => withTemp(async dir => {
-  const db = createNodeSqliteDatabase(join(dir, 'encrypted-failure.db'));
-  await applyMigrations(db);
-  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(10));
-  const id = 'up_encrypted_failure';
-  const stored = await codec.seal('{"apiKey":"rollback-secret"}', upstreamConfigSecretContext(id));
+    codec.seal(`${sentinel}-${field.provider}`, field.context)));
   await db.prepare(
-    `INSERT INTO upstreams (id, provider, name, created_at, updated_at, config_json, flag_overrides, hue)
-     VALUES (?, 'custom', 'Encrypted failure', '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z', ?, '{}', 210)`,
-  ).bind(id, stored).run();
-  await db.exec("CREATE TABLE migration_probe (value TEXT NOT NULL); INSERT INTO migration_probe VALUES ('before');");
+    `INSERT INTO search_config
+     (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, updated_at)
+     VALUES (1, 'tavily', ?, ?, ?, '2026-09-03T00:00:00.000Z')`,
+  ).bind(...searchCiphertexts).run();
+  const migrationDir = join(dir, 'migrations');
+  await mkdir(migrationDir);
+  await copyFile(
+    join(fileURLToPath(migrationsDir), PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION),
+    join(migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION),
+  );
+  return { codec, databasePath, db, migrationDir, originalCiphertexts: searchCiphertexts };
+};
 
-  const migrationsDir = join(dir, 'failing-encrypted-migrations');
-  await mkdir(migrationsDir);
-  const migrationName = '9003_reencrypt_failure.sql';
-  await writeFile(join(migrationsDir, migrationName), `
-    ALTER TABLE migration_probe ADD COLUMN added_by_migration TEXT DEFAULT 'added';
-    UPDATE migration_probe SET value = 'after';
-    UPDATE upstreams SET config_json = json_set(config_json, '$.migrated', json('true')) WHERE id = '${id}';
-  `);
-  const reEncryptionCause = new Error('re-encryption boundary sentinel');
-  let sealAttempts = 0;
-  const failingCodec: StoredSecretCodec = {
-    open: (value, context) => codec.open(value, context),
-    seal: async () => {
-      sealAttempts++;
-      throw reEncryptionCause;
-    },
-  };
+const assertPlaintextAbsentFromSqliteFiles = async (databasePath: string, sentinel: string): Promise<void> => {
+  const needle = Buffer.from(sentinel);
+  for (const path of [databasePath, `${databasePath}-journal`, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    try {
+      assertEquals(Buffer.from(await readFile(path)).includes(needle), false, `${path} contains migration plaintext`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+};
+
+for (const journalMode of ['DELETE', 'WAL'] as const) {
+  test(`personal ${journalMode} migration keeps opened values out of every SQLite file`, () => withTemp(async dir => {
+    const sentinel = `raw-migration-sentinel-${journalMode.toLowerCase()}`;
+    const setup = await prepareProtectedMigration(dir, journalMode, sentinel);
+    const inspectingCodec: StoredSecretCodec = {
+      open: (value, context) => setup.codec.open(value, context),
+      seal: async (value, context) => {
+        await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+        return await setup.codec.seal(value, context);
+      },
+    };
+
+    await applyMigrations(setup.db, setup.migrationDir, inspectingCodec);
+    await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+
+    const row = await setup.db.prepare(
+      `SELECT ${WEB_SEARCH_STORED_SECRET_FIELDS.map(field => field.column).join(', ')} FROM search_config WHERE id = 1`,
+    ).first<Record<(typeof WEB_SEARCH_STORED_SECRET_FIELDS)[number]['column'], string>>();
+    assert(row !== null);
+    for (const field of WEB_SEARCH_STORED_SECRET_FIELDS) {
+      assertEquals(row[field.column].includes(sentinel), false);
+      assertEquals(await setup.codec.open(row[field.column], field.context), `${sentinel}-${field.provider}`);
+    }
+  }));
+
+  test(`personal ${journalMode} seal failure rolls back without persisting opened values`, () => withTemp(async dir => {
+    const sentinel = `raw-rollback-sentinel-${journalMode.toLowerCase()}`;
+    const setup = await prepareProtectedMigration(dir, journalMode, sentinel);
+    const sealCause = new Error(`${journalMode} post-SQL seal failure`);
+    const failingCodec: StoredSecretCodec = {
+      open: (value, context) => setup.codec.open(value, context),
+      seal: async () => {
+        await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+        throw sealCause;
+      },
+    };
+
+    const error = await assertRejects(() => applyMigrations(setup.db, setup.migrationDir, failingCodec));
+    assert(error === sealCause);
+    await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
+    const oldColumns = await setup.db.prepare('PRAGMA table_info(search_config)').all<{ name: string }>();
+    assertEquals(oldColumns.results.some(column => column.name === 'tavily_api_key'), true);
+    assertEquals(oldColumns.results.some(column => column.name === 'protected_tavily_api_key'), false);
+    const oldRow = await setup.db.prepare(
+      'SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config WHERE id = 1',
+    ).first<{ tavily_api_key: string; microsoft_web_iq_api_key: string; jina_api_key: string }>();
+    assert(oldRow !== null);
+    assertEquals(
+      WEB_SEARCH_STORED_SECRET_FIELDS.map(field => oldRow[legacySearchColumns[field.provider]]),
+      setup.originalCiphertexts,
+    );
+    assertEquals(
+      await setup.db.prepare('SELECT name FROM _migrations WHERE name = ?')
+        .bind(PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION)
+        .first(),
+      null,
+    );
+  }));
+}
+
+test('personal migration rejects protected SQL without a checked-in plan and preserves its cause', () => withTemp(async dir => {
+  const sentinel = 'missing-plan-sentinel';
+  const setup = await prepareProtectedMigration(dir, 'DELETE', sentinel);
+  await rm(join(setup.migrationDir, PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION));
+  const migrationName = '9000_unplanned_protected_change.sql';
+  await writeFile(
+    join(setup.migrationDir, migrationName),
+    "UPDATE search_config SET tavily_api_key = tavily_api_key || '-unsafe';",
+  );
 
   const error = await assertRejects(
-    () => applyMigrations(db, migrationsDir, failingCodec),
+    () => applyMigrations(setup.db, setup.migrationDir, setup.codec),
+    Error,
+    `Floway One could not plan protected migration ${migrationName}`,
   );
-  assert(error === reEncryptionCause);
-  assertEquals(sealAttempts, 1);
-  assertEquals(
-    (await db.prepare('SELECT config_json FROM upstreams WHERE id = ?').bind(id).first<{ config_json: string }>())?.config_json,
-    stored,
-  );
-  assertEquals(
-    await db.prepare('SELECT value FROM migration_probe').first<{ value: string }>(),
-    { value: 'before' },
-  );
-  const probeColumns = await db.prepare('PRAGMA table_info(migration_probe)').all<{ name: string }>();
-  assertEquals(probeColumns.results.map(column => column.name), ['value']);
-  assertEquals(
-    await db.prepare('SELECT name FROM _migrations WHERE name = ?').bind(migrationName).first(),
-    null,
-  );
+  assert(error.cause instanceof Error);
+  assertEquals((error.cause as Error).message, `Missing checked-in protected migration plan for ${migrationName}`);
+  await assertPlaintextAbsentFromSqliteFiles(setup.databasePath, sentinel);
 }));

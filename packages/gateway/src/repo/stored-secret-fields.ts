@@ -38,15 +38,18 @@ export const UPSTREAM_STATE_STORED_SECRET_FIELD = Object.freeze({
 } satisfies ProtectedStoredSecretField);
 
 type WebSearchSecretConfigKey = 'jina' | 'microsoftWebIq' | 'tavily';
-type WebSearchSecretColumn = 'jina_api_key' | 'microsoft_web_iq_api_key' | 'tavily_api_key';
+type WebSearchSecretColumn =
+  | 'protected_jina_api_key'
+  | 'protected_microsoft_web_iq_api_key'
+  | 'protected_tavily_api_key';
 
 const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSecretContext =>
   `web-search:${provider}:api-key` as StoredSecretContext;
 
 const WEB_SEARCH_STORED_SECRET_FIELD_BY_PROVIDER = {
-  tavily: { column: 'tavily_api_key', configKey: 'tavily' },
-  'microsoft-web-iq': { column: 'microsoft_web_iq_api_key', configKey: 'microsoftWebIq' },
-  jina: { column: 'jina_api_key', configKey: 'jina' },
+  tavily: { column: 'protected_tavily_api_key', configKey: 'tavily' },
+  'microsoft-web-iq': { column: 'protected_microsoft_web_iq_api_key', configKey: 'microsoftWebIq' },
+  jina: { column: 'protected_jina_api_key', configKey: 'jina' },
 } as const satisfies Record<WebSearchProviderName, {
   readonly column: WebSearchSecretColumn;
   readonly configKey: WebSearchSecretConfigKey;

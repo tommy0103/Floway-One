@@ -73,11 +73,11 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     process.exit(1);
   }
 
-  const hasExistingUpstreamSchema = profile === 'personal'
-    && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'upstreams'")
+  const hasExistingMigrationState = profile === 'personal'
+    && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'")
       .first<{ name: string }>() !== null;
   let storedSecrets;
-  if (hasExistingUpstreamSchema) {
+  if (hasExistingMigrationState) {
     storedSecrets = await createNodeStoredSecretCodec(
       'personal',
       db,

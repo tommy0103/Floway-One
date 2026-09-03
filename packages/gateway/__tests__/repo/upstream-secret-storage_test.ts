@@ -140,14 +140,14 @@ test('personal repository encrypts every non-empty web search provider API key',
 
   await repo.webSearchConfig.save(config);
   const row = await db
-    .prepare('SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config WHERE id = 1')
-    .first<{ tavily_api_key: string; microsoft_web_iq_api_key: string; jina_api_key: string }>();
+    .prepare('SELECT protected_tavily_api_key, protected_microsoft_web_iq_api_key, protected_jina_api_key FROM search_config WHERE id = 1')
+    .first<{ protected_tavily_api_key: string; protected_microsoft_web_iq_api_key: string; protected_jina_api_key: string }>();
   if (row === null) throw new Error('Expected web search configuration row');
 
-  assertEquals(row.tavily_api_key.includes('tavily-provider-secret'), false);
-  assertEquals(row.microsoft_web_iq_api_key.includes('microsoft-provider-secret'), false);
-  assertEquals(row.jina_api_key.includes('jina-provider-secret'), false);
-  const envelope = JSON.parse(row.tavily_api_key) as { $flowayEncrypted: { version: number } };
+  assertEquals(row.protected_tavily_api_key.includes('tavily-provider-secret'), false);
+  assertEquals(row.protected_microsoft_web_iq_api_key.includes('microsoft-provider-secret'), false);
+  assertEquals(row.protected_jina_api_key.includes('jina-provider-secret'), false);
+  const envelope = JSON.parse(row.protected_tavily_api_key) as { $flowayEncrypted: { version: number } };
   assertEquals(envelope.$flowayEncrypted.version, 1);
   assertEquals(await repo.webSearchConfig.get(), config);
 });
