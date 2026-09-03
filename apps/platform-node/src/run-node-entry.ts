@@ -17,6 +17,7 @@ import {
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
   SqlRepo,
+  validateStoredSecrets,
 } from '@floway-dev/gateway';
 import { getEnvOptional } from '@floway-dev/platform';
 
@@ -72,9 +73,25 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     process.exit(1);
   }
 
-  await applyMigrations(db);
+  const hasExistingUpstreamSchema = profile === 'personal'
+    && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'upstreams'")
+      .first<{ name: string }>() !== null;
+  let storedSecrets;
+  if (hasExistingUpstreamSchema) {
+    storedSecrets = await createNodeStoredSecretCodec(
+      'personal',
+      db,
+      deviceMasterKeyCreationLock,
+      undefined,
+      { validate: false },
+    );
+    await applyMigrations(db, undefined, storedSecrets);
+    await validateStoredSecrets(db, storedSecrets);
+  } else {
+    await applyMigrations(db);
+    storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
+  }
   if (personalPaths !== undefined) personalStorage?.hardenSqliteFiles(personalPaths.databasePath);
-  const storedSecrets = await createNodeStoredSecretCodec(profile, db, deviceMasterKeyCreationLock);
   initRepo(new SqlRepo(db, { storedSecrets }));
 
   startScheduledMaintenance();

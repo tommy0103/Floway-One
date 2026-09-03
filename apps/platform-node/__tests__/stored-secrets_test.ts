@@ -26,6 +26,17 @@ const databaseWithStoredState = (hasUpstreams: boolean, hasSearchCredentials = f
       throw new Error(`Unexpected query: ${query}`);
     },
     all: <T>() => {
+      if (query === 'PRAGMA table_info(search_config)') {
+        return Promise.resolve({
+          results: [
+            { name: 'tavily_api_key' },
+            { name: 'microsoft_web_iq_api_key' },
+            { name: 'jina_api_key' },
+          ] as T[],
+          success: true,
+          meta: {},
+        });
+      }
       if (query === 'SELECT id, config_json, state_json FROM upstreams'
         || query === 'SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config') {
         return Promise.resolve({ results: [] as T[], success: true, meta: {} });

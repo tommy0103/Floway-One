@@ -67,7 +67,7 @@ import { usageMetricRows } from './usage-metrics.ts';
 import { querySqlUsageOverview } from './usage-overview-sql.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../shared/performance-histogram.ts';
 import { parseServerSecret } from '../shared/server-secret.ts';
-import { assertWebSearchProviderName, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
+import { assertWebSearchProviderName, WEB_SEARCH_PROVIDER_NAMES, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
 import { plaintextStoredSecretCodec, type SqlBindValue, type SqlDatabase, type SqlPreparedStatement, type StoredSecretCodec, type StoredSecretContext } from '@floway-dev/platform';
 import { addDecimalStrings, canonicalPricingSelectorKey, parseBillingMetric, parseModelKind, parseNonNegativeDecimalString, parsePricingSelectorKey, type AliasSelection, type AnnouncedMetadata } from '@floway-dev/protocols/common';
@@ -823,19 +823,45 @@ const toWebSearchUsageRecord = (row: { provider: string; key_id: string; action:
   };
 };
 
+type WebSearchSecretConfigKey = 'jina' | 'microsoftWebIq' | 'tavily';
+type WebSearchSecretColumn = 'jina_api_key' | 'microsoft_web_iq_api_key' | 'tavily_api_key';
+
+const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSecretContext =>
+  `web-search:${provider}:api-key` as StoredSecretContext;
+
+const WEB_SEARCH_STORED_SECRET_FIELD_BY_PROVIDER = {
+  tavily: { column: 'tavily_api_key', configKey: 'tavily' },
+  'microsoft-web-iq': { column: 'microsoft_web_iq_api_key', configKey: 'microsoftWebIq' },
+  jina: { column: 'jina_api_key', configKey: 'jina' },
+} as const satisfies Record<WebSearchProviderName, {
+  readonly column: WebSearchSecretColumn;
+  readonly configKey: WebSearchSecretConfigKey;
+}>;
+
+export const WEB_SEARCH_STORED_SECRET_FIELDS = Object.freeze(WEB_SEARCH_PROVIDER_NAMES.map(provider => Object.freeze({
+  provider,
+  ...WEB_SEARCH_STORED_SECRET_FIELD_BY_PROVIDER[provider],
+  context: webSearchApiKeySecretContext(provider),
+})));
+
+type WebSearchSecretRow = Record<WebSearchSecretColumn, string>;
+const WEB_SEARCH_SECRET_COLUMNS = WEB_SEARCH_STORED_SECRET_FIELDS.map(field => field.column).join(', ');
+
 class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
   constructor(private db: SqlDatabase, private storedSecrets: StoredSecretCodec) {}
 
   async get(): Promise<unknown | null> {
     const row = await this.db
-      .prepare('SELECT provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM search_config WHERE id = 1')
-      .first<{ provider: string; tavily_api_key: string; microsoft_web_iq_api_key: string; jina_api_key: string; passthrough_openai_search: number; alpha_search_upstream_id: string; alpha_search_model: string }>();
+      .prepare(`SELECT provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model FROM search_config WHERE id = 1`)
+      .first<WebSearchSecretRow & { provider: string; passthrough_openai_search: number; alpha_search_upstream_id: string; alpha_search_model: string }>();
     if (!row) throw new Error('search_config singleton row missing');
+    const protectedConfig = Object.fromEntries(await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(async field => [
+      field.configKey,
+      { apiKey: await this.openApiKey(row[field.column], field.context) },
+    ]))) as Pick<WebSearchConfig, WebSearchSecretConfigKey>;
     return {
       provider: row.provider,
-      tavily: { apiKey: await this.openApiKey(row.tavily_api_key, 'tavily') },
-      microsoftWebIq: { apiKey: await this.openApiKey(row.microsoft_web_iq_api_key, 'microsoft-web-iq') },
-      jina: { apiKey: await this.openApiKey(row.jina_api_key, 'jina') },
+      ...protectedConfig,
       passthroughOpenAiSearch: {
         enabled: row.passthrough_openai_search === 1,
         upstreamId: row.alpha_search_upstream_id,
@@ -845,36 +871,34 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
   }
 
   async save(config: WebSearchConfig): Promise<void> {
-    const { provider, tavily, microsoftWebIq, jina, passthroughOpenAiSearch } = config;
-    const [tavilyApiKey, microsoftWebIqApiKey, jinaApiKey] = await Promise.all([
-      this.sealApiKey(tavily.apiKey, 'tavily'),
-      this.sealApiKey(microsoftWebIq.apiKey, 'microsoft-web-iq'),
-      this.sealApiKey(jina.apiKey, 'jina'),
-    ]);
+    const { provider, passthroughOpenAiSearch } = config;
+    const sealedApiKeys = await Promise.all(WEB_SEARCH_STORED_SECRET_FIELDS.map(field =>
+      this.sealApiKey(config[field.configKey].apiKey, field.context)));
+    const secretUpdates = WEB_SEARCH_STORED_SECRET_FIELDS
+      .map(field => `${field.column} = excluded.${field.column}`)
+      .join(',\n           ');
     await this.db
       .prepare(
-        `INSERT INTO search_config (id, provider, tavily_api_key, microsoft_web_iq_api_key, jina_api_key, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        `INSERT INTO search_config (id, provider, ${WEB_SEARCH_SECRET_COLUMNS}, passthrough_openai_search, alpha_search_upstream_id, alpha_search_model, updated_at)
+         VALUES (1, ?, ${WEB_SEARCH_STORED_SECRET_FIELDS.map(() => '?').join(', ')}, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
          ON CONFLICT (id) DO UPDATE SET
            provider = excluded.provider,
-           tavily_api_key = excluded.tavily_api_key,
-           microsoft_web_iq_api_key = excluded.microsoft_web_iq_api_key,
-           jina_api_key = excluded.jina_api_key,
+           ${secretUpdates},
            passthrough_openai_search = excluded.passthrough_openai_search,
            alpha_search_upstream_id = excluded.alpha_search_upstream_id,
            alpha_search_model = excluded.alpha_search_model,
            updated_at = excluded.updated_at`,
       )
-      .bind(provider, tavilyApiKey, microsoftWebIqApiKey, jinaApiKey, passthroughOpenAiSearch.enabled ? 1 : 0, passthroughOpenAiSearch.upstreamId, passthroughOpenAiSearch.model)
+      .bind(provider, ...sealedApiKeys, passthroughOpenAiSearch.enabled ? 1 : 0, passthroughOpenAiSearch.upstreamId, passthroughOpenAiSearch.model)
       .run();
   }
 
-  private sealApiKey(apiKey: string, provider: WebSearchProviderName): Promise<string> {
-    return apiKey === '' ? Promise.resolve('') : this.storedSecrets.seal(apiKey, webSearchApiKeySecretContext(provider));
+  private sealApiKey(apiKey: string, context: StoredSecretContext): Promise<string> {
+    return apiKey === '' ? Promise.resolve('') : this.storedSecrets.seal(apiKey, context);
   }
 
-  private openApiKey(stored: string, provider: WebSearchProviderName): Promise<string> {
-    return stored === '' ? Promise.resolve('') : this.storedSecrets.open(stored, webSearchApiKeySecretContext(provider));
+  private openApiKey(stored: string, context: StoredSecretContext): Promise<string> {
+    return stored === '' ? Promise.resolve('') : this.storedSecrets.open(stored, context);
   }
 }
 
@@ -885,10 +909,8 @@ class SqlWebSearchConfigRepo implements WebSearchConfigRepo {
 // declaring the row unwritable, not a derived figure.
 export const UPSTREAM_STATE_WRITE_ATTEMPTS = 4;
 
-const webSearchApiKeySecretContext = (provider: WebSearchProviderName): StoredSecretContext =>
-  `web-search:${provider}:api-key` as StoredSecretContext;
-const upstreamConfigSecretContext = (id: string): StoredSecretContext => `upstream:${id}:config` as StoredSecretContext;
-const upstreamStateSecretContext = (id: string): StoredSecretContext => `upstream:${id}:state` as StoredSecretContext;
+export const upstreamConfigSecretContext = (id: string): StoredSecretContext => `upstream:${id}:config` as StoredSecretContext;
+export const upstreamStateSecretContext = (id: string): StoredSecretContext => `upstream:${id}:state` as StoredSecretContext;
 
 export const validateStoredSecrets = async (
   db: SqlDatabase,
@@ -905,17 +927,11 @@ export const validateStoredSecrets = async (
   }
 
   const searchRows = await db
-    .prepare('SELECT tavily_api_key, microsoft_web_iq_api_key, jina_api_key FROM search_config')
-    .all<{ tavily_api_key: string; microsoft_web_iq_api_key: string; jina_api_key: string }>();
+    .prepare(`SELECT ${WEB_SEARCH_SECRET_COLUMNS} FROM search_config`)
+    .all<WebSearchSecretRow>();
   for (const row of searchRows.results) {
-    if (row.tavily_api_key !== '') {
-      await storedSecrets.open(row.tavily_api_key, webSearchApiKeySecretContext('tavily'));
-    }
-    if (row.microsoft_web_iq_api_key !== '') {
-      await storedSecrets.open(row.microsoft_web_iq_api_key, webSearchApiKeySecretContext('microsoft-web-iq'));
-    }
-    if (row.jina_api_key !== '') {
-      await storedSecrets.open(row.jina_api_key, webSearchApiKeySecretContext('jina'));
+    for (const field of WEB_SEARCH_STORED_SECRET_FIELDS) {
+      if (row[field.column] !== '') await storedSecrets.open(row[field.column], field.context);
     }
   }
 };

@@ -112,6 +112,7 @@ const runtimeRoot = await mkdtemp(join(runtimeParent, 'floway-packaged-node-'));
 const packageRoot = resolve(runtimeRoot, 'app');
 const packagedDefaultPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-default-entry-verification.ts');
 const packagedPersonalEntry = resolve(packageRoot, 'apps/platform-node/personal-entry-verification.ts');
+const packagedServerBoundaryEntry = resolve(packageRoot, 'apps/platform-node/server-boundary-verification.ts');
 const children = new Set<ChildProcessByStdio<null, Readable, Readable>>();
 const serviceChildren = new Set<ChildProcess>();
 
@@ -244,10 +245,13 @@ const startRuntime = async (
   profile: 'server' | 'personal',
   extraEnv: NodeJS.ProcessEnv = {},
   personalPaths?: PersonalRuntimePaths,
+  entryPath?: string,
 ): Promise<{ boundHost: string; child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
   const command = profile === 'personal'
     ? [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal']
-    : serverCommand.slice(1);
+    : entryPath === undefined
+      ? serverCommand.slice(1)
+      : [...serverCommand.slice(1, -1), entryPath, '--profile=server'];
   if (profile === 'personal' && personalPaths === undefined) fail('personal packaged runtime requires explicit verification paths');
   const child = spawn(serverCommand[0]!, command, {
     cwd: packageRoot,
@@ -272,7 +276,10 @@ const startRuntime = async (
   child.stderr.on('data', chunk => { combinedOutput += chunk; });
 
   const ready = await new Promise<{ host: string; port: number }>((resolveReady, rejectReady) => {
-    const timeout = setTimeout(() => rejectReady(new Error(`${profile} startup timed out\n${combinedOutput}`)), 30_000);
+    const timeout = setTimeout(
+      () => rejectReady(new Error(`${profile} startup timed out\n${combinedOutput}`)),
+      process.platform === 'win32' && profile === 'personal' ? 120_000 : 30_000,
+    );
     const inspect = () => {
       const match = /Floway listening on http:\/\/([^:]+):(\d+)/.exec(combinedOutput);
       if (match === null) return;
@@ -445,9 +452,7 @@ const assertPersonalStartupFailure = async (
   });
 };
 
-const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
-  if (process.platform !== 'win32') return;
-
+const readWindowsRoamingAppData = async (): Promise<string> => {
   const { stdout } = await execFileAsync('powershell.exe', [
     '-NoLogo',
     '-NoProfile',
@@ -457,22 +462,90 @@ const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
   ], { encoding: 'utf8' });
   const roamingAppData = stdout.trim();
   if (!isAbsolute(roamingAppData)) fail(`Windows returned a non-absolute Roaming AppData Known Folder: ${roamingAppData}`);
+  return roamingAppData;
+};
 
-  const dataDir = join(roamingAppData, 'Floway One');
-  await assertPersonalStartupFailure(
-    'windows-default-personal-paths',
-    undefined,
-    {
-      APPDATA: 'Y:\\hostile-appdata',
-      HOME: 'Z:\\hostile-home',
-    },
-    [
-      'Floway packaged default entry stopped after path resolution',
-      `data directory: ${dataDir}`,
-      `credential lock: ${join(dataDir, 'credential-lock', 'device-master-key-v1.creation-lock.db')}`,
-    ],
-    packagedDefaultPersonalEntry,
-  );
+const setWindowsRoamingAppData = async (path: string): Promise<void> => {
+  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowayKnownFolderRedirect {
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  public static extern int SHSetKnownFolderPath(ref Guid rfid, uint flags, IntPtr token, string path);
+}
+'@
+$FolderId = [Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D'
+$Path = [Environment]::GetEnvironmentVariable('FLOWAY_REDIRECTED_KNOWN_FOLDER')
+$HResult = [FlowayKnownFolderRedirect]::SHSetKnownFolderPath([ref]$FolderId, 0, [IntPtr]::Zero, $Path)
+if ($HResult -ne 0) { [Runtime.InteropServices.Marshal]::ThrowExceptionForHR($HResult) }
+`], {
+    env: { ...process.env, FLOWAY_REDIRECTED_KNOWN_FOLDER: path },
+  });
+};
+
+const assertWindowsDefaultPersonalEntry = async (): Promise<void> => {
+  if (process.platform !== 'win32') return;
+
+  const originalRoamingAppData = await readWindowsRoamingAppData();
+  const redirectedRoamingAppData = resolve(runtimeRoot, 'redirected-roaming-app-data');
+  await mkdir(redirectedRoamingAppData, { recursive: true });
+  try {
+    await setWindowsRoamingAppData(redirectedRoamingAppData);
+    const observedRedirect = await readWindowsRoamingAppData();
+    if (observedRedirect.toLowerCase() !== redirectedRoamingAppData.toLowerCase()) {
+      fail(`Windows ignored Roaming AppData redirection: ${observedRedirect}`);
+    }
+
+    const dataDir = join(redirectedRoamingAppData, 'Floway One');
+    await assertPersonalStartupFailure(
+      'windows-default-personal-paths',
+      undefined,
+      {
+        APPDATA: 'Y:\\hostile-appdata',
+        HOME: 'Z:\\hostile-home',
+      },
+      [
+        'Floway packaged default entry stopped after path resolution',
+        `data directory: ${dataDir}`,
+        `credential lock: ${join(dataDir, 'credential-lock', 'device-master-key-v1.creation-lock.db')}`,
+      ],
+      packagedDefaultPersonalEntry,
+    );
+  } finally {
+    await setWindowsRoamingAppData(originalRoamingAppData);
+  }
+  if ((await readWindowsRoamingAppData()).toLowerCase() !== originalRoamingAppData.toLowerCase()) {
+    fail('Windows Roaming AppData Known Folder was not restored');
+  }
+};
+
+const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
+  if (process.platform !== 'win32') return;
+
+  const personalRuntimePath = resolve(packageRoot, 'apps/platform-node/src/personal-runtime.ts');
+  const originalSource = await readFile(personalRuntimePath, 'utf8');
+  const roamingAppDataFolderId = '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D';
+  if (!originalSource.includes(roamingAppDataFolderId)) fail('packaged personal runtime has no Roaming AppData Known Folder ID');
+  try {
+    await writeFile(personalRuntimePath, originalSource.replaceAll(
+      roamingAppDataFolderId,
+      '00000000-0000-0000-0000-000000000000',
+    ));
+    await assertPersonalStartupFailure(
+      'windows-known-folder-hresult',
+      undefined,
+      {},
+      [
+        'Floway One could not resolve the Windows Roaming AppData Known Folder',
+        '0x80070057',
+      ],
+      packagedDefaultPersonalEntry,
+    );
+  } finally {
+    await writeFile(personalRuntimePath, originalSource);
+  }
 };
 
 const withUnavailablePackagedKeyring = async (
@@ -687,6 +760,18 @@ if ($Acl.AreAccessRulesProtected -ne $ExpectedProtected -or ($ExpectedCurrentOwn
   });
 };
 
+const setWindowsOwnerToAdministrators = async (target: string): Promise<void> => {
+  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', String.raw`
+$ErrorActionPreference = 'Stop'
+$Target = [Environment]::GetEnvironmentVariable('FLOWAY_ACL_OWNER_TARGET')
+$Acl = [System.IO.File]::GetAccessControl($Target)
+$Acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+[System.IO.File]::SetAccessControl($Target, $Acl)
+`], {
+    env: { ...process.env, FLOWAY_ACL_OWNER_TARGET: target },
+  });
+};
+
 const assertPrivatePersonalStorage = async (
   paths: PersonalRuntimePaths,
   contentPath: string,
@@ -715,11 +800,12 @@ const assertPrivatePersonalStorage = async (
   try {
     database.exec('PRAGMA journal_mode = DELETE; CREATE TABLE acl_probe (value INTEGER)');
     hardener.hardenSqliteFiles(verificationDatabasePath);
-    for (const [value, expectedAfterHardening] of [[1, 'protected-file'], [2, 'inherited-file']] as const) {
+    for (const value of [1, 2]) {
       database.exec(`BEGIN IMMEDIATE; INSERT INTO acl_probe VALUES (${value})`);
+      if (value === 2) await setWindowsOwnerToAdministrators(journalPath);
       await assertWindowsOwnerOnlyAcl(journalPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(journalPath, expectedAfterHardening);
+      await assertWindowsOwnerOnlyAcl(journalPath, 'protected-file');
       database.exec('ROLLBACK');
     }
   } finally {
@@ -728,15 +814,19 @@ const assertPrivatePersonalStorage = async (
 
   const walPath = `${verificationDatabasePath}-wal`;
   const shmPath = `${verificationDatabasePath}-shm`;
-  for (const [value, expectedAfterHardening] of [[3, 'protected-file'], [4, 'inherited-file']] as const) {
+  for (const value of [3, 4]) {
     database = new DatabaseSync(verificationDatabasePath);
     try {
       database.exec(`PRAGMA journal_mode = WAL; INSERT INTO acl_probe VALUES (${value})`);
+      if (value === 4) {
+        await setWindowsOwnerToAdministrators(walPath);
+        await setWindowsOwnerToAdministrators(shmPath);
+      }
       await assertWindowsOwnerOnlyAcl(walPath, 'inherited-file');
       await assertWindowsOwnerOnlyAcl(shmPath, 'inherited-file');
       hardener.hardenSqliteFiles(verificationDatabasePath);
-      await assertWindowsOwnerOnlyAcl(walPath, expectedAfterHardening);
-      await assertWindowsOwnerOnlyAcl(shmPath, expectedAfterHardening);
+      await assertWindowsOwnerOnlyAcl(walPath, 'protected-file');
+      await assertWindowsOwnerOnlyAcl(shmPath, 'protected-file');
     } finally {
       database.close();
     }
@@ -772,6 +862,16 @@ await runNodeEntry({
   },
 });
 `);
+    await writeFile(packagedServerBoundaryEntry, `
+import { bootstrapNodePlatform } from './src/bootstrap.ts';
+import { runNodeEntry } from './src/run-node-entry.ts';
+await runNodeEntry({
+  resolvePersonalRuntimePaths: () => { throw new Error('server touched personal path resolver'); },
+  bootstrapNodePlatform: options => bootstrapNodePlatform(options, {
+    createDeviceMasterKeyCreationLock: () => { throw new Error('server constructed personal device-key lock'); },
+  }),
+});
+`);
 
     await Promise.all([
       access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
@@ -787,12 +887,19 @@ await runNodeEntry({
     }
 
     await withUnavailablePackagedKeyring('server native keyring loader unavailable sentinel', async () => {
-      const server = await startRuntime(resolve(runtimeRoot, 'server.db'), 'server');
+      const server = await startRuntime(
+        resolve(runtimeRoot, 'server.db'),
+        'server',
+        {},
+        undefined,
+        packagedServerBoundaryEntry,
+      );
       await assertServerSurface(server.origin);
       await stopRuntime(server.child);
     });
 
     await assertWindowsDefaultPersonalEntry();
+    await assertWindowsKnownFolderHresultFailure();
 
     const systemStoreAvailable = await exerciseIsolatedCredentialStore();
     if (systemStoreAvailable) {

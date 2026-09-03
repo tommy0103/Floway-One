@@ -104,7 +104,7 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   private readonly applyWindowsAcl: (path: string, kind: WindowsAclKind) => void;
   private readonly hardenedWindowsPaths = new Map<string, string>();
   private readonly verifiedWindowsInheritableDirectories = new Set<string>();
-  private readonly verifiedWindowsSqlitePaths = new Set<string>();
+  private readonly verifiedWindowsSqlitePaths = new Map<string, string>();
 
   constructor(
     private readonly paths: PersonalRuntimePaths,
@@ -161,15 +161,17 @@ export class PersonalStorageHardener implements PrivateStoragePermissions {
   hardenSqliteFiles(databasePath: string): void {
     for (const path of sqliteFiles(databasePath)) {
       if (!existsSync(path)) continue;
+      const identity = this.fileIdentity(lstatSync(path));
       // A parent directory whose exact one-user inheritance flags were
-      // verified makes every recreated SQLite auxiliary private immediately.
-      // Cache the pathname only under that verified parent; stable files also
-      // retain their directly verified protected ACL.
+      // verified keeps a newly-created auxiliary private until this call
+      // assigns the current-user owner. Cache only this file incarnation.
       if (this.platform === 'win32'
         && this.verifiedWindowsInheritableDirectories.has(dirname(path))
-        && this.verifiedWindowsSqlitePaths.has(path)) continue;
+        && this.verifiedWindowsSqlitePaths.get(path) === identity) continue;
       this.hardenFile(path);
-      if (this.platform === 'win32') this.verifiedWindowsSqlitePaths.add(path);
+      if (this.platform === 'win32') {
+        this.verifiedWindowsSqlitePaths.set(path, this.fileIdentity(lstatSync(path)));
+      }
     }
   }
 

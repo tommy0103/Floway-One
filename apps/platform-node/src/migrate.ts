@@ -2,8 +2,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { upstreamConfigSecretContext, upstreamStateSecretContext } from '@floway-dev/gateway';
 import { migrationsDir } from '@floway-dev/gateway/migrations-dir';
-import type { SqlDatabase } from '@floway-dev/platform';
+import type { SqlDatabase, StoredSecretCodec } from '@floway-dev/platform';
 
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(migrationsDir);
 
@@ -22,7 +23,29 @@ const DEFAULT_MIGRATIONS_DIR = fileURLToPath(migrationsDir);
 // We bracket each file with our own BEGIN/COMMIT so a mid-file failure rolls
 // the whole file back; without that bracket, the partial DDL from earlier
 // statements would persist after a later one threw.
-export const applyMigrations = async (db: SqlDatabase, dir: string = DEFAULT_MIGRATIONS_DIR): Promise<void> => {
+const rewriteProtectedUpstreamDocuments = async (
+  db: SqlDatabase,
+  storedSecrets: StoredSecretCodec,
+  operation: 'open' | 'seal',
+): Promise<void> => {
+  const rows = await db.prepare('SELECT id, config_json, state_json FROM upstreams')
+    .all<{ id: string; config_json: string; state_json: string | null }>();
+  for (const row of rows.results) {
+    const configJson = await storedSecrets[operation](row.config_json, upstreamConfigSecretContext(row.id));
+    const stateJson = row.state_json === null
+      ? null
+      : await storedSecrets[operation](row.state_json, upstreamStateSecretContext(row.id));
+    await db.prepare('UPDATE upstreams SET config_json = ?, state_json = ? WHERE id = ?')
+      .bind(configJson, stateJson, row.id)
+      .run();
+  }
+};
+
+export const applyMigrations = async (
+  db: SqlDatabase,
+  dir: string = DEFAULT_MIGRATIONS_DIR,
+  storedSecrets?: StoredSecretCodec,
+): Promise<void> => {
   await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
 
   const appliedRows = await db.prepare('SELECT name FROM _migrations').all<{ name: string }>();
@@ -35,7 +58,9 @@ export const applyMigrations = async (db: SqlDatabase, dir: string = DEFAULT_MIG
 
     await db.exec('BEGIN');
     try {
+      if (storedSecrets !== undefined) await rewriteProtectedUpstreamDocuments(db, storedSecrets, 'open');
       await db.exec(sql);
+      if (storedSecrets !== undefined) await rewriteProtectedUpstreamDocuments(db, storedSecrets, 'seal');
       await db.prepare('INSERT INTO _migrations (name) VALUES (?)').bind(file).run();
       await db.exec('COMMIT');
     } catch (e) {

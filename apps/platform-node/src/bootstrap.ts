@@ -40,13 +40,20 @@ export type BootstrapNodePlatformOptions =
   | { readonly profile: 'personal'; readonly storage: PersonalRuntimePaths }
   | { readonly profile: 'server'; readonly storage?: NodeStoragePaths };
 
+export interface BootstrapNodePlatformDependencies {
+  readonly createDeviceMasterKeyCreationLock?: typeof createDeviceMasterKeyCreationLock;
+}
+
 interface BootstrappedNodePlatform {
   readonly db: SqlDatabase;
-  readonly deviceMasterKeyCreationLock: DeviceMasterKeyCreationLock;
+  readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
   readonly personalStorage?: PersonalStorageHardener;
 }
 
-export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): BootstrappedNodePlatform => {
+export const bootstrapNodePlatform = (
+  options: BootstrapNodePlatformOptions,
+  dependencies: BootstrapNodePlatformDependencies = {},
+): BootstrappedNodePlatform => {
   const { profile } = options;
   initEnv(name => process.env[name]);
   initRuntimeKind('node');
@@ -69,5 +76,8 @@ export const bootstrapNodePlatform = (options: BootstrapNodePlatformOptions): Bo
   initImageProcessor(createSharpImageProcessor());
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
-  return { db, deviceMasterKeyCreationLock: createDeviceMasterKeyCreationLock(), personalStorage };
+  const deviceMasterKeyCreationLock = profile === 'personal'
+    ? (dependencies.createDeviceMasterKeyCreationLock ?? createDeviceMasterKeyCreationLock)()
+    : undefined;
+  return { db, deviceMasterKeyCreationLock, personalStorage };
 };
