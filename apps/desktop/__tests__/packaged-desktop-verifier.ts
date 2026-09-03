@@ -132,8 +132,8 @@ while (pending.length > 0) {
 }
 const sharpNative = nativeModules.find(path => path.includes('sharp'));
 if (sharpNative === undefined) throw new Error('Packaged desktop app does not contain the target sharp native module');
-const keyringNative = nativeModules.find(path => path.includes('keyring'));
-if (keyringNative === undefined) {
+const keyringNatives = nativeModules.filter(path => path.includes('keyring'));
+if (keyringNatives.length === 0) {
   throw new Error('Packaged desktop app does not contain the target operating-system Keyring native module');
 }
 
@@ -183,7 +183,7 @@ try {
   const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
   const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
   const installedEntry = resolve(installedPlatformNode, 'entry.js');
-  const installedKeyring = resolve(installedApp, relative(appRoot, keyringNative));
+  const installedKeyrings = keyringNatives.map(path => resolve(installedApp, relative(appRoot, path)));
 
   const launched = await execFileAsync(installedExecutable, ['--verify-package'], { timeout: 30_000 });
   if (!launched.stdout.includes('Floway package verification succeeded')) {
@@ -201,15 +201,19 @@ try {
     await rename(missingEntry, installedEntry);
   }
 
-  const brokenKeyring = `${installedKeyring}.broken`;
-  await rename(installedKeyring, brokenKeyring);
+  const brokenKeyrings = installedKeyrings.map(path => ({ path, moved: `${path}.broken` }));
+  const movedKeyrings: typeof brokenKeyrings = [];
   try {
+    for (const keyring of brokenKeyrings) {
+      await rename(keyring.path, keyring.moved);
+      movedKeyrings.push(keyring);
+    }
     const output = await runExpectedFailure(installedExecutable, ['keyring', 'verification sidecar exited']);
     const failedPid = readSidecarPid(output);
     if (failedPid === null) throw new Error('Broken Keyring launch did not report its sidecar PID');
     assertProcessStopped(failedPid);
   } finally {
-    await rename(brokenKeyring, installedKeyring);
+    for (const keyring of movedKeyrings.reverse()) await rename(keyring.moved, keyring.path);
   }
 
   const nodeFile = await open(installedNode, 'r+');
