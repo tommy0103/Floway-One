@@ -46,14 +46,31 @@ const decodeLinuxSecret = (stored: string): Uint8Array => {
 // key file beside SQLite.
 // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
 export const createOperatingSystemCredential = async (
-  service: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service,
-  account: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account,
+  service?: string,
+  account?: string,
   platform: NodeJS.Platform = process.platform,
   bindings?: KeyringBindings,
 ): Promise<DeviceMasterKeyCredential> => {
+  let resolvedService = service;
+  let resolvedAccount = account;
+  if (resolvedService === undefined && resolvedAccount === undefined) {
+    if (process.env.FLOWAY_PERSONAL_VERIFICATION === '1') {
+      resolvedService = process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_SERVICE;
+      resolvedAccount = process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_ACCOUNT;
+      if (resolvedService === undefined || resolvedAccount === undefined) {
+        throw new Error('Floway personal verification requires an isolated operating-system credential identity');
+      }
+    } else {
+      resolvedService = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service;
+      resolvedAccount = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account;
+    }
+  }
+  if (resolvedService === undefined || resolvedAccount === undefined) {
+    throw new Error('Floway operating-system credential service and account must be provided together');
+  }
   const resolvedBindings = bindings ?? await loadDefaultKeyringBindings();
   if (platform !== 'linux') {
-    const entry = new resolvedBindings.Entry(service, account);
+    const entry = new resolvedBindings.Entry(resolvedService, resolvedAccount);
     return {
       getSecret: () => entry.getSecret(),
       setSecret: secret => entry.setSecret(secret),
@@ -70,13 +87,13 @@ export const createOperatingSystemCredential = async (
   // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L527-L553
   const listFromSecretService = (): Credential[] => {
     try {
-      return resolvedBindings.findCredentials(service);
+      return resolvedBindings.findCredentials(resolvedService);
     } catch (cause) {
       throw new Error('Linux Secret Service is unavailable for the Floway device master key', { cause });
     }
   };
   const readPassword = (): string | null => {
-    const matches = listFromSecretService().filter(credential => credential.account === account);
+    const matches = listFromSecretService().filter(credential => credential.account === resolvedAccount);
     if (matches.length > 1) {
       throw new Error('Linux Secret Service contains ambiguous Floway device master key entries');
     }
@@ -84,7 +101,7 @@ export const createOperatingSystemCredential = async (
   };
 
   listFromSecretService();
-  const entry = new resolvedBindings.Entry(service, account);
+  const entry = new resolvedBindings.Entry(resolvedService, resolvedAccount);
   return {
     getSecret: () => {
       const password = readPassword();

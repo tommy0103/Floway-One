@@ -154,9 +154,17 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const profile = args.length === 0
     ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
     : selectNodeRuntimeProfile(args);
+  const resolvePersonalPaths = overrides.resolvePersonalRuntimePaths ?? (() => {
+    if (process.env.FLOWAY_PERSONAL_VERIFICATION !== '1') return resolvePersonalRuntimePaths();
+    const verificationRoot = process.env.FLOWAY_PERSONAL_VERIFICATION_ROOT;
+    if (verificationRoot === undefined) {
+      throw new Error('Floway personal verification requires FLOWAY_PERSONAL_VERIFICATION_ROOT');
+    }
+    return resolvePersonalRuntimePaths({ dataDir: verificationRoot, stableUserHome: verificationRoot });
+  });
   const personal = profile === 'personal'
     ? (() => {
-        const paths = (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)();
+        const paths = resolvePersonalPaths();
         const storage = (overrides.initializePersonalStorage ?? initializePersonalStorage)(paths);
         return { paths, storage };
       })()

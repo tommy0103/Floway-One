@@ -119,3 +119,37 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   assert(error.cause instanceof Error);
   assertEquals(error.cause.message, 'Failed to verify the Floway device master key in Linux Secret Service');
 });
+
+test('personal package verification isolates the operating-system credential identity', async () => {
+  const previous = {
+    account: process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_ACCOUNT,
+    enabled: process.env.FLOWAY_PERSONAL_VERIFICATION,
+    service: process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_SERVICE,
+  };
+  let constructed: readonly string[] | undefined;
+  try {
+    process.env.FLOWAY_PERSONAL_VERIFICATION = '1';
+    process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_SERVICE = 'Floway package test service';
+    process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_ACCOUNT = 'package-test-account';
+    await createOperatingSystemCredential(undefined, undefined, 'darwin', {
+      Entry: class {
+        constructor(service: string, account: string) { constructed = [service, account]; }
+        getSecret = () => null;
+        setSecret = () => undefined;
+        setPassword = () => undefined;
+        deleteCredential = () => false;
+      },
+      findCredentials: () => [],
+    });
+    assertEquals(constructed, ['Floway package test service', 'package-test-account']);
+  } finally {
+    for (const [name, value] of [
+      ['FLOWAY_PERSONAL_VERIFICATION', previous.enabled],
+      ['FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_SERVICE', previous.service],
+      ['FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_ACCOUNT', previous.account],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});

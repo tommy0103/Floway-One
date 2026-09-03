@@ -27,6 +27,7 @@ desktop = [
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
+  "dep:tokio",
 ]
 
 [dependencies]
@@ -36,6 +37,8 @@ getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
 tauri = { version = "=2.11.5", optional = true, features = [] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
 tauri-plugin-shell = { version = "=2.3.6", optional = true }
+# https://github.com/tokio-rs/tokio/releases/tag/tokio-1.53.1
+tokio = { version = "=1.53.1", optional = true, features = ["time"] }
 
 [build-dependencies]
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-build-v2.6.3
