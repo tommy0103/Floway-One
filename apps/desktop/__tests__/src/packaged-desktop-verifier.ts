@@ -570,7 +570,7 @@ if (launchSupported) {
       installedEntry,
       resolve(isolatedRoot, 'PersonalData-success'),
     );
-    console.log('Floway production app completed personal migrations, health, Dashboard, credential, and failure-safe cleanup');
+    console.log('Floway production app completed personal migrations, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
@@ -665,6 +665,6 @@ if (launchSupported) {
 
 console.log(
   launchSupported
-    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, embedded Node/Keyring/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, migrations, native sharp, and Dashboard assets`
+    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, embedded Node/Keyring/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, migrations, secure Dashboard bootstrap/control-plane, native sharp, and assets`
     : `Packaged Floway desktop app ${targetTriple} passed static thin architecture, locked-dependency, migration, native-module, and Dashboard verification; this host cannot execute that target`,
 );
