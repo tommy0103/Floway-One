@@ -5,12 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { assertPackagedRuntime, prepareDesktopBundle } from '../src/bundle.ts';
-import { compilePackagedRuntime } from '../src/packaged-runtime.ts';
-import { targetTripleForHost } from '../src/release-contract.ts';
+import { exchangeDirectoriesAtomically } from '../../src/atomic-directory.ts';
+import { assertPackagedRuntime, prepareDesktopBundle } from '../../src/bundle.ts';
+import { compilePackagedRuntime } from '../../src/packaged-runtime.ts';
+import { targetTripleForHost } from '../../src/release-contract.ts';
 
 const roots = new Set<string>();
-const desktopRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const desktopRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
 const temporaryRoot = async (): Promise<string> => {
   const root = await mkdtemp(join(tmpdir(), 'floway-desktop-bundle-'));
@@ -155,7 +156,96 @@ describe('desktop bundle preparation', () => {
     expect(await readFile(resolve(published.runtimeRoot, 'apps/platform-node/entry.js'), 'utf8')).toBe(priorEntry);
     expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
     expect((await stat(published.nodeSidecar)).size).toBe(priorSidecar.size);
-    await expect(stat(resolve(root, 'src-tauri/bundle-inputs.previous'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(resolve(root, 'src-tauri/.bundle-staging'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('publishes a replacement complete input tree with one directory exchange', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const targetTriple = targetTripleForHost(process.platform, process.arch);
+    let generation = 0;
+    const generateRuntime = async (runtimeRoot: string): Promise<void> => {
+      await generateFixtureRuntime(runtimeRoot);
+      await writeFile(resolve(runtimeRoot, 'apps/platform-node/src/runtime.ts'), `export const generation = ${++generation};`);
+    };
+    const options = {
+      desktopRoot: root,
+      generateRuntime,
+      nodeArchitecture: process.arch,
+      nodeExecutable: process.execPath,
+      nodePlatform: process.platform,
+      nodeVersion: process.versions.node,
+      targetTriple,
+    } as const;
+    const first = await prepareDesktopBundle(options);
+    const firstRuntime = await readFile(resolve(first.runtimeRoot, 'apps/platform-node/src/runtime.js'), 'utf8');
+    const exchangeDirectories = vi.fn(exchangeDirectoriesAtomically);
+
+    const second = await prepareDesktopBundle({ ...options, exchangeDirectories });
+
+    expect(exchangeDirectories).toHaveBeenCalledOnce();
+    expect(await readFile(resolve(second.runtimeRoot, 'apps/platform-node/src/runtime.js'), 'utf8')).not.toBe(firstRuntime);
+    await expect(stat(resolve(root, 'src-tauri/.bundle-staging'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('keeps the prior complete tree when its single atomic publish operation fails', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const targetTriple = targetTripleForHost(process.platform, process.arch);
+    const options = {
+      desktopRoot: root,
+      generateRuntime: generateFixtureRuntime,
+      nodeArchitecture: process.arch,
+      nodeExecutable: process.execPath,
+      nodePlatform: process.platform,
+      nodeVersion: process.versions.node,
+      targetTriple,
+    } as const;
+    const published = await prepareDesktopBundle(options);
+    const priorContract = await readFile(published.contractPath, 'utf8');
+    const publishFailure = new Error('forced atomic publish failure');
+
+    let error: Error | undefined;
+    try {
+      await prepareDesktopBundle({
+        ...options,
+        exchangeDirectories: async () => { throw publishFailure; },
+      });
+    } catch (value) {
+      error = value as Error;
+    }
+
+    expect(error?.message).toBe('Failed to atomically publish the complete desktop bundle inputs');
+    expect(error?.cause).toBe(publishFailure);
+    expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
+    await expect(assertPackagedRuntime(published.runtimeRoot)).resolves.toBeUndefined();
+  });
+
+  test('aggregates staging rollback cleanup failure behind the original assembly cause', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const assemblyFailure = new Error('forced runtime assembly failure');
+    const cleanupFailure = new Error('forced staging rollback cleanup failure');
+    let error: AggregateError | undefined;
+    try {
+      await prepareDesktopBundle({
+        desktopRoot: root,
+        generateRuntime: async () => { throw assemblyFailure; },
+        nodeArchitecture: process.arch,
+        nodeExecutable: process.execPath,
+        nodePlatform: process.platform,
+        nodeVersion: process.versions.node,
+        targetTriple: targetTripleForHost(process.platform, process.arch),
+        cleanupStaging: async () => { throw cleanupFailure; },
+      });
+    } catch (value) {
+      error = value as AggregateError;
+    }
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error?.cause).toBe(assemblyFailure);
+    expect(error?.errors[0]).toBe(assemblyFailure);
+    expect((error?.errors[1] as Error).cause).toBe(cleanupFailure);
   });
 
   test('rejects a target that cannot use the build-host Node executable before generation', async () => {

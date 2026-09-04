@@ -60,7 +60,6 @@ if (process.platform !== 'darwin') {
 const generatedPaths = [
   resolve(desktopRoot, 'src-tauri/target'),
   resolve(desktopRoot, 'src-tauri/bundle-inputs'),
-  resolve(desktopRoot, 'src-tauri/bundle-inputs.previous'),
   resolve(desktopRoot, 'src-tauri/.bundle-staging'),
   resolve(desktopRoot, 'src-tauri/.desktop-verification'),
   resolve(desktopRoot, 'src-tauri/gen'),

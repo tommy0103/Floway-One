@@ -7,7 +7,7 @@
     "build": "pnpm run test:desktop",
     "prepare:bundle": "jiti entry.ts",
     "test:desktop": "jiti src/test-desktop.ts",
-    "test:packaged:macos": "jiti __tests__/packaged-desktop-verifier.ts",
+    "test:packaged:macos": "jiti __tests__/src/packaged-desktop-verifier.ts",
     "test:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
     "typecheck": "tsc --noEmit"
   },

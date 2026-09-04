@@ -1,6 +1,8 @@
 import { chmod, copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
+import { exchangeDirectoriesAtomically, type AtomicDirectoryExchange } from './atomic-directory.ts';
+import { settleWithCleanup } from './failure-chain.ts';
 import { visitFileTree } from './filesystem-tree.ts';
 import { assertSingleMachOArchitecture } from './mach-o.ts';
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
@@ -19,6 +21,8 @@ export interface PrepareDesktopBundleOptions {
   readonly nodeVersion: string;
   readonly targetTriple: string;
   readonly executeNode?: boolean;
+  readonly exchangeDirectories?: AtomicDirectoryExchange;
+  readonly cleanupStaging?: (path: string) => Promise<void>;
   readonly validateSidecar?: (path: string, targetTriple: string) => Promise<void>;
 }
 
@@ -130,23 +134,30 @@ const assertBundleContract = async (
   }
 };
 
-const publishPreparedInputs = async (stagedRoot: string, finalRoot: string): Promise<void> => {
-  const previousRoot = `${finalRoot}.previous`;
-  await rm(previousRoot, { force: true, recursive: true });
-  let movedPrevious = false;
+const publishPreparedInputs = async (
+  stagedRoot: string,
+  finalRoot: string,
+  temporaryRoot: string,
+  exchangeDirectories: AtomicDirectoryExchange,
+): Promise<void> => {
   try {
-    await rename(finalRoot, previousRoot);
-    movedPrevious = true;
+    await stat(finalRoot);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error('Failed to inspect the current desktop bundle inputs before publication', { cause: error });
+    }
+    try {
+      await rename(stagedRoot, finalRoot);
+    } catch (cause) {
+      throw new Error('Failed to atomically publish the initial complete desktop bundle inputs', { cause });
+    }
+    return;
   }
   try {
-    await rename(stagedRoot, finalRoot);
+    await exchangeDirectories(stagedRoot, finalRoot, temporaryRoot);
   } catch (cause) {
-    if (movedPrevious) await rename(previousRoot, finalRoot);
     throw new Error('Failed to atomically publish the complete desktop bundle inputs', { cause });
   }
-  await rm(previousRoot, { force: true, recursive: true });
 };
 
 export const prepareDesktopBundle = async ({
@@ -158,6 +169,8 @@ export const prepareDesktopBundle = async ({
   nodeVersion,
   targetTriple,
   executeNode = true,
+  exchangeDirectories = exchangeDirectoriesAtomically,
+  cleanupStaging = async path => await rm(path, { force: true, recursive: true }),
   validateSidecar,
 }: PrepareDesktopBundleOptions): Promise<PreparedDesktopBundle> => {
   const requiredNodeVersion = await readPackagedNodeVersion(desktopRoot);
@@ -186,7 +199,7 @@ export const prepareDesktopBundle = async ({
   };
   await rm(stagingContainer, { force: true, recursive: true });
   await mkdir(stagedBinariesRoot, { recursive: true });
-  try {
+  await settleWithCleanup(async () => {
     await generateRuntime(stagedRuntimeRoot);
     // Modern pnpm deploy injects workspace files as hard links. Compile only
     // after copying the complete deployment to a private writable tree, so a
@@ -215,15 +228,11 @@ export const prepareDesktopBundle = async ({
     }
     if (executeNode) await probePackagedRuntime(stagedRuntimeRoot, stagedNodeSidecar);
     await assertBundleContract(stagedContractPath, contract);
-    await publishPreparedInputs(stagedInputsRoot, inputsRoot);
-  } finally {
-    await rm(stagingContainer, { force: true, recursive: true });
-  }
+    await publishPreparedInputs(stagedInputsRoot, inputsRoot, stagingContainer, exchangeDirectories);
+  }, async () => await cleanupStaging(stagingContainer),
+  'Desktop bundle assembly failed and staging rollback cleanup also failed');
   const runtimeRoot = resolve(inputsRoot, 'runtime');
   const nodeSidecar = join(inputsRoot, 'binaries', sidecarName);
   const contractPath = resolve(inputsRoot, 'desktop-bundle-contract.json');
-  await assertPackagedRuntime(runtimeRoot);
-  await requireFile(nodeSidecar);
-  await assertBundleContract(contractPath, contract);
   return { contractPath, nodeSidecar, runtimeRoot };
 };

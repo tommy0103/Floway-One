@@ -137,7 +137,7 @@ before starting so it also works immediately after a clean checkout.
 Production Node.js deployments must set both `NODE_ENV=production` and a
 non-empty `ADMIN_KEY`.
 
-Floway One's explicit personal profile instead binds only to
+Floway's explicit personal profile instead binds only to
 `http://127.0.0.1:8788` and stores its database, files, logs directory, and
 `runtime.json` below the operating system's per-user application-data
 directory:

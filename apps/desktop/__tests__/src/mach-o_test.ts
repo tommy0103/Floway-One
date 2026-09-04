@@ -8,7 +8,7 @@ import {
   assertMachOArchitecture,
   assertSingleMachOArchitecture,
   readMachOArchitectures,
-} from '../src/mach-o.ts';
+} from '../../src/mach-o.ts';
 
 const roots = new Set<string>();
 
@@ -52,12 +52,15 @@ test('accepts either target architecture from an Apple universal Mach-O image', 
   await expect(assertMachOArchitecture(path, 'arm64')).resolves.toBeUndefined();
 });
 
-test('rejects a universal executable as a substitute for a target-specific package', async () => {
-  const path = await fatMachOFixture([0x01000007, 0x0100000c]);
-  await expect(assertSingleMachOArchitecture(path, 'arm64')).rejects.toThrow(
-    `Mach-O package architecture mismatch for ${path}: expected only arm64, received x64, arm64`,
-  );
-});
+test.each(['arm64', 'x64'] as const)(
+  'rejects a universal native module from the %s target-specific package',
+  async architecture => {
+    const path = await fatMachOFixture([0x01000007, 0x0100000c]);
+    await expect(assertSingleMachOArchitecture(path, architecture)).rejects.toThrow(
+      `Mach-O package architecture mismatch for ${path}: expected only ${architecture}, received x64, arm64`,
+    );
+  },
+);
 
 test('retains the filesystem cause for a missing image', async () => {
   const root = await mkdtemp(join(tmpdir(), 'floway-mach-o-missing-'));

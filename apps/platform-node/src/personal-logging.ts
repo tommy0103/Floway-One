@@ -63,7 +63,7 @@ class RotatingFileSink {
       appendFileSync(this.path, bytes);
       this.size += bytes.byteLength;
     } catch (cause) {
-      throw new Error(`Floway One could not write bounded log ${this.path}`, { cause });
+      throw new Error(`Floway could not write bounded log ${this.path}`, { cause });
     }
   }
 
@@ -110,7 +110,7 @@ const teeStream = (
     } catch (cause) {
       reportRuntimeFailure(cause instanceof Error
         ? cause
-        : new Error('Floway One bounded logging failed with a non-Error value', { cause }));
+        : new Error('Floway bounded logging failed with a non-Error value', { cause }));
     }
 
     if (forwardFailure !== undefined) throw forwardFailure;
@@ -124,7 +124,7 @@ const teeStream = (
 };
 
 const formatFatalError = (cause: unknown): string => {
-  const sections = ['FATAL: Floway One runtime failed'];
+  const sections = ['FATAL: Floway runtime failed'];
   const seen = new Set<unknown>();
   let current: unknown = cause;
   let first = true;
@@ -197,6 +197,6 @@ export const installPersonalLogging = (
       },
     };
   } catch (cause) {
-    throw new Error(`Floway One could not initialize bounded logs in ${logsDir}`, { cause });
+    throw new Error(`Floway could not initialize bounded logs in ${logsDir}`, { cause });
   }
 };

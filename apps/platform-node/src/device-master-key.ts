@@ -54,16 +54,8 @@ export const createOperatingSystemCredential = async (
   let resolvedService = service;
   let resolvedAccount = account;
   if (resolvedService === undefined && resolvedAccount === undefined) {
-    if (process.env.FLOWAY_PERSONAL_VERIFICATION === '1') {
-      resolvedService = process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_SERVICE;
-      resolvedAccount = process.env.FLOWAY_PERSONAL_VERIFICATION_CREDENTIAL_ACCOUNT;
-      if (resolvedService === undefined || resolvedAccount === undefined) {
-        throw new Error('Floway personal verification requires an isolated operating-system credential identity');
-      }
-    } else {
-      resolvedService = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service;
-      resolvedAccount = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account;
-    }
+    resolvedService = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service;
+    resolvedAccount = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account;
   }
   if (resolvedService === undefined || resolvedAccount === undefined) {
     throw new Error('Floway operating-system credential service and account must be provided together');
