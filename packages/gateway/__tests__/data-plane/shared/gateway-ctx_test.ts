@@ -3,10 +3,14 @@ import { describe, test } from 'vitest';
 
 import { createGatewayCtxFromHono, type AttemptState, stampUpstreamCallStart } from '../../../src/data-plane/shared/gateway-ctx.ts';
 import type { RequestBody } from '../../../src/data-plane/shared/request-body.ts';
+import { telemetryModelIdentity, upstreamPerformanceContext } from '../../../src/data-plane/shared/telemetry/attribution.ts';
+import { settle } from '../../../src/data-plane/shared/telemetry/settle.ts';
 import type { AuthVars } from '../../../src/middleware/auth.ts';
+import { initRepo } from '../../../src/repo/index.ts';
 import type { ApiKey, User } from '../../../src/repo/types.ts';
-import type { BackgroundScheduler } from '@floway-dev/platform';
-import { assert, assertEquals, assertExists } from '@floway-dev/test-utils';
+import { InMemoryRepo } from '../../repo/memory.ts';
+import { initRuntimeProfile, type BackgroundScheduler } from '@floway-dev/platform';
+import { assert, assertEquals, assertExists, stubModelCandidate } from '@floway-dev/test-utils';
 
 const EMPTY_REQUEST_BODY: RequestBody = { bytes: new Uint8Array(), streamError: null };
 const NOOP_SCHEDULER: BackgroundScheduler = () => {};
@@ -189,6 +193,49 @@ describe('createGatewayCtxFromHono', () => {
     assertEquals(collected.capOnly, ['up-a']);
     assertEquals(collected.both, ['up-b']);
     assertEquals(collected.keyOnly, ['up-x']);
+  });
+
+  test('personal request-capture default still reaches usage and performance attribution', async () => {
+    const repo = new InMemoryRepo();
+    initRepo(repo);
+    initRuntimeProfile('personal');
+    const background: Promise<unknown>[] = [];
+    const app = makeApp();
+    let ctx: ReturnType<typeof createGatewayCtxFromHono> | undefined;
+
+    app.post('/test', c => {
+      c.set('apiKey', buildApiKey({ id: 'personal-private-key', dumpRetentionSeconds: null }));
+      ctx = createGatewayCtxFromHono(c, {
+        wantsStream: false,
+        requestBody: EMPTY_REQUEST_BODY,
+        backgroundScheduler: promise => { background.push(promise); },
+      });
+      return c.text('ok');
+    });
+
+    try {
+      await app.request('/test', { method: 'POST' });
+      assertExists(ctx);
+      assertEquals(ctx.dump, null);
+      assertEquals(ctx.apiKeyId, 'personal-private-key');
+
+      const candidate = stubModelCandidate({ model: { id: 'personal-model' } });
+      const performanceContext = upstreamPerformanceContext(ctx, candidate, 'chat');
+      assertEquals(performanceContext.keyId, 'personal-private-key');
+      settle(ctx, performanceContext, telemetryModelIdentity(candidate, 'personal-model-source'), null, false);
+      await Promise.all(background);
+
+      const usage = await repo.usage.listAll();
+      assertEquals(usage.map(row => ({ keyId: row.keyId, requests: row.requests })), [
+        { keyId: 'personal-private-key', requests: 1 },
+      ]);
+      const performance = await repo.performance.listAll();
+      assertEquals(performance.map(row => ({ keyId: row.keyId, requests: row.requests, neutral: row.neutral })), [
+        { keyId: 'personal-private-key', requests: 1, neutral: 1 },
+      ]);
+    } finally {
+      initRuntimeProfile('server');
+    }
   });
 });
 

@@ -3,7 +3,7 @@ import { type AuthedContext, userFromContext, userUpstreamIdsFromContext } from 
 import { type CtxWithJson } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import type { ApiKey } from '../../repo/types.ts';
-import { personalApiKeyOwnerId } from '../../runtime/profile-policy.ts';
+import { personalApiKeyOwnerId, runtimeApiKeyDefaults } from '../../runtime/profile-policy.ts';
 import { CUSTOM_API_KEY_MAX_LENGTH, generateApiKeyToken, type KeySource } from '../../shared/api-key-tokens.ts';
 import { generateServerSecret } from '../../shared/server-secret.ts';
 import type { createKeyBody, rotateKeyBody, updateKeyBody } from '../schemas.ts';
@@ -130,6 +130,7 @@ export const listKeys = async (c: AuthedContext) => {
 export const createKey = async (c: CtxWithJson<typeof createKeyBody>) => {
   const userId = personalApiKeyOwnerId(userFromContext(c).id);
   const body = c.req.valid('json');
+  const defaults = runtimeApiKeyDefaults();
 
   const knownUpstreamIds = await loadKnownUpstreamIds();
   const upstreamErr = validateUpstreamIdsAgainstUserCap(c, body.upstream_ids ?? null, knownUpstreamIds);
@@ -141,10 +142,10 @@ export const createKey = async (c: CtxWithJson<typeof createKeyBody>) => {
     name: body.name,
     serverSecret: generateServerSecret(),
     createdAt: new Date().toISOString(),
-    upstreamIds: body.upstream_ids ?? null,
+    upstreamIds: body.upstream_ids ?? defaults.upstreamIds,
     deletedAt: null,
-    dumpRetentionSeconds: body.dump_retention_seconds ?? null,
-    openaiResponsesRetentionSeconds: body.responses_retention_seconds ?? 0,
+    dumpRetentionSeconds: body.dump_retention_seconds ?? defaults.dumpRetentionSeconds,
+    openaiResponsesRetentionSeconds: body.responses_retention_seconds ?? defaults.openaiResponsesRetentionSeconds,
   } satisfies Omit<ApiKey, 'key'>;
 
   const result = await writeKeyForRequest(template, body);

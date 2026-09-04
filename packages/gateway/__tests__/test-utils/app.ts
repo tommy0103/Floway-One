@@ -6,7 +6,7 @@ import { initRepo } from '../../src/repo/index.ts';
 import type { ApiKey } from '../../src/repo/types.ts';
 import { initBackgroundSchedulerResolver } from '../../src/runtime/background.ts';
 import { InMemoryRepo } from '../repo/memory.ts';
-import { createInMemoryImageProcessor, initEnv, initExternalResourceFetcher, initFileStore, initImageProcessor, initSocketDial, MemoryFileStore } from '@floway-dev/platform';
+import { createInMemoryImageProcessor, initEnv, initExternalResourceFetcher, initFileStore, initImageProcessor, initRuntimeProfile, initSocketDial, MemoryFileStore } from '@floway-dev/platform';
 import type { ProxyFallbackEntry, UpstreamRecord } from '@floway-dev/provider';
 import { clearInProcessCopilotTokenCache } from '@floway-dev/provider-copilot';
 
@@ -31,6 +31,8 @@ interface AppTestContext {
   githubAccount: CopilotAccountFixture;
   copilotUpstream: UpstreamRecord;
 }
+
+type PersonalAppTestContext = Omit<AppTestContext, 'apiKey'>;
 
 interface CopilotAccountFixture {
   token: string;
@@ -162,7 +164,7 @@ export const buildCustomUpstreamRecord = (overrides: Partial<UpstreamRecord> = {
   };
 };
 
-export async function setupAppTest(options: SetupOptions = {}): Promise<AppTestContext> {
+const initializeAppTest = (options: SetupOptions): { repo: InMemoryRepo; adminKey: string } => {
   const repo = new InMemoryRepo();
   initRepo(repo);
   initExternalResourceFetcher(() => Promise.resolve(new Response(null, { status: 404 })));
@@ -186,6 +188,39 @@ export async function setupAppTest(options: SetupOptions = {}): Promise<AppTestC
 
   clearInProcessCopilotTokenCache();
   clearInFlightForTesting();
+
+  return { repo, adminKey: adminKey ?? '' };
+};
+
+const installSharedAppFixtures = async (
+  repo: InMemoryRepo,
+  options: SetupOptions,
+): Promise<Pick<AppTestContext, 'adminSession' | 'githubAccount' | 'copilotUpstream'>> => {
+  const githubAccount = options.githubAccount ?? {
+    token: `ghu_${crypto.randomUUID().replace(/-/g, '')}`,
+    user: {
+      id: Math.floor(Math.random() * 1000000) + 1,
+      login: 'tester',
+      name: 'Test User',
+      avatar_url: 'https://example.com/avatar.png',
+    },
+  };
+  const copilotUpstream = options.copilotUpstream ?? buildCopilotUpstreamRecord(githubAccount);
+  await repo.upstreams.save(copilotUpstream);
+
+  if (options.webSearchConfig !== undefined) {
+    await repo.webSearchConfig.save(options.webSearchConfig);
+  }
+
+  // Most tests need an admin-authenticated dashboard caller; expose a fresh
+  // session token tied to user 1 (the seed admin) for
+  // `x-floway-session: adminSession`.
+  const adminSession = (await repo.sessions.create(1)).id;
+  return { adminSession, githubAccount, copilotUpstream };
+};
+
+export async function setupAppTest(options: SetupOptions = {}): Promise<AppTestContext> {
+  const { repo, adminKey } = initializeAppTest(options);
 
   // The default API key is owned by a non-admin user so tests can assert
   // "non-admin via API key" behavior straight away. Tests that need an
@@ -214,28 +249,22 @@ export async function setupAppTest(options: SetupOptions = {}): Promise<AppTestC
   };
   await repo.apiKeys.save(apiKey);
 
-  const githubAccount = options.githubAccount ?? {
-    token: `ghu_${crypto.randomUUID().replace(/-/g, '')}`,
-    user: {
-      id: Math.floor(Math.random() * 1000000) + 1,
-      login: 'tester',
-      name: 'Test User',
-      avatar_url: 'https://example.com/avatar.png',
-    },
-  };
-  const copilotUpstream = options.copilotUpstream ?? buildCopilotUpstreamRecord(githubAccount);
-  await repo.upstreams.save(copilotUpstream);
+  return { repo, adminKey, apiKey, ...await installSharedAppFixtures(repo, options) };
+}
 
-  if (options.webSearchConfig !== undefined) {
-    await repo.webSearchConfig.save(options.webSearchConfig);
+// Personal-profile tests must start from the same state that production
+// startup accepts: one unrestricted seed owner and no pre-existing key. Keep
+// this separate from setupAppTest's intentional server multi-user fixture so
+// a test cannot silently turn a server-shaped repository into personal mode.
+export async function setupPersonalAppTest(options: Omit<SetupOptions, 'apiKey'> = {}): Promise<PersonalAppTestContext> {
+  initRuntimeProfile('personal');
+  try {
+    const { repo, adminKey } = initializeAppTest(options);
+    return { repo, adminKey, ...await installSharedAppFixtures(repo, options) };
+  } catch (error) {
+    initRuntimeProfile('server');
+    throw error;
   }
-
-  // Most tests need an admin-authenticated dashboard caller; expose a fresh
-  // session token tied to user 1 (the seed admin) for
-  // `x-floway-session: adminSession`.
-  const adminSession = (await repo.sessions.create(1)).id;
-
-  return { repo, adminKey: adminKey ?? '', adminSession, apiKey, githubAccount, copilotUpstream };
 }
 
 export function sseResponse(chunks: SSEChunk[], status = 200): Response {

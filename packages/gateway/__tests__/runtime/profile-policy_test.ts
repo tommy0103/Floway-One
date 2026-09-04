@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 
 import { initRepo } from '../../src/repo/index.ts';
 import type { ApiKey, User } from '../../src/repo/types.ts';
-import { assertRuntimeProfileData, personalApiKeyOwnerId } from '../../src/runtime/profile-policy.ts';
+import { assertRuntimeProfileData, personalApiKeyOwnerId, runtimeApiKeyDefaults } from '../../src/runtime/profile-policy.ts';
 import { InMemoryRepo } from '../repo/memory.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
 
@@ -105,4 +105,13 @@ test('server profile preserves multi-user data and actor-owned API keys', () =>
 test('personal API key writes always resolve to the seed owner', () =>
   withProfile('personal', async () => {
     expect(personalApiKeyOwnerId(EXTRA_USER.id)).toBe(1);
+  }));
+
+test.each(['personal', 'server'] as const)('%s API key creation inherits all upstreams with persistence disabled', mode =>
+  withProfile(mode, async () => {
+    expect(runtimeApiKeyDefaults()).toEqual({
+      upstreamIds: null,
+      dumpRetentionSeconds: null,
+      openaiResponsesRetentionSeconds: 0,
+    });
   }));
