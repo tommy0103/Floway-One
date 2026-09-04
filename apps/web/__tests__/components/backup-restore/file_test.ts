@@ -58,21 +58,27 @@ describe('backup file validation', () => {
 
   it('retains a secret-bearing JSON parser cause internally without exposing or logging its excerpt', () => {
     const sentinel = 'BROWSER_BACKUP_PARSE_SECRET_21';
-    const parserFailure = new SyntaxError(`Unexpected token near ${sentinel}`);
-    const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => { throw parserFailure; });
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const result = parseBackupFile(`{"credential":"${sentinel}",broken}`);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toBeInstanceOf(BackupFileDiagnosticError);
-      expect(result.error.code).toBe('malformed-json');
-      expect(result.error.cause).toBe(parserFailure);
-      expect(result.error.clientMessageKey).toBe('dashboard.backupRestore.import.errorInvalidFile');
-      expect(result.error.message).not.toContain(sentinel);
-      expect(JSON.stringify(result)).not.toContain(sentinel);
+      for (const consumer of [parseBackupFile, parseEncryptedBackupFile]) {
+        const parserFailure = new SyntaxError(`Unexpected token near ${sentinel}`);
+        const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => { throw parserFailure; });
+        try {
+          const result = consumer(`{"credential":"${sentinel}",broken}`);
+          expect(result.ok).toBe(false);
+          if (result.ok) continue;
+          expect(result.error).toBeInstanceOf(BackupFileDiagnosticError);
+          expect(result.error.code).toBe('malformed-json');
+          expect(result.error.cause).toBe(parserFailure);
+          expect(result.error.clientMessageKey).toBe('dashboard.backupRestore.import.errorInvalidFile');
+          expect(result.error.message).not.toContain(sentinel);
+          expect(JSON.stringify(result)).not.toContain(sentinel);
+        } finally {
+          parse.mockRestore();
+        }
+      }
       expect(log).not.toHaveBeenCalled();
       expect(info).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
@@ -80,7 +86,6 @@ describe('backup file validation', () => {
       warn.mockRestore();
       info.mockRestore();
       log.mockRestore();
-      parse.mockRestore();
     }
   });
 });

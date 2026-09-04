@@ -60,6 +60,18 @@ export type ParsedBackupFile =
   | { ok: true; payload: BackupFile }
   | { ok: false; error: BackupFileDiagnosticError };
 
+type ParsedBackupJson =
+  | { ok: true; value: unknown }
+  | { ok: false; error: BackupFileDiagnosticError };
+
+const parseBackupJson = (raw: string): ParsedBackupJson => {
+  try {
+    return { ok: true, value: JSON.parse(raw) as unknown };
+  } catch (cause) {
+    return { ok: false, error: new BackupFileDiagnosticError('malformed-json', cause) };
+  }
+};
+
 export const legacyImportRequest = (payload: BackupFile, mode: 'merge' | 'replace') => ({
   version: BACKUP_FILE_VERSION,
   mode,
@@ -67,13 +79,9 @@ export const legacyImportRequest = (payload: BackupFile, mode: 'merge' | 'replac
 } as const);
 
 export const parseBackupFile = (raw: string): ParsedBackupFile => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    return { ok: false, error: new BackupFileDiagnosticError('malformed-json', cause) };
-  }
-  const result = backupFileSchema.safeParse(parsed);
+  const parsed = parseBackupJson(raw);
+  if (!parsed.ok) return parsed;
+  const result = backupFileSchema.safeParse(parsed.value);
   return result.success
     ? { ok: true, payload: result.data }
     : { ok: false, error: new BackupFileDiagnosticError('invalid-backup', result.error) };
@@ -86,14 +94,10 @@ export type ParsedEncryptedBackupFile =
   | { ok: false; error: BackupFileDiagnosticError };
 
 export const parseEncryptedBackupFile = (raw: string): ParsedEncryptedBackupFile => {
-  let parsed: unknown;
+  const parsed = parseBackupJson(raw);
+  if (!parsed.ok) return parsed;
   try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    return { ok: false, error: new BackupFileDiagnosticError('malformed-json', cause) };
-  }
-  try {
-    return { ok: true, archive: parseEncryptedBackupArchive(parsed) };
+    return { ok: true, archive: parseEncryptedBackupArchive(parsed.value) };
   } catch (cause) {
     return { ok: false, error: new BackupFileDiagnosticError('invalid-backup', cause) };
   }

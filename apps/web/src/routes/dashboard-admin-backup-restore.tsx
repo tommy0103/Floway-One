@@ -243,194 +243,189 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
     void doImport();
   }, [confirmDialog, doImport, importSelection, replaceExisting]);
 
-  if (runtime.error) {
-    return <section className="dashboard-page max-w-[960px]">
-      <DashboardPageHeader description={t('dashboard.pages.backupRestore')} title={t('dashboard.nav.backupRestore')} />
-      <Panel>
-        <OutcomeMessageBar intent="error" title={t('dashboard.backupRestore.runtimeError.title')}>
-          {t('dashboard.backupRestore.runtimeError.message', { message: runtime.error.message })}
-        </OutcomeMessageBar>
-      </Panel>
-    </section>;
-  }
-
   return (
     <section className="dashboard-page max-w-[960px]">
       <DashboardPageHeader description={t('dashboard.pages.backupRestore')} title={t('dashboard.nav.backupRestore')} />
 
-      <Panel className={PANEL_STACK_CLASS}>
-        <SectionHeader
-          description={t(personal ? 'dashboard.backupRestore.export.personalDescription' : 'dashboard.backupRestore.export.description')}
-          level={2}
-          title={t('dashboard.backupRestore.export.heading')}
-        />
-
-        {personal && <Field
-          hint={t('dashboard.backupRestore.export.passwordHint')}
-          label={t('dashboard.backupRestore.export.password')}
-        >
-          <Input
-            autoComplete="new-password"
-            maxLength={1024}
-            onChange={(_, data) => setBackupPassword(data.value)}
-            type="password"
-            value={backupPassword}
+      {runtime.error ? <Panel>
+        <OutcomeMessageBar intent="error" title={t('dashboard.backupRestore.runtimeError.title')}>
+          {t('dashboard.backupRestore.runtimeError.message', { message: runtime.error.message })}
+        </OutcomeMessageBar>
+      </Panel> : <>
+        <Panel className={PANEL_STACK_CLASS}>
+          <SectionHeader
+            description={t(personal ? 'dashboard.backupRestore.export.personalDescription' : 'dashboard.backupRestore.export.description')}
+            level={2}
+            title={t('dashboard.backupRestore.export.heading')}
           />
-        </Field>}
 
-        {/* A check box rather than a switch, because nothing is exported until
+          {personal && <Field
+            hint={t('dashboard.backupRestore.export.passwordHint')}
+            label={t('dashboard.backupRestore.export.password')}
+          >
+            <Input
+              autoComplete="new-password"
+              maxLength={1024}
+              onChange={(_, data) => setBackupPassword(data.value)}
+              type="password"
+              value={backupPassword}
+            />
+          </Field>}
+
+          {/* A check box rather than a switch, because nothing is exported until
             the command below is pressed: "Use a checkbox when the user has to
             perform extra steps for changes to be effective."
             https://github.com/MicrosoftDocs/windows-dev-docs/blob/d084ff89ad3d6da237a8737e325a6407ddb0ee41/hub/apps/develop/ui/controls/toggles.md#L41 */}
-        <Field hint={t('dashboard.backupRestore.export.includePerformanceHint')}>
-          <Checkbox
-            checked={includePerformance}
-            label={t('dashboard.backupRestore.export.includePerformance')}
-            onChange={(_, data) => setIncludePerformance(!!data.checked)}
+          <Field hint={t('dashboard.backupRestore.export.includePerformanceHint')}>
+            <Checkbox
+              checked={includePerformance}
+              label={t('dashboard.backupRestore.export.includePerformance')}
+              onChange={(_, data) => setIncludePerformance(!!data.checked)}
+            />
+          </Field>
+
+          {exportError && (
+            <OutcomeMessageBar onDismiss={() => setExportError(null)}>{exportError}</OutcomeMessageBar>
+          )}
+
+          <div className="pt-1">
+            <ActionRow
+              aria-label={t('dashboard.backupRestore.export.actionsLabel')}
+              role="group"
+            >
+              <Button
+                appearance="primary"
+                disabled={personal && backupPassword.length === 0}
+                disabledFocusable={exporting}
+                icon={exporting ? <Spinner size="tiny" /> : <ArrowDownloadRegular />}
+                onClick={() => void handleExport(personal ? 'full' : 'legacy')}
+              >
+                {t(personal ? 'dashboard.backupRestore.export.fullButton' : 'dashboard.backupRestore.export.button')}
+              </Button>
+              {personal && <Button
+                disabledFocusable={exporting}
+                icon={<ArrowDownloadRegular />}
+                onClick={() => void handleExport('safe')}
+              >
+                {t('dashboard.backupRestore.export.safeButton')}
+              </Button>}
+            </ActionRow>
+          </div>
+        </Panel>
+
+        <Panel className={PANEL_STACK_CLASS}>
+          <SectionHeader
+            description={t(personal ? 'dashboard.backupRestore.import.personalDescription' : 'dashboard.backupRestore.import.description')}
+            level={2}
+            title={t('dashboard.backupRestore.import.heading')}
           />
-        </Field>
 
-        {exportError && (
-          <OutcomeMessageBar onDismiss={() => setExportError(null)}>{exportError}</OutcomeMessageBar>
-        )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
 
-        <div className="pt-1">
-          <ActionRow
-            aria-label={t('dashboard.backupRestore.export.actionsLabel')}
-            role="group"
+          {importSelection && importFile
+            ? <BackupFileSummary
+                accepting={dragOver}
+                action={<Button disabled={importing} onClick={handleChangeFile}>
+                  {t('dashboard.backupRestore.import.change')}
+                </Button>}
+                drop={dropHandlers}
+                name={t('dashboard.backupRestore.import.fileSelected', {
+                  name: importFile.name,
+                  size: importFile.size,
+                })}
+              />
+            : <BackupFilePicker
+                accepting={dragOver}
+                drop={dropHandlers}
+                glyph={<ArrowUploadRegular fontSize={28} />}
+                onClick={openFilePicker}
+                prompt={dragOver
+                  ? t('dashboard.backupRestore.import.dropzoneActive')
+                  : t('dashboard.backupRestore.import.dropzone')}
+              />}
+
+          {importSelection?.kind === 'legacy' && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
+            key,
+            label: t(`dashboard.backupRestore.import.previewLabel.${key}`),
+            value: formatCount(countRecords(importSelection.payload.data)[key], locale),
+          }))} />}
+
+          {importSelection?.kind === 'encrypted' && <Field
+            hint={t('dashboard.backupRestore.import.passwordHint')}
+            label={t('dashboard.backupRestore.import.password')}
           >
+            <Input
+              autoComplete="current-password"
+              disabled={importing}
+              maxLength={1024}
+              onChange={(_, data) => setRestorePassword(data.value)}
+              type="password"
+              value={restorePassword}
+            />
+          </Field>}
+
+          {importSelection && <Field hint={t(personal
+            ? 'dashboard.backupRestore.import.replaceHintPersonal'
+            : 'dashboard.backupRestore.import.replaceHint')}>
+            <Checkbox
+              checked={replaceExisting}
+              disabled={importing}
+              label={t('dashboard.backupRestore.import.replace')}
+              onChange={(_, data) => setReplaceExisting(!!data.checked)}
+            />
+          </Field>}
+
+          {importSelection && replaceExisting && (
+            <OutcomeMessageBar intent="warning">
+              {t(personal
+                ? 'dashboard.backupRestore.import.replaceWarningPersonal'
+                : 'dashboard.backupRestore.import.replaceWarning')}
+            </OutcomeMessageBar>
+          )}
+
+          {importError && (
+            <OutcomeMessageBar
+              onDismiss={() => setImportError(null)}
+              title={t('dashboard.backupRestore.import.error')}
+            >
+              {importError}
+            </OutcomeMessageBar>
+          )}
+
+          <div className="pt-1">
             <Button
               appearance="primary"
-              disabled={personal && backupPassword.length === 0}
-              disabledFocusable={exporting}
-              icon={exporting ? <Spinner size="tiny" /> : <ArrowDownloadRegular />}
-              onClick={() => void handleExport(personal ? 'full' : 'legacy')}
+              disabled={!importSelection || (importSelection.kind === 'encrypted' && restorePassword.length === 0)}
+              disabledFocusable={importing}
+              icon={importing ? <Spinner size="tiny" /> : <ArrowUploadRegular />}
+              onClick={handleImportClick}
             >
-              {t(personal ? 'dashboard.backupRestore.export.fullButton' : 'dashboard.backupRestore.export.button')}
+              {t('dashboard.backupRestore.import.button')}
             </Button>
-            {personal && <Button
-              disabledFocusable={exporting}
-              icon={<ArrowDownloadRegular />}
-              onClick={() => void handleExport('safe')}
-            >
-              {t('dashboard.backupRestore.export.safeButton')}
-            </Button>}
-          </ActionRow>
-        </div>
-      </Panel>
+          </div>
+        </Panel>
 
-      <Panel className={PANEL_STACK_CLASS}>
-        <SectionHeader
-          description={t(personal ? 'dashboard.backupRestore.import.personalDescription' : 'dashboard.backupRestore.import.description')}
-          level={2}
-          title={t('dashboard.backupRestore.import.heading')}
-        />
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json"
-          className="hidden"
-          onChange={handleFileSelect}
-        />
-
-        {importSelection && importFile
-          ? <BackupFileSummary
-              accepting={dragOver}
-              action={<Button disabled={importing} onClick={handleChangeFile}>
-                {t('dashboard.backupRestore.import.change')}
-              </Button>}
-              drop={dropHandlers}
-              name={t('dashboard.backupRestore.import.fileSelected', {
-                name: importFile.name,
-                size: importFile.size,
-              })}
-            />
-          : <BackupFilePicker
-              accepting={dragOver}
-              drop={dropHandlers}
-              glyph={<ArrowUploadRegular fontSize={28} />}
-              onClick={openFilePicker}
-              prompt={dragOver
-                ? t('dashboard.backupRestore.import.dropzoneActive')
-                : t('dashboard.backupRestore.import.dropzone')}
-            />}
-
-        {importSelection?.kind === 'legacy' && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
-          key,
-          label: t(`dashboard.backupRestore.import.previewLabel.${key}`),
-          value: formatCount(countRecords(importSelection.payload.data)[key], locale),
-        }))} />}
-
-        {importSelection?.kind === 'encrypted' && <Field
-          hint={t('dashboard.backupRestore.import.passwordHint')}
-          label={t('dashboard.backupRestore.import.password')}
-        >
-          <Input
-            autoComplete="current-password"
-            disabled={importing}
-            maxLength={1024}
-            onChange={(_, data) => setRestorePassword(data.value)}
-            type="password"
-            value={restorePassword}
-          />
-        </Field>}
-
-        {importSelection && <Field hint={t(personal
-          ? 'dashboard.backupRestore.import.replaceHintPersonal'
-          : 'dashboard.backupRestore.import.replaceHint')}>
-          <Checkbox
-            checked={replaceExisting}
-            disabled={importing}
-            label={t('dashboard.backupRestore.import.replace')}
-            onChange={(_, data) => setReplaceExisting(!!data.checked)}
-          />
-        </Field>}
-
-        {importSelection && replaceExisting && (
-          <OutcomeMessageBar intent="warning">
-            {t(personal
-              ? 'dashboard.backupRestore.import.replaceWarningPersonal'
-              : 'dashboard.backupRestore.import.replaceWarning')}
-          </OutcomeMessageBar>
-        )}
-
-        {importError && (
-          <OutcomeMessageBar
-            onDismiss={() => setImportError(null)}
-            title={t('dashboard.backupRestore.import.error')}
-          >
-            {importError}
-          </OutcomeMessageBar>
-        )}
-
-        <div className="pt-1">
-          <Button
-            appearance="primary"
-            disabled={!importSelection || (importSelection.kind === 'encrypted' && restorePassword.length === 0)}
-            disabledFocusable={importing}
-            icon={importing ? <Spinner size="tiny" /> : <ArrowUploadRegular />}
-            onClick={handleImportClick}
-          >
-            {t('dashboard.backupRestore.import.button')}
-          </Button>
-        </div>
-      </Panel>
-
-      {confirmDialog.invocation && <ConfirmDialog
-        open={confirmDialog.isOpen}
-        actionLabel={t('dashboard.backupRestore.import.button')}
-        actionIntent="primary"
-        busy={importing}
-        key={confirmDialog.invocation.key}
-        message={t(personal ? 'dashboard.backupRestore.confirmMessagePersonal' : 'dashboard.backupRestore.confirmMessage')}
-        onConfirm={() => {
-          confirmDialog.close();
-          void doImport();
-        }}
-        onOpenChange={open => { if (!open) confirmDialog.close(); }}
-        title={t('dashboard.backupRestore.confirmTitle')}
-      />}
+        {confirmDialog.invocation && <ConfirmDialog
+          open={confirmDialog.isOpen}
+          actionLabel={t('dashboard.backupRestore.import.button')}
+          actionIntent="primary"
+          busy={importing}
+          key={confirmDialog.invocation.key}
+          message={t(personal ? 'dashboard.backupRestore.confirmMessagePersonal' : 'dashboard.backupRestore.confirmMessage')}
+          onConfirm={() => {
+            confirmDialog.close();
+            void doImport();
+          }}
+          onOpenChange={open => { if (!open) confirmDialog.close(); }}
+          title={t('dashboard.backupRestore.confirmTitle')}
+        />}
+      </>}
     </section>
   );
 }
