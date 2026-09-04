@@ -22,9 +22,6 @@ export const routingUrlForSafeExport = (value: string): string => {
   return url.pathname === '/' ? url.origin : `${url.origin}${url.pathname}`;
 };
 
-export const routingPathForSafeExport = (value: string): string =>
-  new URL(value, 'https://floway.invalid').pathname;
-
 export const modelEndpointsForSafeExport = (source: ModelEndpoints): ModelEndpoints => {
   const endpoints: ModelEndpoints = {};
   for (const key of SAFE_EXPORT_ENDPOINT_KEYS) {
@@ -121,7 +118,7 @@ export const upstreamModelsForSafeExport = (models: readonly UpstreamModelConfig
               protocol: model.rerankTarget.protocol,
               ...(model.rerankTarget.path === undefined
                 ? {}
-                : { path: routingPathForSafeExport(model.rerankTarget.path) }),
+                : { pathConfigured: true }),
             },
           }),
       upstreamModelId: model.upstreamModelId,

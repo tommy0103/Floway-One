@@ -22,7 +22,7 @@
 import { customIngressHeaderNameIssue, isCustomIngressHeaderValue } from './ingress-header-rules.ts';
 import type { ModelEndpoints } from '@floway-dev/protocols/common';
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { endpointsField, modelEndpointsForSafeExport, modelsField, routingPathForSafeExport, routingUrlForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
+import { endpointsField, modelEndpointsForSafeExport, modelsField, routingUrlForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
 
 export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 
@@ -237,25 +237,23 @@ export const assertCustomUpstreamRecord = (record: UpstreamRecord): CustomUpstre
 
 export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
   const config = assertCustomUpstreamRecord(record).config;
-  const safePathOverrides: Partial<Record<CustomPathOverrideKey, string>> = {};
+  const safeBaseUrl = new URL(routingUrlForSafeExport(config.baseUrl));
   const pathOverrides = config.pathOverrides;
-  if (pathOverrides) {
-    for (const key of CUSTOM_PATH_OVERRIDE_KEYS) {
-      const path = pathOverrides[key];
-      if (path !== undefined) safePathOverrides[key] = routingPathForSafeExport(path);
-    }
-  }
+  const pathOverrideKinds = pathOverrides === undefined
+    ? undefined
+    : CUSTOM_PATH_OVERRIDE_KEYS.filter(key => pathOverrides[key] !== undefined);
   return {
-    baseUrl: routingUrlForSafeExport(config.baseUrl),
+    baseUrl: safeBaseUrl.origin,
+    ...(safeBaseUrl.pathname === '/' ? {} : { basePathConfigured: true }),
     endpoints: modelEndpointsForSafeExport(config.endpoints),
-    ...(pathOverrides === undefined ? {} : { pathOverrides: safePathOverrides }),
+    ...(pathOverrideKinds === undefined ? {} : { pathOverrideKinds }),
     ingressHeadersRules: config.ingressHeadersRules.map(rule => ({
       key: rule.key,
       source: rule.value === null ? 'client' : 'configured',
     })),
     modelsFetch: config.modelsFetch.endpoint === undefined
       ? { enabled: config.modelsFetch.enabled }
-      : { enabled: config.modelsFetch.enabled, endpoint: routingPathForSafeExport(config.modelsFetch.endpoint) },
+      : { enabled: config.modelsFetch.enabled, endpointConfigured: true },
     models: upstreamModelsForSafeExport(config.models),
     authStyle: config.authStyle,
   };

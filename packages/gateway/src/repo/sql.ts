@@ -5,6 +5,7 @@ import { decodeAliasTargets, decodeAnnouncedMetadata, encodeAliasTargets, encode
 import { SqlOpenAIResponsesItemsRepo, SqlOpenAIResponsesSnapshotsRepo } from './openai-responses-state-sql.ts';
 import { querySqlPerformanceOverview } from './performance-overview-sql.ts';
 import { normalizeProxyFallbackList } from './proxy-fallback-list.ts';
+import { performanceRecordIdentity } from './record-identities.ts';
 import { SqlScheduledMaintenanceRepo } from './scheduled-maintenance-sql.ts';
 import { generateSessionToken } from './session-tokens.ts';
 import { SqlSpilledFilesRepo } from './spilled-files-sql.ts';
@@ -670,9 +671,6 @@ const performanceDimensionsFromRow = (row: PerformanceDimensionRow): Performance
   runtimeLocation: row.runtime_location,
 });
 
-const performanceRecordKey = (dims: PerformanceDimensions): string =>
-  `${dims.hour}\0${dims.keyId}\0${dims.model}\0${dims.upstream}\0${dims.operation}\0${dims.runtimeLocation}`;
-
 const performanceDimensionBinds = (dims: PerformanceDimensions): SqlBindValue[] =>
   [dims.hour, dims.keyId, dims.model, dims.upstream, dims.operation, dims.runtimeLocation];
 
@@ -798,7 +796,7 @@ class SqlPerformanceRepo implements PerformanceRepo {
     const records = new Map<string, Omit<PerformanceTelemetryRecord, 'buckets'> & { buckets: PerformanceBucketRow[] }>();
     for (const row of summaryRows) {
       const dims = performanceDimensionsFromRow(row);
-      records.set(performanceRecordKey(dims), {
+      records.set(performanceRecordIdentity(dims), {
         ...dims,
         requests: row.requests,
         ttftSamplesOk: row.ttft_samples_ok,
@@ -818,7 +816,7 @@ class SqlPerformanceRepo implements PerformanceRepo {
     ).all<PerformanceDimensionRow & { metric: PerformanceMetric; lower: number; upper: number | null; count: number }>();
     for (const row of bucketRows) {
       const dims = performanceDimensionsFromRow(row);
-      const key = performanceRecordKey(dims);
+      const key = performanceRecordIdentity(dims);
       const record = records.get(key);
       // Every write path inserts the summary + buckets atomically, so a bucket
       // row without its summary is a DB invariant violation, not a domain case.

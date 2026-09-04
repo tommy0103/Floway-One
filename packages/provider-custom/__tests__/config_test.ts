@@ -227,11 +227,10 @@ test('safe export sanitizes every path override declared by the owning key inven
       ...(baseRecord.config as Record<string, unknown>),
       pathOverrides,
     },
-  }) as { pathOverrides: Partial<Record<CustomPathOverrideKey, string>> };
+  }) as { pathOverrideKinds: CustomPathOverrideKey[] };
 
-  assertEquals(Object.keys(safe.pathOverrides).toSorted(), [...CUSTOM_PATH_OVERRIDE_KEYS].toSorted());
-  for (const key of CUSTOM_PATH_OVERRIDE_KEYS) assertEquals(safe.pathOverrides[key], key);
-  assertEquals(JSON.stringify(safe.pathOverrides).includes('secret'), false);
+  assertEquals(safe.pathOverrideKinds.toSorted(), [...CUSTOM_PATH_OVERRIDE_KEYS].toSorted());
+  assertEquals(JSON.stringify(safe.pathOverrideKinds).includes('secret'), false);
 });
 
 test('assertCustomUpstreamRecord treats a null modelsFetch.endpoint as no override', () => {

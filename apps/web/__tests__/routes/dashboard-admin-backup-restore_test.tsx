@@ -1,6 +1,14 @@
 import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { importPost } = vi.hoisted(() => ({
+  importPost: vi.fn(async (_request: { json: unknown }) => Response.json({ imported: {} })),
+}));
+vi.mock('../../src/api/client', () => ({
+  api: { api: { import: { $post: importPost } } },
+  callApi: async (request: () => Promise<Response>) => ({ data: await (await request()).json() }),
+}));
+
 import { OutcomeToastProvider } from '../../src/components/ui/outcome-toast';
 import DashboardAdminBackupRestore from '../../src/routes/dashboard-admin-backup-restore';
 import { renderInApp } from '../render';
@@ -46,6 +54,7 @@ const file = (name: string) => new File(['pending'], name, { type: 'application/
 describe('backup import file races', () => {
   beforeEach(() => {
     ControlledFileReader.pending = [];
+    importPost.mockClear();
     vi.stubGlobal('FileReader', ControlledFileReader as unknown as typeof FileReader);
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -58,6 +67,8 @@ describe('backup import file races', () => {
 
     fireEvent.change(input(container), { target: { files: [file('B.json')] } });
     expect((screen.getByRole('button', { name: 'Import Data' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Import Data' }));
+    expect(importPost).not.toHaveBeenCalled();
     expect(screen.queryByText(/A\.json/)).toBeNull();
     await act(async () => ControlledFileReader.pending[1].fail());
 
@@ -79,5 +90,10 @@ describe('backup import file races', () => {
     const importButton = screen.getByRole('button', { name: 'Import Data' }) as HTMLButtonElement;
     expect(importButton.disabled).toBe(false);
     expect(screen.getByText('Users').closest('div')?.querySelector('dd')?.textContent).toBe('2');
+    await act(async () => { fireEvent.click(importButton); });
+    expect(importPost).toHaveBeenCalledTimes(1);
+    const submitted = JSON.stringify(importPost.mock.calls[0][0]);
+    expect(submitted).toContain('B');
+    expect(submitted).not.toContain('A');
   });
 });

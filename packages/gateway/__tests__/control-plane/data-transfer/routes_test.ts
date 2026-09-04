@@ -572,18 +572,18 @@ test('safe export structurally omits every authentication-bearing field', async 
     ...CUSTOM_UPSTREAM,
     config: {
       ...(CUSTOM_UPSTREAM.config as Record<string, unknown>),
-      baseUrl: 'https://custom-user:custom-password@custom.example.com/gateway?api_key=custom-query-secret#custom-fragment-secret',
+      baseUrl: 'https://custom-user:custom-password@custom.example.com/gateway/base-path-secret?api_key=custom-query-secret#custom-fragment-secret',
       pathOverrides: {
-        '/chat/completions': '/v1/chat?api_key=path-override-secret#path-override-fragment-secret',
+        '/chat/completions': '/v1/path-override-secret/chat?api_key=query-secret#fragment-secret',
       },
-      modelsFetch: { enabled: true, endpoint: '/models?api_key=models-fetch-secret#models-fetch-fragment-secret' },
+      modelsFetch: { enabled: true, endpoint: '/models/models-fetch-path-secret?api_key=query-secret#fragment-secret' },
       models: [{
         upstreamModelId: 'rerank-safe-export',
         kind: 'rerank',
         endpoints: { rerank: {} },
         rerankTarget: {
           protocol: 'cohere-v2',
-          path: '/rerank?api_key=rerank-path-secret#rerank-path-fragment-secret',
+          path: '/rerank/rerank-path-secret?api_key=query-secret#fragment-secret',
         },
       }],
     },
@@ -641,18 +641,18 @@ test('safe export structurally omits every authentication-bearing field', async 
   assertEquals(hasOwn(exported.data.apiKeys[0], 'key'), false);
   assertEquals(hasOwn(exported.data.apiKeys[0], 'serverSecret'), false);
   const custom = exported.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id);
-  assertEquals(custom.config.baseUrl, 'https://custom.example.com/gateway');
+  assertEquals(custom.config.baseUrl, 'https://custom.example.com');
   assertEquals(Object.keys(custom.config).toSorted(), [
-    'authStyle', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch', 'pathOverrides',
+    'authStyle', 'basePathConfigured', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch', 'pathOverrideKinds',
   ]);
   assertEquals(custom.config.endpoints, CUSTOM_UPSTREAM.config && (CUSTOM_UPSTREAM.config as any).endpoints);
   assertEquals(custom.config.ingressHeadersRules, [
     { key: 'x-request-id', source: 'client' },
     { key: 'x-route', source: 'configured' },
   ]);
-  assertEquals(custom.config.pathOverrides, { '/chat/completions': '/v1/chat' });
-  assertEquals(custom.config.modelsFetch, { enabled: true, endpoint: '/models' });
-  assertEquals(custom.config.models[0].rerankTarget, { protocol: 'cohere-v2', path: '/rerank' });
+  assertEquals(custom.config.pathOverrideKinds, ['/chat/completions']);
+  assertEquals(custom.config.modelsFetch, { enabled: true, endpointConfigured: true });
+  assertEquals(custom.config.models[0].rerankTarget, { protocol: 'cohere-v2', pathConfigured: true });
   assertEquals(hasOwn(custom.config, 'apiKey'), false);
   assertEquals(custom.state, null);
   const copilot = exported.data.upstreams.find((upstream: any) => upstream.id === COPILOT_UPSTREAM.id);
@@ -714,9 +714,11 @@ test('safe export structurally omits every authentication-bearing field', async 
     'custom-password',
     'custom-query-secret',
     'custom-fragment-secret',
+    'base-path-secret',
     'path-override-secret',
     'path-override-fragment-secret',
     'models-fetch-secret',
+    'models-fetch-path-secret',
     'models-fetch-fragment-secret',
     'rerank-path-secret',
     'rerank-path-fragment-secret',
@@ -1606,23 +1608,49 @@ test('import rejects api key unique identity conflicts before mutating', async (
 
 test('import rejects duplicate outer collection identities before mutating any state', async () => {
   const { app, repo } = setup();
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
   await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
   await repo.usage.set(USAGE_1);
   await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
   await repo.performance.set(PERFORMANCE_1);
+  await repo.webSearchConfig.save(DEFAULT_WEB_SEARCH_CONFIG);
+  const before = await (await app.request('/export')).json() as { data: unknown };
 
   const attempts = [
-    await doImport(app, 'replace', latestImportData({ upstreams: [CUSTOM_UPSTREAM, { ...CUSTOM_UPSTREAM, name: 'Hybrid', config: { baseUrl: 'https://different.example' } }] })),
-    await doImport(app, 'replace', latestImportData({ usage: [USAGE_2, { ...USAGE_2, requests: USAGE_2.requests + 1 }] })),
+    await doImport(app, 'replace', latestImportData({
+      upstreams: [
+        upstreamRecordToFullJson(CUSTOM_UPSTREAM),
+        upstreamRecordToFullJson({ ...CUSTOM_UPSTREAM, name: 'Hybrid', config: { ...(CUSTOM_UPSTREAM.config as object), baseUrl: 'https://different.example' } }),
+      ],
+    })),
+    await doImport(app, 'replace', latestImportData({ usage: [{ ...USAGE_2, upstream: null }, { ...USAGE_2, upstream: '', requests: USAGE_2.requests + 1 }] })),
     await doImport(app, 'replace', latestImportData({ searchUsage: [WEB_SEARCH_USAGE_2, { ...WEB_SEARCH_USAGE_2, requests: WEB_SEARCH_USAGE_2.requests + 1 }] })),
     await doImport(app, 'replace', latestImportData({ performanceIncluded: true, performance: [PERFORMANCE_2, { ...PERFORMANCE_2, ttftMsSum: PERFORMANCE_2.ttftMsSum + 1 }] })),
   ];
 
   for (const attempt of attempts) assertEquals(attempt.status, 400);
+  assertEquals(attempts.map(attempt => attempt.body.error), [
+    'duplicate upstreams identity at indexes 0 and 1',
+    'duplicate usage identity at indexes 0 and 1',
+    'duplicate searchUsage identity at indexes 0 and 1',
+    'duplicate performance identity at indexes 0 and 1',
+  ]);
+  assertEquals(logged.length, 4);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toMatchObject({ name: 'ImportIdentityError' });
+  }
   assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
   assertEquals(await repo.usage.listAll(), [USAGE_1]);
   assertEquals(await repo.webSearchUsage.listAll(), [WEB_SEARCH_USAGE_1]);
   assertEquals(await repo.performance.listAll(), [PERFORMANCE_1]);
+  const after = await (await app.request('/export')).json() as { data: unknown };
+  assertEquals(after.data, before.data);
+  log.mockRestore();
 });
 
 test('import requires an exact lowercase hexadecimal serverSecret on every api key', async () => {

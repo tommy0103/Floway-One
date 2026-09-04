@@ -16,6 +16,7 @@ import { ClientSafeBadRequestError } from '../../middleware/client-safe-error.ts
 import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
+import { performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../repo/record-identities.ts';
 import { upstreamStoredSecretsForSafeExport, webSearchStoredSecretsForSafeExport } from '../../repo/stored-secret-fields.ts';
 import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
@@ -163,10 +164,14 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
   };
 };
 
+class ImportIdentityError extends Error {
+  readonly name = 'ImportIdentityError';
+}
+
 interface IdentityRule<T> {
   readonly value: (record: T) => string;
-  readonly duplicate: (context: { value: string; prior: T; priorIndex: number; record: T; index: number }) => string;
-  readonly mergeConflict?: (value: string, existing: T, record: T) => string | null;
+  readonly duplicate: (context: { value: string; prior: T; priorIndex: number; record: T; index: number }) => ImportIdentityError;
+  readonly mergeConflict?: (context: { value: string; existing: T; record: T }) => ImportIdentityError | null;
 }
 
 const validateIndexedIdentities = <T>(
@@ -174,7 +179,7 @@ const validateIndexedIdentities = <T>(
   existing: readonly T[],
   mode: 'merge' | 'replace',
   rules: readonly IdentityRule<T>[],
-): string | null => {
+): ImportIdentityError | null => {
   for (const rule of rules) {
     const imported = new Map<string, { index: number; record: T }>();
     for (let index = 0; index < records.length; index++) {
@@ -190,7 +195,7 @@ const validateIndexedIdentities = <T>(
         const value = rule.value(record);
         const conflict = existingByValue.get(value);
         if (conflict !== undefined) {
-          const message = rule.mergeConflict(value, conflict, record);
+          const message = rule.mergeConflict({ value, existing: conflict, record });
           if (message !== null) return message;
         }
       }
@@ -199,21 +204,21 @@ const validateIndexedIdentities = <T>(
   return null;
 };
 
-const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly ApiKey[], mode: 'merge' | 'replace'): string | null =>
+const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly ApiKey[], mode: 'merge' | 'replace'): ImportIdentityError | null =>
   validateIndexedIdentities(records, existing, mode, [
     {
       value: record => record.id,
-      duplicate: ({ value, priorIndex, index }) => `duplicate apiKeys id ${value} at indexes ${priorIndex} and ${index}`,
+      duplicate: ({ value, priorIndex, index }) => new ImportIdentityError(`duplicate apiKeys id ${value} at indexes ${priorIndex} and ${index}`),
     },
     {
       value: record => record.key,
-      duplicate: ({ prior, record }) => `duplicate apiKeys raw key used by ${prior.id} and ${record.id}`,
-      mergeConflict: (_key, prior, record) => prior.id === record.id ? null : `apiKeys raw key for ${record.id} conflicts with existing api key ${prior.id}`,
+      duplicate: ({ prior, record }) => new ImportIdentityError(`duplicate apiKeys raw key used by ${prior.id} and ${record.id}`),
+      mergeConflict: ({ existing, record }) => existing.id === record.id ? null : new ImportIdentityError(`apiKeys raw key for ${record.id} conflicts with existing api key ${existing.id}`),
     },
     {
       value: record => record.serverSecret,
-      duplicate: ({ prior, record }) => `duplicate apiKeys server secret used by ${prior.id} and ${record.id}`,
-      mergeConflict: (_secret, prior, record) => prior.id === record.id ? null : `apiKeys server secret for ${record.id} conflicts with existing api key ${prior.id}`,
+      duplicate: ({ prior, record }) => new ImportIdentityError(`duplicate apiKeys server secret used by ${prior.id} and ${record.id}`),
+      mergeConflict: ({ existing, record }) => existing.id === record.id ? null : new ImportIdentityError(`apiKeys server secret for ${record.id} conflicts with existing api key ${existing.id}`),
     },
   ]);
 
@@ -240,15 +245,15 @@ const validateModelAliasIdentities = (
   records: readonly ModelAliasRecord[],
   existing: readonly ModelAliasRecord[],
   mode: 'merge' | 'replace',
-): string | null => validateIndexedIdentities(records, existing, mode, [
+): ImportIdentityError | null => validateIndexedIdentities(records, existing, mode, [
   {
     value: record => record.id,
-    duplicate: ({ value, priorIndex, index }) => `duplicate id ${value} at indexes ${priorIndex} and ${index}`,
+    duplicate: ({ value, priorIndex, index }) => new ImportIdentityError(`duplicate id ${value} at indexes ${priorIndex} and ${index}`),
   },
   {
     value: record => record.name,
-    duplicate: ({ value, priorIndex, index }) => `duplicate name ${value} at indexes ${priorIndex} and ${index}`,
-    mergeConflict: (name, prior, record) => prior.id === record.id ? null : `name ${name} conflicts with existing alias ${prior.id}`,
+    duplicate: ({ value, priorIndex, index }) => new ImportIdentityError(`duplicate name ${value} at indexes ${priorIndex} and ${index}`),
+    mergeConflict: ({ value, existing, record }) => existing.id === record.id ? null : new ImportIdentityError(`name ${value} conflicts with existing alias ${existing.id}`),
   },
 ]);
 
@@ -256,9 +261,9 @@ const validateCollectionIdentities = <T>(
   label: string,
   records: readonly T[],
   value: (record: T) => string,
-): string | null => validateIndexedIdentities(records, [], 'replace', [{
+): ImportIdentityError | null => validateIndexedIdentities(records, [], 'replace', [{
   value,
-  duplicate: ({ value: identity, priorIndex, index }) => `duplicate ${label} identity ${identity} at indexes ${priorIndex} and ${index}`,
+  duplicate: ({ priorIndex, index }) => new ImportIdentityError(`duplicate ${label} identity at indexes ${priorIndex} and ${index}`),
 }]);
 
 export const exportData = async (c: CtxWithQuery<typeof exportQuery>) => {
@@ -312,11 +317,11 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
   const outerIdentityErrors = [
     validateCollectionIdentities('upstreams', upstreams, record => record.id),
-    validateCollectionIdentities('usage', usage, record => JSON.stringify([record.keyId, record.model, record.upstream, record.modelKey, record.hour, record.pricingSelector])),
-    validateCollectionIdentities('searchUsage', searchUsage, record => JSON.stringify([record.provider, record.keyId, record.action, record.hour])),
-    validateCollectionIdentities('performance', performance, record => JSON.stringify([record.keyId, record.model, record.upstream, record.operation, record.runtimeLocation, record.hour])),
+    validateCollectionIdentities('usage', usage, usageRecordIdentity),
+    validateCollectionIdentities('searchUsage', searchUsage, webSearchUsageRecordIdentity),
+    validateCollectionIdentities('performance', performance, performanceRecordIdentity),
   ].find(error => error !== null);
-  if (outerIdentityErrors) return c.json({ error: outerIdentityErrors }, 400);
+  if (outerIdentityErrors) throw new ClientSafeBadRequestError('Floway backup contains duplicate outer identities', outerIdentityErrors.message, outerIdentityErrors);
   const preservePersonalOwner = mode === 'replace' && isPersonalRuntimeProfile();
 
   const repo = getRepo();
@@ -324,7 +329,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   // must disconnect live subscribers after the replacement row is stored.
   const preImportKeys = await repo.apiKeys.listIncludingDeleted();
   const apiKeyIdentityError = validateApiKeyIdentities(apiKeys, mode === 'merge' ? preImportKeys : [], mode);
-  if (apiKeyIdentityError) return c.json({ error: `invalid apiKeys: ${apiKeyIdentityError}` }, 400);
+  if (apiKeyIdentityError) throw new ClientSafeBadRequestError('Floway backup contains conflicting API key identities', `invalid apiKeys: ${apiKeyIdentityError.message}`, apiKeyIdentityError);
   const preImportRetentionById = new Map<string, number | null>(preImportKeys.map(key => [key.id, key.dumpRetentionSeconds]));
 
   const existingProxyIdsForRefs = mode === 'merge' ? (await repo.proxies.list()).map(proxy => proxy.id) : [];
@@ -333,7 +338,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   if (modelAliases !== undefined) {
     const existingAliases = mode === 'merge' ? await repo.modelAliases.list() : [];
     const aliasIdentityError = validateModelAliasIdentities(modelAliases, existingAliases, mode);
-    if (aliasIdentityError) return c.json({ error: `invalid modelAliases: ${aliasIdentityError}` }, 400);
+    if (aliasIdentityError) throw new ClientSafeBadRequestError('Floway backup contains conflicting model alias identities', `invalid modelAliases: ${aliasIdentityError.message}`, aliasIdentityError);
   }
 
   const applyImport = async (): Promise<void> => {

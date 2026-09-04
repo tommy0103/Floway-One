@@ -75,30 +75,47 @@ class NodeSqliteDatabase implements SqlDatabase {
   private readonly transactionContext = new AsyncLocalStorage<boolean>();
   private operationTail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly db: DatabaseSync, private readonly hardenFiles: () => void) {}
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly hardenFiles: () => void,
+    private readonly observeTransactionPhase: (phase: TransactionLifecyclePhase) => void = () => undefined,
+  ) {}
 
-  private recoverTransaction(cause: unknown): never {
+  private recoverTransaction(cause: unknown, phase: TransactionLifecyclePhase): never {
     const failures = [cause];
-    try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
+    this.observeTransactionPhase('recovery');
+    if (phase !== 'not-begun') {
+      try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
+    }
     try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
     if (failures.length === 1) throw cause;
     throw new AggregateError(failures, 'Floway transaction failed and recovery was incomplete.', { cause });
   }
 
   private async runTransactionLifecycle<T>(
-    begin: 'BEGIN' | 'BEGIN IMMEDIATE',
+    plan: TransactionLifecyclePlan,
     body: () => T | Promise<T>,
-    hardenBeforeCommit: boolean,
   ): Promise<T> {
-    this.db.exec(begin);
+    let phase: TransactionLifecyclePhase = 'not-begun';
+    this.observeTransactionPhase(phase);
     try {
+      this.db.exec(plan.begin === 'deferred' ? 'BEGIN' : 'BEGIN IMMEDIATE');
+      phase = 'begun';
+      this.observeTransactionPhase(phase);
+      phase = 'body';
+      this.observeTransactionPhase(phase);
       const result = await body();
-      if (hardenBeforeCommit) this.hardenFiles();
-      this.db.exec('COMMIT');
-      if (!hardenBeforeCommit) this.hardenFiles();
+      for (const finalization of plan.finalization) {
+        phase = finalization;
+        this.observeTransactionPhase(phase);
+        if (finalization === 'commit') this.db.exec('COMMIT');
+        else this.hardenFiles();
+      }
+      phase = 'done';
+      this.observeTransactionPhase(phase);
       return result;
     } catch (cause) {
-      this.recoverTransaction(cause);
+      this.recoverTransaction(cause, phase);
     }
   }
 
@@ -135,13 +152,13 @@ class NodeSqliteDatabase implements SqlDatabase {
     // A repository-level batch inside a broader restore transaction is
     // already protected by that transaction and must not open a nested BEGIN.
     if (this.transactionContext.getStore()) return this.schedule(runStatements);
-    return this.schedule(() => this.runTransactionLifecycle('BEGIN', runStatements, false));
+    return this.schedule(() => this.runTransactionLifecycle(BATCH_TRANSACTION, runStatements));
   }
 
   transaction<T>(operation: () => Promise<T>): Promise<T> {
     return this.schedule(() => this.transactionContext.run(
       true,
-      async () => await this.runTransactionLifecycle('BEGIN IMMEDIATE', operation, true),
+      async () => await this.runTransactionLifecycle(INTERACTIVE_TRANSACTION, operation),
     ));
   }
 
@@ -152,7 +169,16 @@ class NodeSqliteDatabase implements SqlDatabase {
 
 interface CreateNodeSqliteDatabaseOptions {
   readonly permissions?: InitializedPersonalStorage;
+  readonly observeTransactionPhase?: (phase: TransactionLifecyclePhase) => void;
 }
+
+type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'finalize' | 'recovery' | 'done';
+interface TransactionLifecyclePlan {
+  readonly begin: 'deferred' | 'immediate';
+  readonly finalization: readonly ('commit' | 'finalize')[];
+}
+const BATCH_TRANSACTION: TransactionLifecyclePlan = { begin: 'deferred', finalization: ['commit', 'finalize'] };
+const INTERACTIVE_TRANSACTION: TransactionLifecyclePlan = { begin: 'immediate', finalization: ['finalize', 'commit'] };
 
 export const createNodeSqliteDatabase = (
   path: string,
@@ -174,5 +200,5 @@ export const createNodeSqliteDatabase = (
   // enforcement, so turn it on at open.
   db.exec('PRAGMA foreign_keys = ON');
   hardenFiles();
-  return new NodeSqliteDatabase(db, hardenFiles);
+  return new NodeSqliteDatabase(db, hardenFiles, options.observeTransactionPhase);
 };

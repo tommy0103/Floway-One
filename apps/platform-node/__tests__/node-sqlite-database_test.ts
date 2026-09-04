@@ -105,6 +105,39 @@ test('batch executes statements in order and returns each result', () => withTem
   assertEquals(rows.results, [{ id: 1, name: 'A' }, { id: 2, name: 'b' }]);
 }));
 
+test('batch and interactive transactions expose their complete ordered lifecycle', () => withTempDb(async path => {
+  const phases: string[] = [];
+  const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });
+  await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
+  await db.batch!([db.prepare('INSERT INTO t (id) VALUES (1)')]);
+  assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'finalize', 'done']);
+  phases.length = 0;
+  await db.transaction!(async () => { await db.prepare('INSERT INTO t (id) VALUES (2)').run(); });
+  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'done']);
+}));
+
+test('begin and commit failures preserve their phase and original precedence', () => withTempDb(async path => {
+  const phases: string[] = [];
+  const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });
+  await db.exec('BEGIN');
+  let beginFailure: unknown;
+  try { await db.batch!([db.prepare('SELECT 1')]); } catch (cause) { beginFailure = cause; }
+  assert(beginFailure instanceof Error);
+  assert(beginFailure.message.includes('transaction'));
+  assertEquals(phases, ['not-begun', 'recovery']);
+  await db.exec('ROLLBACK');
+
+  phases.length = 0;
+  let commitFailure: unknown;
+  try {
+    await db.transaction!(async () => { await db.exec('COMMIT'); });
+  } catch (cause) { commitFailure = cause; }
+  assert(commitFailure instanceof AggregateError);
+  assertEquals(commitFailure.cause, commitFailure.errors[0]);
+  assert((commitFailure.cause as Error).message.includes('no transaction is active'));
+  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'recovery']);
+}));
+
 test('batch rolls back on mid-batch failure', () => withTempDb(async path => {
   const db = createNodeSqliteDatabase(path);
   await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)').run();

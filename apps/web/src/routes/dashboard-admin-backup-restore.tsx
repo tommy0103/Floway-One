@@ -140,6 +140,12 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
     setImportArchive({ kind: 'empty', error });
   }, []);
 
+  const completeFileRead = useCallback((token: number, outcome: () => ImportArchiveState) => {
+    if (token !== readSequenceRef.current) return;
+    readerRef.current = null;
+    setImportArchive(outcome());
+  }, []);
+
   const handleFile = useCallback(
     (file: File) => {
       const readSequence = ++readSequenceRef.current;
@@ -148,34 +154,26 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
 
       const reader = new FileReader();
       readerRef.current = reader;
-      reader.onload = () => {
-        if (readSequence !== readSequenceRef.current) return;
-        readerRef.current = null;
+      reader.onload = () => completeFileRead(readSequence, () => {
         const raw = reader.result as string;
         if (personal) {
           const result = parseEncryptedBackupFile(raw);
-          if (!result.ok) {
-            invalidateImportArchive(t(result.error.clientMessageKey));
-            return;
-          }
-          setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive }, token: readSequence });
-          return;
+          return result.ok
+            ? { kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive }, token: readSequence }
+            : { kind: 'empty', error: t(result.error.clientMessageKey) };
         }
         const result = parseBackupFile(raw);
-        if (!result.ok) {
-          invalidateImportArchive(t(result.error.clientMessageKey));
-          return;
-        }
-        setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence });
-      };
-      reader.onerror = () => {
-        if (readSequence !== readSequenceRef.current) return;
-        readerRef.current = null;
-        invalidateImportArchive(t('dashboard.backupRestore.import.errorReadFile'));
-      };
+        return result.ok
+          ? { kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence }
+          : { kind: 'empty', error: t(result.error.clientMessageKey) };
+      });
+      reader.onerror = () => completeFileRead(readSequence, () => ({
+        kind: 'empty',
+        error: t('dashboard.backupRestore.import.errorReadFile'),
+      }));
       reader.readAsText(file);
     },
-    [invalidateImportArchive, personal, t],
+    [completeFileRead, personal, t],
   );
 
   const handleFileSelect = useCallback(
