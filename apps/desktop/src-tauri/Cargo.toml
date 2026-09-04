@@ -20,12 +20,14 @@ required-features = ["desktop"]
 name = "bundle_contract"
 path = "__tests__/src/bundle_contract_test.rs"
 
+[[test]]
+name = "navigation"
+path = "__tests__/src/navigation_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
   "dep:getrandom",
-  "dep:libc",
-  "dep:signal-hook",
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
@@ -34,10 +36,6 @@ desktop = [
 [dependencies]
 # https://github.com/rust-random/getrandom/releases/tag/v0.3.4
 getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
-# https://github.com/rust-lang/libc/releases/tag/0.2.189
-libc = { version = "=0.2.189", optional = true }
-# https://github.com/vorner/signal-hook/releases/tag/v0.4.4
-signal-hook = { version = "=0.4.4", optional = true, features = ["iterator"] }
 # https://github.com/serde-rs/json/releases/tag/v1.0.151
 serde_json = { version = "=1.0.151" }
 # https://github.com/RustCrypto/hashes/releases/tag/sha2-v0.10.9

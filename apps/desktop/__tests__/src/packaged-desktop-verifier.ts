@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { createInstalledAppVerificationContext } from './support/installed-app.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
 import {
-  assertImmediateTerminationAtBoundary,
   assertPersonalRuntime,
   assertUnexpectedSidecarExitClosesShell,
   errorChainIncludes,
@@ -106,23 +105,7 @@ if (launchSupported) {
 
     await assertPersonalRuntime(context, resolve(isolatedRoot, 'PersonalData-success'));
     console.log('Floway production app completed the canonical migration set, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
-    console.log('Floway production shell SIGTERM teardown gracefully waited for its sidecar, closed the listener, and exited zero');
-
-    for (const boundary of ['process', 'registered-sidecar', 'live-listener'] as const) {
-      await assertImmediateTerminationAtBoundary(
-        context,
-        resolve(isolatedRoot, `PersonalData-immediate-${boundary}`),
-        boundary,
-      );
-      console.log(`Floway immediate SIGTERM at ${boundary} left no app, sidecar, listener, credential, or data root`);
-    }
-
-    await assertPersonalRuntime(
-      context,
-      resolve(isolatedRoot, 'PersonalData-hard-kill-fallback'),
-      { ignoreGracefulTermination: true },
-    );
-    console.log('Floway production shell used its named hard-kill fallback only after the graceful sidecar deadline');
+    console.log('Floway verifier cleanup terminated the installed app process group and proved no sidecar, listener, credential, or data root remained');
 
     await assertUnexpectedSidecarExitClosesShell(
       context,

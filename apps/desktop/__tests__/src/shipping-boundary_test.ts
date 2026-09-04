@@ -9,32 +9,68 @@ const repositoryRoot = resolve(import.meta.dirname, '../../../..');
 const execFileAsync = promisify(execFile);
 
 test('shipping desktop and Node sources contain no verification modes or environment hooks', async () => {
-  const sources = await Promise.all([
+  const desktopSources = await Promise.all([
+    'apps/desktop/src-tauri/src/app.rs',
+    'apps/desktop/src-tauri/src/bundle_contract.rs',
     'apps/desktop/src-tauri/src/lib.rs',
+    'apps/desktop/src-tauri/src/navigation.rs',
+    'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
+  ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
+  const [app, _bundle, _library, _navigation, supervisor] = desktopSources;
+  const nodeSources = await Promise.all([
     'apps/platform-node/src/device-master-key.ts',
     'apps/platform-node/src/run-node-entry.ts',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
+  const sources = [
+    ...desktopSources,
+    ...nodeSources,
+  ];
 
   for (const source of sources) {
     expect(source).not.toContain('--verify-package');
     expect(source).not.toContain('--verify-personal-runtime');
     expect(source).not.toContain('FLOWAY_PERSONAL_VERIFICATION');
   }
-  expect(sources[0]).not.toContain('.env("ADMIN_KEY"');
-  expect(sources[0]).not.toContain('.env("PORT"');
-  expect(sources[0]).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
-  expect(sources[0]).toContain('WebviewUrl::External(url)');
-  expect(sources[0]).toContain('ready_dashboard_origin(&runtime_stdout)');
-  expect(sources[0]).toContain('.on_navigation(move |candidate|');
-  expect(sources[0]).toContain('.on_new_window(move |candidate, _features|');
-  expect(sources[0]).toContain('NewWindowResponse::Deny');
-  expect(sources[0]).toContain('enforce_dashboard_navigation(policy, candidate, new_window');
-  const ownerSetup = sources[0].indexOf('let owner = SidecarOwner::new();');
-  const signalSetup = sources[0].indexOf('install_termination_signal(app_handle, owner_for_signal)?;');
-  const registeredSpawn = sources[0].indexOf('let events = owner.spawn_registered(||');
+  expect(app).not.toContain('.env("ADMIN_KEY"');
+  expect(app).not.toContain('.env("PORT"');
+  expect(app).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
+  expect(app).toContain('WebviewUrl::External(url)');
+  expect(app).toContain('ready_dashboard_origin(&runtime_stdout)');
+  expect(app).toContain('.on_navigation(move |candidate|');
+  expect(app).toContain('.on_new_window(move |candidate, _features|');
+  expect(app).toContain('NewWindowResponse::Deny');
+  const ownerSetup = app.indexOf('let supervisor = PackageProcessSupervisor::new();');
+  const preflight = app.indexOf('let runtime = resolve_runtime_bundle(&resource_dir)?;');
+  const registeredSpawn = app.indexOf('let events = supervisor.spawn_registered(||');
   expect(ownerSetup).toBeGreaterThan(-1);
-  expect(signalSetup).toBeGreaterThan(ownerSetup);
-  expect(registeredSpawn).toBeGreaterThan(signalSetup);
+  expect(preflight).toBeGreaterThan(ownerSetup);
+  expect(registeredSpawn).toBeGreaterThan(preflight);
+  expect(supervisor).toContain('Registration shares one lock with stop/termination bookkeeping');
+});
+
+test('issue 15 process safety introduces no issue 17 window or owner-lifetime policy', async () => {
+  const sources = await Promise.all([
+    'apps/desktop/src-tauri/src/app.rs',
+    'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
+    'apps/desktop/src-tauri/Cargo.toml',
+  ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
+  const combined = sources.join('\n');
+  for (const deferredPolicy of [
+    'signal_hook',
+    'SIGTERM',
+    'GRACEFUL_SHUTDOWN',
+    'TrayIcon',
+    'SingleInstance',
+    'Autostart',
+    'CloseRequested',
+    '.hide()',
+    'restart_sidecar',
+  ]) {
+    expect(combined).not.toContain(deferredPolicy);
+  }
+  expect(combined).toContain('Window, tray, singleton, restart,');
+  expect(combined).toContain('RunEvent::ExitRequested');
+  expect(combined).toContain('std::process::exit(1)');
 });
 
 test('root desktop verification delegates every acquired output to failure-chain aggregation', async () => {

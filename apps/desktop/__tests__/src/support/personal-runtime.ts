@@ -11,13 +11,10 @@ import {
   assertLoopbackPortReleased,
   captureApp,
   PERSONAL_DASHBOARD_PORT,
-  reserveNonDefaultLoopbackPort,
-  TERMINATION_SIGNAL,
   terminateProcessGroup,
   type CapturedChild,
   waitForChildExit,
   waitForDirectChild,
-  waitForOutput,
   waitForProcessStopped,
 } from './process-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
@@ -25,7 +22,6 @@ import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 const execFileAsync = promisify(execFile);
 
 export type PersonalFailurePhase = 'app' | 'sidecar' | 'listener' | 'dashboard' | 'migration' | 'credential';
-export type ImmediateTerminationBoundary = 'process' | 'registered-sidecar' | 'live-listener';
 
 export interface CredentialIdentity {
   readonly account: string;
@@ -170,14 +166,12 @@ export const assertPersonalRuntime = async (
   verificationRoot: string,
   options: {
     readonly forcedFailure?: PersonalFailurePhase;
-    readonly ignoreGracefulTermination?: boolean;
     readonly port?: number;
     readonly seedPersistedPort?: boolean;
   } = {},
 ): Promise<void> => {
   const {
     forcedFailure,
-    ignoreGracefulTermination = false,
     port = PERSONAL_DASHBOARD_PORT,
     seedPersistedPort = false,
   } = options;
@@ -215,13 +209,12 @@ export const assertPersonalRuntime = async (
     await writeFile(context.entry, personalEntrySource(
       verificationRoot,
       credentialIdentity,
-      ignoreGracefulTermination ? "process.on('SIGTERM', () => {});" : '',
     ));
     const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
-    const sidecarPid = await waitForDirectChild(child);
+    await waitForDirectChild(child);
     forcePersonalFailure(forcedFailure, 'sidecar');
     await waitForHealthyRuntime(child, output, origin);
     if (!output().includes(`Floway listening on ${origin}`)) {
@@ -262,62 +255,6 @@ export const assertPersonalRuntime = async (
       }
     }
     forcePersonalFailure(forcedFailure, 'credential');
-    if (child.pid === undefined) throw new Error('Floway production app process has no PID');
-    process.kill(child.pid, TERMINATION_SIGNAL);
-    await waitForOutput(child, output, [ignoreGracefulTermination
-      ? 'Floway desktop used SIGKILL after its personal runtime exceeded the graceful shutdown deadline'
-      : 'Floway desktop gracefully terminated and waited for its personal runtime']);
-    await waitForChildExit(child, 8_000);
-    if (child.exitCode !== 0) {
-      throw new Error(`Floway shell teardown exited with ${child.exitCode ?? child.signalCode}\n${output()}`);
-    }
-    await waitForProcessStopped(sidecarPid);
-    await assertLoopbackPortReleased(port);
-  });
-};
-
-export const assertImmediateTerminationAtBoundary = async (
-  context: InstalledAppVerificationContext,
-  verificationRoot: string,
-  boundary: ImmediateTerminationBoundary,
-): Promise<void> => {
-  const credentialIdentity: CredentialIdentity = {
-    service: `Floway desktop immediate-termination verification ${randomUUID()}`,
-    account: `device-master-key-${randomUUID()}`,
-  };
-  const port = await reserveNonDefaultLoopbackPort();
-  const origin = `http://127.0.0.1:${port}`;
-  await withFailureSafeCleanup(async cleanup => {
-    await assertLoopbackPortReleased(port);
-    await mkdir(verificationRoot, { recursive: true });
-    cleanup.defer(`${boundary} application data`, async () => await rm(verificationRoot, { force: true, recursive: true }));
-    cleanup.defer(`${boundary} credential`, async () => await runCredentialScript(context, credentialIdentity, 'delete'));
-    cleanup.defer(`${boundary} listener`, async () => await assertLoopbackPortReleased(port));
-    await writeFile(resolve(verificationRoot, 'runtime.json'), `${JSON.stringify({ version: 1, port })}\n`);
-    await writeFile(context.entry, personalEntrySource(verificationRoot, credentialIdentity));
-    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
-    cleanup.defer(`${boundary} application process group`, async () => await terminateProcessGroup(child));
-    if (child.pid === undefined) throw new Error('Floway production app process has no PID');
-
-    let sidecarPid: number | undefined;
-    if (boundary === 'registered-sidecar' || boundary === 'live-listener') sidecarPid = await waitForDirectChild(child);
-    if (boundary === 'live-listener') await waitForHealthyRuntime(child, output, origin);
-    process.kill(child.pid, TERMINATION_SIGNAL);
-    await waitForChildExit(child, 10_000);
-    if (boundary === 'process') {
-      if (child.exitCode !== 0 && child.signalCode !== TERMINATION_SIGNAL) {
-        throw new Error(`Immediate process termination returned ${child.exitCode ?? child.signalCode}\n${output()}`);
-      }
-    } else {
-      if (child.exitCode !== 0) {
-        throw new Error(`Floway ownership termination returned ${child.exitCode ?? child.signalCode}\n${output()}`);
-      }
-      if (!output().includes('Floway desktop gracefully terminated and waited for its personal runtime')) {
-        throw new Error(`Floway ownership termination omitted its graceful wait evidence\n${output()}`);
-      }
-    }
-    if (sidecarPid !== undefined) await waitForProcessStopped(sidecarPid);
-    await assertLoopbackPortReleased(port);
   });
 };
 
@@ -354,7 +291,7 @@ export const assertUnexpectedSidecarExitClosesShell = async (
       throw new Error(`Floway shell did not fail after its personal runtime exited: ${child.exitCode ?? child.signalCode}\n${output()}`);
     }
     const captured = output();
-    for (const fragment of [parentFailure, originalCause, 'Floway personal runtime exited unexpectedly']) {
+    for (const fragment of [parentFailure, originalCause, 'Floway packaged runtime exited unexpectedly']) {
       if (!captured.includes(fragment)) throw new Error(`Floway shell omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
     await waitForProcessStopped(sidecarPid);
