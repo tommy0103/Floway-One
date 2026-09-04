@@ -692,7 +692,7 @@ if (launchSupported) {
       resolve(isolatedRoot, 'PersonalData-persisted-port'),
       { port: customPort, seedPersistedPort: true },
     );
-    console.log(`Floway production app preserved and loaded persisted personal endpoint http://127.0.0.1:${customPort}`);
+    console.log(`Floway production app preserved runtime.json unchanged and loaded persisted personal endpoint http://127.0.0.1:${customPort}`);
 
     await assertPersonalRuntime(
       installedExecutable,
@@ -702,6 +702,7 @@ if (launchSupported) {
       resolve(isolatedRoot, 'PersonalData-success'),
     );
     console.log('Floway production app completed personal migrations, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
+    console.log('Floway production shell SIGTERM teardown waited for its sidecar, closed the listener, and exited zero');
 
     await assertUnexpectedSidecarExitClosesShell(
       installedExecutable,
