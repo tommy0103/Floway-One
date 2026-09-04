@@ -286,6 +286,7 @@ const assertDashboardBootstrapAndControlPlane = async (
   while (Date.now() < deadline) {
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
+      database.exec('PRAGMA busy_timeout = 5000');
       const session = database.prepare('SELECT id FROM sessions WHERE user_id = 1 ORDER BY created_at DESC LIMIT 1')
         .get() as { id?: unknown } | undefined;
       if (typeof session?.id === 'string') {
@@ -387,6 +388,7 @@ const assertPersonalRuntime = async (
 
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
     try {
+      database.exec('PRAGMA busy_timeout = 5000');
       const migration = database.prepare("SELECT name FROM _migrations WHERE name = '0084_protected_search_secret_columns.sql'").get();
       if (migration === undefined) throw new Error('Installed personal runtime did not apply the complete migration set');
     } finally {
