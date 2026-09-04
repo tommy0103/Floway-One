@@ -16,6 +16,7 @@ test('action rows own the sourced responsive WinUI spacing boundary', () => {
   expect(row.className).toContain('flex-nowrap');
   expect(row.className).toContain('sm:flex-row');
   expect(row.className).not.toContain('flex-wrap');
+  expect(row.className).not.toContain('items-center');
   expect(row.className).toContain('gap-[var(--spacingHorizontalS)]');
   expect(screen.getByRole('button', { name: 'Full backup' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Safe export' })).toBeTruthy();
