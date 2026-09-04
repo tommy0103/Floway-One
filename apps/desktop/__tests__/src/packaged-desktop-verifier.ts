@@ -201,23 +201,10 @@ const captureApp = (executable: string, environment: NodeJS.ProcessEnv): {
   return { child, output: () => captured };
 };
 
-const reserveLoopbackPort = async (): Promise<number> => {
-  return await withFailureSafeCleanup(async cleanup => {
-    const server = createServer();
-    cleanup.defer('reserved loopback listener', async () => {
-      if (!server.listening) return;
-      await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
-        if (error === undefined) resolveClose();
-        else rejectClose(error);
-      }));
-    });
-    await new Promise<void>((resolveListen, rejectListen) => {
-      server.once('error', rejectListen);
-      server.listen(0, '127.0.0.1', resolveListen);
-    });
-    return (server.address() as { port: number }).port;
-  });
-};
+// The personal runtime owns this stable port, and the desktop Dashboard origin
+// must use the same authority for bootstrap and control-plane CORS.
+// https://github.com/tommy0103/Floway-One/blob/dae7ba3773b50648b8a7ed75c5565b24f988919e/apps/platform-node/src/personal-runtime.ts#L18-L20
+const PERSONAL_DASHBOARD_PORT = 8788;
 
 const assertLoopbackPortReleased = async (port: number): Promise<void> => {
   await withFailureSafeCleanup(async cleanup => {
@@ -271,17 +258,18 @@ import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 
-const credential = await createOperatingSystemCredential(
-  ${JSON.stringify(credentialService)},
-  ${JSON.stringify(credentialAccount)},
-);
 await runNodeEntry({
   resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
     dataDir: ${JSON.stringify(dataRoot)},
     stableUserHome: ${JSON.stringify(dataRoot)},
   }),
-  createNodeStoredSecretCodec: (profile, db, creationLock, _credential, options) =>
-    createNodeStoredSecretCodec(profile, db, creationLock, credential, options),
+  createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
+    const credential = await createOperatingSystemCredential(
+      ${JSON.stringify(credentialService)},
+      ${JSON.stringify(credentialAccount)},
+    );
+    return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
+  },
 });
 `;
 
@@ -299,10 +287,11 @@ const assertPersonalRuntime = async (
 ): Promise<void> => {
   const credentialService = `Floway desktop package verification ${randomUUID()}`;
   const credentialAccount = `device-master-key-${randomUUID()}`;
-  const port = await reserveLoopbackPort();
+  const port = PERSONAL_DASHBOARD_PORT;
   const origin = `http://127.0.0.1:${port}`;
 
   await withFailureSafeCleanup(async cleanup => {
+    await assertLoopbackPortReleased(port);
     await mkdir(verificationRoot, { recursive: true });
     cleanup.defer('isolated application data', async () => {
       await rm(verificationRoot, { force: true, recursive: true });
@@ -319,7 +308,7 @@ const assertPersonalRuntime = async (
     cleanup.defer('loopback listener', async () => await assertLoopbackPortReleased(port));
 
     await writeFile(entryPath, personalEntrySource(verificationRoot, credentialService, credentialAccount));
-    const { child, output } = captureApp(executable, { ...process.env, PORT: String(port) });
+    const { child, output } = captureApp(executable, { ...process.env, PORT: '65534' });
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
@@ -577,7 +566,8 @@ if (launchSupported) {
       const verificationRoot = resolve(isolatedRoot, 'PersonalData-keyring-fault');
       const credentialService = `Floway desktop package verification ${randomUUID()}`;
       const credentialAccount = `device-master-key-${randomUUID()}`;
-      const port = await reserveLoopbackPort();
+      const port = PERSONAL_DASHBOARD_PORT;
+      await assertLoopbackPortReleased(port);
       await mkdir(verificationRoot, { recursive: true });
       faultCleanup.defer('Keyring-fault application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
       faultCleanup.defer('Keyring-fault credential', async () => {
@@ -595,7 +585,7 @@ if (launchSupported) {
       });
       await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.sync();
-      const { child, output } = captureApp(installedExecutable, { ...process.env, PORT: String(port) });
+      const { child, output } = captureApp(installedExecutable, { ...process.env, PORT: '65534' });
       faultCleanup.defer('Keyring-fault application process group', async () => await terminateProcessGroup(child));
       await waitForOutput(child, output, ['Floway runtime exit']);
     });

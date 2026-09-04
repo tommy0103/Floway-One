@@ -3,7 +3,10 @@ use std::fs::{create_dir_all, remove_dir_all, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use floway_desktop::{DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, resolve_runtime_bundle};
+use floway_desktop::{
+    DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
+    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, dashboard_bootstrap_url, resolve_runtime_bundle,
+};
 
 fn temporary_root() -> PathBuf {
     let nonce = SystemTime::now()
@@ -39,6 +42,16 @@ fn resolves_only_packaged_runtime_resources_for_the_personal_sidecar() {
     let runtime = resolve_runtime_bundle(&root).expect("complete packaged resources must resolve");
     assert_eq!(NODE_SIDECAR_NAME, "floway-node");
     assert_eq!(DASHBOARD_ORIGIN, "http://127.0.0.1:8788");
+    assert_eq!(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, "FLOWAY_BOOTSTRAP_TOKEN");
+    assert_eq!(
+        PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
+        "floway-bootstrap"
+    );
+    let token = "12".repeat(32);
+    assert_eq!(
+        dashboard_bootstrap_url(&token),
+        format!("http://127.0.0.1:8788/#floway-bootstrap={token}")
+    );
     assert_eq!(runtime.root, root.join("runtime"));
     assert_eq!(
         runtime.sidecar_arguments(),

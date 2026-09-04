@@ -17,4 +17,7 @@ test('shipping desktop and Node sources contain no verification modes or environ
     expect(source).not.toContain('--verify-personal-runtime');
     expect(source).not.toContain('FLOWAY_PERSONAL_VERIFICATION');
   }
+  expect(sources[0]).not.toContain('.env("ADMIN_KEY"');
+  expect(sources[0]).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token)');
+  expect(sources[0]).toContain('WebviewUrl::External(dashboard_url)');
 });

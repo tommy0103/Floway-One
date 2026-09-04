@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
+// These identifiers are owned by the merged personal Dashboard bootstrap
+// contract; desktop supplies one fresh value to both sides of that exchange.
+// https://github.com/tommy0103/Floway-One/blob/246524d44fc8f69ca9440e2d3d2ca9f26eb89736/apps/platform-node/src/personal-dashboard-bootstrap.ts#L3-L11
+// https://github.com/tommy0103/Floway-One/blob/246524d44fc8f69ca9440e2d3d2ca9f26eb89736/apps/web/src/auth/session.ts#L1-L4
+pub const PERSONAL_DASHBOARD_BOOTSTRAP_ENV: &str = "FLOWAY_BOOTSTRAP_TOKEN";
+pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
+
+pub fn dashboard_bootstrap_url(token: &str) -> String {
+    format!("{DASHBOARD_ORIGIN}/#{PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY}={token}")
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeBundle {
@@ -110,6 +120,7 @@ pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, Bund
 mod desktop {
     use std::error::Error;
     use std::fmt::{Display, Formatter};
+    use std::io;
     use std::sync::Mutex;
 
     use getrandom::fill;
@@ -117,7 +128,10 @@ mod desktop {
     use tauri_plugin_shell::ShellExt;
     use tauri_plugin_shell::process::CommandEvent;
 
-    use super::{DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, resolve_runtime_bundle};
+    use super::{
+        NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, dashboard_bootstrap_url,
+        resolve_runtime_bundle,
+    };
 
     #[derive(Debug)]
     struct StartupAuthorityError {
@@ -139,7 +153,7 @@ mod desktop {
         }
     }
 
-    fn ephemeral_admin_key() -> Result<String, StartupAuthorityError> {
+    fn ephemeral_bootstrap_token() -> Result<String, StartupAuthorityError> {
         let mut bytes = [0_u8; 32];
         fill(&mut bytes).map_err(|source| StartupAuthorityError { source })?;
         Ok(bytes
@@ -163,25 +177,28 @@ mod desktop {
             .setup(|app| {
                 let resource_dir = app.path().resource_dir()?;
                 let runtime = resolve_runtime_bundle(&resource_dir)?;
-                let admin_key = ephemeral_admin_key()?;
+                let bootstrap_token = ephemeral_bootstrap_token()?;
+                let dashboard_url: tauri::Url =
+                    dashboard_bootstrap_url(&bootstrap_token).parse()?;
+                let dashboard_port = dashboard_url
+                    .port_or_known_default()
+                    .ok_or_else(|| io::Error::other("Floway Dashboard origin has no port"))?;
                 let (mut events, child) = app
                     .shell()
                     .sidecar(NODE_SIDECAR_NAME)?
                     .args(runtime.sidecar_arguments())
                     .current_dir(&runtime.root)
-                    .env("ADMIN_KEY", admin_key)
+                    .env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token)
                     .env("FLOWAY_PROFILE", "personal")
                     .env("NODE_ENV", "production")
+                    .env("PORT", dashboard_port.to_string())
                     .spawn()?;
 
-                let window = WebviewWindowBuilder::new(
-                    app,
-                    "main",
-                    WebviewUrl::External(DASHBOARD_ORIGIN.parse()?),
-                )
-                .title("Floway")
-                .inner_size(1280.0, 800.0)
-                .build();
+                let window =
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(dashboard_url))
+                        .title("Floway")
+                        .inner_size(1280.0, 800.0)
+                        .build();
                 if let Err(error) = window {
                     let _ = child.kill();
                     return Err(error.into());
