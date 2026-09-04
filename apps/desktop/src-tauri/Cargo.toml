@@ -42,6 +42,10 @@ signal-hook = { version = "=0.4.4", optional = true, features = ["iterator"] }
 serde_json = { version = "=1.0.151" }
 # https://github.com/RustCrypto/hashes/releases/tag/sha2-v0.10.9
 sha2 = { version = "=0.10.9" }
+# https://github.com/servo/rust-url/blob/v2.5.8/percent_encoding/Cargo.toml#L12-L13
+percent-encoding = { version = "=2.3.2" }
+# https://github.com/servo/rust-url/releases/tag/v2.5.8
+url = { version = "=2.5.8" }
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5
 tauri = { version = "=2.11.5", optional = true, features = [] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6

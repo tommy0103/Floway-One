@@ -25,6 +25,10 @@ test('shipping desktop and Node sources contain no verification modes or environ
   expect(sources[0]).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
   expect(sources[0]).toContain('WebviewUrl::External(url)');
   expect(sources[0]).toContain('ready_dashboard_origin(&runtime_stdout)');
+  expect(sources[0]).toContain('.on_navigation(move |candidate|');
+  expect(sources[0]).toContain('.on_new_window(move |candidate, _features|');
+  expect(sources[0]).toContain('NewWindowResponse::Deny');
+  expect(sources[0]).toContain('enforce_dashboard_navigation(policy, candidate, new_window');
   const ownerSetup = sources[0].indexOf('let owner = SidecarOwner::new();');
   const signalSetup = sources[0].indexOf('install_termination_signal(app_handle, owner_for_signal)?;');
   const registeredSpawn = sources[0].indexOf('let events = owner.spawn_registered(||');

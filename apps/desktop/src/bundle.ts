@@ -36,7 +36,10 @@ export interface PreparedDesktopBundle {
 interface DesktopBundleContract {
   readonly schemaVersion: 1;
   readonly dashboard: {
-    readonly assets: readonly DashboardAssetContract[];
+    readonly assets: readonly BundleFileContract[];
+  };
+  readonly migrations: {
+    readonly files: readonly BundleFileContract[];
   };
   readonly node: {
     readonly architecture: NodeJS.Architecture;
@@ -46,7 +49,7 @@ interface DesktopBundleContract {
   };
 }
 
-interface DashboardAssetContract {
+interface BundleFileContract {
   readonly path: string;
   readonly sha256: string;
 }
@@ -77,17 +80,25 @@ const requireMigrations = async (runtimeRoot: string): Promise<void> => {
   }
 };
 
-const dashboardAssetContract = async (runtimeRoot: string): Promise<readonly DashboardAssetContract[]> => {
-  const dashboardRoot = resolve(runtimeRoot, 'apps/web/dist/client');
-  const assets: DashboardAssetContract[] = [];
-  await visitFileTree(dashboardRoot, async ({ dirent, path }) => {
-    if (!dirent.isFile()) return;
-    assets.push({
-      path: relative(dashboardRoot, path).split(sep).join('/'),
+const bundleFileContract = async (
+  root: string,
+  include: (path: string) => boolean = () => true,
+): Promise<readonly BundleFileContract[]> => {
+  const files: BundleFileContract[] = [];
+  await visitFileTree(root, async ({ dirent, path }) => {
+    if (!dirent.isFile() || !include(path)) return;
+    files.push({
+      path: relative(root, path).split(sep).join('/'),
       sha256: createHash('sha256').update(await readFile(path)).digest('hex'),
     });
   });
-  assets.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return files;
+};
+
+const dashboardAssetContract = async (runtimeRoot: string): Promise<readonly BundleFileContract[]> => {
+  const dashboardRoot = resolve(runtimeRoot, 'apps/web/dist/client');
+  const assets = await bundleFileContract(dashboardRoot);
   if (!assets.some(asset => asset.path === 'index.html')) {
     throw new Error(`Desktop bundle Dashboard manifest has no index.html beneath ${dashboardRoot}`);
   }
@@ -95,6 +106,22 @@ const dashboardAssetContract = async (runtimeRoot: string): Promise<readonly Das
     throw new Error(`Desktop bundle Dashboard manifest has no dashboard-routes.json beneath ${dashboardRoot}`);
   }
   return assets;
+};
+
+const migrationFileContract = async (runtimeRoot: string): Promise<readonly BundleFileContract[]> => {
+  const migrationsRoot = resolve(
+    runtimeRoot,
+    'apps/platform-node/node_modules/@floway-dev/gateway/migrations',
+  );
+  const names = (await readdir(migrationsRoot)).filter(name => name.endsWith('.sql')).sort();
+  const files = await Promise.all(names.map(async path => ({
+    path,
+    sha256: createHash('sha256').update(await readFile(resolve(migrationsRoot, path))).digest('hex'),
+  })));
+  if (files.length === 0) {
+    throw new Error(`Desktop bundle migration manifest is empty beneath ${migrationsRoot}`);
+  }
+  return files;
 };
 
 const requirePhysicalProductionDependencies = async (runtimeRoot: string): Promise<void> => {
@@ -248,6 +275,7 @@ export const prepareDesktopBundle = async ({
     const contract: DesktopBundleContract = {
       schemaVersion: 1,
       dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
+      migrations: { files: await migrationFileContract(stagedRuntimeRoot) },
       node: {
         architecture: nodeArchitecture,
         platform: nodePlatform,

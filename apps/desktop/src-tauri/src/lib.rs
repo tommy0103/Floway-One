@@ -5,7 +5,9 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use percent_encoding::percent_decode_str;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
@@ -16,6 +18,107 @@ pub const NODE_SIDECAR_NAME: &str = "floway-node";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_ENV: &str = "FLOWAY_BOOTSTRAP_TOKEN";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DashboardNavigationDecision {
+    AllowInWebview,
+    OpenInSystemBrowser(Url),
+    Reject,
+}
+
+#[derive(Clone, Debug)]
+pub struct DashboardNavigationPolicy {
+    bootstrap_url: Url,
+    bootstrap_token: String,
+    trusted_origin: Url,
+}
+
+impl DashboardNavigationPolicy {
+    pub fn new(origin: &str, bootstrap_token: &str) -> Result<Self, Box<dyn Error>> {
+        let trusted_origin = Url::parse(origin)?;
+        if trusted_origin.scheme() != "http"
+            || trusted_origin.host_str() != Some("127.0.0.1")
+            || trusted_origin.port().is_none()
+            || trusted_origin.path() != "/"
+            || trusted_origin.query().is_some()
+            || trusted_origin.fragment().is_some()
+            || !trusted_origin.username().is_empty()
+            || trusted_origin.password().is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Floway personal runtime reported an invalid Dashboard origin: {origin}"),
+            )
+            .into());
+        }
+        let bootstrap_url = Url::parse(&dashboard_bootstrap_url(origin, bootstrap_token))?;
+        Ok(Self {
+            bootstrap_url,
+            bootstrap_token: bootstrap_token.to_owned(),
+            trusted_origin,
+        })
+    }
+
+    pub fn bootstrap_url(&self) -> &Url {
+        &self.bootstrap_url
+    }
+
+    pub fn decide(&self, candidate: &Url, new_window: bool) -> DashboardNavigationDecision {
+        let query_carries_bootstrap_authority = candidate.query_pairs().any(|(key, value)| {
+            key == PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY
+                || value.contains(&self.bootstrap_token)
+        });
+        let decoded_candidate = percent_decode_str(candidate.as_str()).decode_utf8_lossy();
+        let carries_bootstrap_key = query_carries_bootstrap_authority
+            || decoded_candidate.contains(PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY);
+        let carries_bootstrap_token = decoded_candidate.contains(&self.bootstrap_token);
+        if (carries_bootstrap_key || carries_bootstrap_token) && candidate != &self.bootstrap_url {
+            return DashboardNavigationDecision::Reject;
+        }
+
+        let same_origin = candidate.scheme() == self.trusted_origin.scheme()
+            && candidate.host_str() == self.trusted_origin.host_str()
+            && candidate.port_or_known_default() == self.trusted_origin.port_or_known_default()
+            && candidate.username().is_empty()
+            && candidate.password().is_none();
+        if same_origin {
+            return if new_window {
+                DashboardNavigationDecision::Reject
+            } else {
+                DashboardNavigationDecision::AllowInWebview
+            };
+        }
+
+        if candidate.scheme() == "https"
+            && candidate.host_str().is_some()
+            && candidate.username().is_empty()
+            && candidate.password().is_none()
+            && !carries_bootstrap_key
+            && !carries_bootstrap_token
+        {
+            let mut external = candidate.clone();
+            external.set_fragment(None);
+            return DashboardNavigationDecision::OpenInSystemBrowser(external);
+        }
+        DashboardNavigationDecision::Reject
+    }
+}
+
+pub fn enforce_dashboard_navigation<E>(
+    policy: &DashboardNavigationPolicy,
+    candidate: &Url,
+    new_window: bool,
+    open_external: impl FnOnce(&Url) -> Result<(), E>,
+) -> Result<bool, E> {
+    match policy.decide(candidate, new_window) {
+        DashboardNavigationDecision::AllowInWebview => Ok(true),
+        DashboardNavigationDecision::OpenInSystemBrowser(external) => {
+            open_external(&external)?;
+            Ok(false)
+        }
+        DashboardNavigationDecision::Reject => Ok(false),
+    }
+}
 
 pub fn dashboard_bootstrap_url(origin: &str, token: &str) -> String {
     format!("{origin}/#{PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY}={token}")
@@ -42,6 +145,7 @@ pub struct RuntimeBundle {
     pub dashboard_index: PathBuf,
     pub dashboard_routes: PathBuf,
     pub entry: PathBuf,
+    pub migration_files: Vec<PathBuf>,
     pub migrations: PathBuf,
     pub root: PathBuf,
 }
@@ -99,33 +203,101 @@ fn require_file(path: PathBuf) -> Result<PathBuf, BundleResourceError> {
     Ok(path)
 }
 
-fn require_migrations(path: PathBuf) -> Result<PathBuf, BundleResourceError> {
-    let entries =
-        fs::read_dir(&path).map_err(|source| BundleResourceError::new(path.clone(), source))?;
-    for entry in entries {
-        let entry = entry.map_err(|source| BundleResourceError::new(path.clone(), source))?;
-        if entry
-            .path()
-            .extension()
-            .is_some_and(|extension| extension == "sql")
-        {
-            return Ok(path);
-        }
-    }
-    Err(BundleResourceError::new(
-        path,
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "the directory contains no SQL migrations",
-        ),
-    ))
-}
-
 fn invalid_bundle_contract(path: &Path, message: impl Into<String>) -> BundleResourceError {
     BundleResourceError::new(
         path.to_path_buf(),
         io::Error::new(io::ErrorKind::InvalidData, message.into()),
     )
+}
+
+struct ValidatedBundleContract {
+    dashboard_assets: Vec<PathBuf>,
+    migration_files: Vec<PathBuf>,
+}
+
+fn validate_file_contract(
+    contract_path: &Path,
+    entries: &[serde_json::Value],
+    root: &Path,
+    label: &str,
+) -> Result<Vec<PathBuf>, BundleResourceError> {
+    if entries.is_empty() {
+        return Err(invalid_bundle_contract(
+            contract_path,
+            format!("the {label} contract is empty"),
+        ));
+    }
+    let mut previous = None;
+    let mut resolved = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let relative = entry
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                invalid_bundle_contract(contract_path, format!("a {label} path is missing"))
+            })?;
+        if relative.is_empty()
+            || Path::new(relative)
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            || previous.is_some_and(|prior: &str| prior >= relative)
+        {
+            return Err(invalid_bundle_contract(
+                contract_path,
+                format!("the {label} path is unsafe, duplicated, or unsorted: {relative}"),
+            ));
+        }
+        previous = Some(relative);
+        let expected_hash = entry
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                invalid_bundle_contract(
+                    contract_path,
+                    format!("the {label} digest is invalid for {relative}"),
+                )
+            })?;
+        let path = require_file(root.join(relative))?;
+        let contents =
+            fs::read(&path).map_err(|source| BundleResourceError::new(path.clone(), source))?;
+        let actual_hash = format!("{:x}", Sha256::digest(contents));
+        if actual_hash != expected_hash.to_ascii_lowercase() {
+            return Err(invalid_bundle_contract(
+                contract_path,
+                format!("the {label} digest is stale for {relative}"),
+            ));
+        }
+        resolved.push(path);
+    }
+    Ok(resolved)
+}
+
+fn collect_migration_files(root: &Path) -> Result<Vec<PathBuf>, BundleResourceError> {
+    let entries = fs::read_dir(root)
+        .map_err(|source| BundleResourceError::new(root.to_path_buf(), source))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| BundleResourceError::new(root.to_path_buf(), source))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| BundleResourceError::new(entry.path(), source))?;
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "sql") && file_type.is_symlink() {
+            return Err(BundleResourceError::new(
+                path,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "migration paths cannot be symbolic links",
+                ),
+            ));
+        }
+        if file_type.is_file() && path.extension().is_some_and(|extension| extension == "sql") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn expected_node_contract() -> Option<(&'static str, &'static str)> {
@@ -139,7 +311,7 @@ fn expected_node_contract() -> Option<(&'static str, &'static str)> {
 fn validate_bundle_contract(
     contract_path: &Path,
     runtime_root: &Path,
-) -> Result<Vec<PathBuf>, BundleResourceError> {
+) -> Result<ValidatedBundleContract, BundleResourceError> {
     let source = fs::read_to_string(contract_path)
         .map_err(|source| BundleResourceError::new(contract_path.to_path_buf(), source))?;
     let contract: serde_json::Value = serde_json::from_str(&source).map_err(|source| {
@@ -190,66 +362,22 @@ fn validate_bundle_contract(
         ));
     }
 
-    let assets = contract
+    let dashboard_entries = contract
         .get("dashboard")
         .and_then(|dashboard| dashboard.get("assets"))
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
             invalid_bundle_contract(contract_path, "the Dashboard asset contract is missing")
         })?;
-    if assets.is_empty() {
-        return Err(invalid_bundle_contract(
-            contract_path,
-            "the Dashboard asset contract is empty",
-        ));
-    }
-
     let dashboard_root = runtime_root.join("apps/web/dist/client");
-    let mut previous = None;
-    let mut resolved = Vec::with_capacity(assets.len());
-    for asset in assets {
-        let relative = asset
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                invalid_bundle_contract(contract_path, "a Dashboard asset path is missing")
-            })?;
-        if relative.is_empty()
-            || Path::new(relative)
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-            || previous.is_some_and(|prior: &str| prior >= relative)
-        {
-            return Err(invalid_bundle_contract(
-                contract_path,
-                format!("the Dashboard asset path is unsafe, duplicated, or unsorted: {relative}"),
-            ));
-        }
-        previous = Some(relative);
-        let expected_hash = asset
-            .get("sha256")
-            .and_then(serde_json::Value::as_str)
-            .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| {
-                invalid_bundle_contract(
-                    contract_path,
-                    format!("the Dashboard asset digest is invalid for {relative}"),
-                )
-            })?;
-        let path = require_file(dashboard_root.join(relative))?;
-        let contents =
-            fs::read(&path).map_err(|source| BundleResourceError::new(path.clone(), source))?;
-        let actual_hash = format!("{:x}", Sha256::digest(contents));
-        if actual_hash != expected_hash.to_ascii_lowercase() {
-            return Err(invalid_bundle_contract(
-                contract_path,
-                format!("the Dashboard asset digest is stale for {relative}"),
-            ));
-        }
-        resolved.push(path);
-    }
+    let dashboard_assets = validate_file_contract(
+        contract_path,
+        dashboard_entries,
+        &dashboard_root,
+        "Dashboard asset",
+    )?;
     for required in ["index.html", "dashboard-routes.json"] {
-        if !resolved
+        if !dashboard_assets
             .iter()
             .any(|path| path == &dashboard_root.join(required))
         {
@@ -259,23 +387,49 @@ fn validate_bundle_contract(
             ));
         }
     }
-    Ok(resolved)
+
+    let migration_entries = contract
+        .get("migrations")
+        .and_then(|migrations| migrations.get("files"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            invalid_bundle_contract(contract_path, "the migration file contract is missing")
+        })?;
+    let migrations_root =
+        runtime_root.join("apps/platform-node/node_modules/@floway-dev/gateway/migrations");
+    let migration_files = validate_file_contract(
+        contract_path,
+        migration_entries,
+        &migrations_root,
+        "migration file",
+    )?;
+    let installed_migrations = collect_migration_files(&migrations_root)?;
+    if migration_files != installed_migrations {
+        return Err(invalid_bundle_contract(
+            contract_path,
+            "the installed migration inventory differs from the owning bundle contract",
+        ));
+    }
+    Ok(ValidatedBundleContract {
+        dashboard_assets,
+        migration_files,
+    })
 }
 
 pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, BundleResourceError> {
     let root = resource_dir.join("runtime");
     let platform_node = root.join("apps/platform-node");
     let contract = require_file(resource_dir.join("desktop-bundle-contract.json"))?;
-    let dashboard_assets = validate_bundle_contract(&contract, &root)?;
+    let validated = validate_bundle_contract(&contract, &root)?;
+    let migrations = platform_node.join("node_modules/@floway-dev/gateway/migrations");
     Ok(RuntimeBundle {
         contract,
-        dashboard_assets,
+        dashboard_assets: validated.dashboard_assets,
         dashboard_index: require_file(root.join("apps/web/dist/client/index.html"))?,
         dashboard_routes: require_file(root.join("apps/web/dist/client/dashboard-routes.json"))?,
         entry: require_file(platform_node.join("entry.js"))?,
-        migrations: require_migrations(
-            platform_node.join("node_modules/@floway-dev/gateway/migrations"),
-        )?,
+        migration_files: validated.migration_files,
+        migrations,
         root,
     })
 }
@@ -291,13 +445,15 @@ mod desktop {
 
     use getrandom::fill;
     use signal_hook::{consts::SIGTERM, iterator::Signals};
+    use tauri::webview::NewWindowResponse;
     use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
     use tauri_plugin_shell::ShellExt;
     use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 
     use super::{
-        NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, dashboard_bootstrap_url,
-        ready_dashboard_origin, resolve_runtime_bundle, spawn_after_lifecycle_setup,
+        DashboardNavigationPolicy, NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
+        enforce_dashboard_navigation, ready_dashboard_origin, resolve_runtime_bundle,
+        spawn_after_lifecycle_setup,
     };
 
     #[derive(Debug)]
@@ -552,25 +708,29 @@ mod desktop {
         }
     }
 
-    fn dashboard_url_for_runtime(
-        origin: &str,
-        bootstrap_token: &str,
-    ) -> Result<tauri::Url, Box<dyn Error>> {
-        let parsed: tauri::Url = origin.parse()?;
-        if parsed.scheme() != "http"
-            || parsed.host_str() != Some("127.0.0.1")
-            || parsed.port().is_none()
-            || parsed.path() != "/"
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Floway personal runtime reported an invalid Dashboard origin: {origin}"),
-            )
-            .into());
+    fn enforce_webview_navigation(
+        policy: &DashboardNavigationPolicy,
+        app_handle: &AppHandle,
+        candidate: &url::Url,
+        new_window: bool,
+    ) -> bool {
+        // Tauri delegates these callbacks to WRY before committing a
+        // navigation or creating a child WebView. The deprecated shell opener
+        // remains the pinned plugin's system-browser boundary; the policy
+        // above supplies the missing URL validation before invoking it.
+        // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L248-L319
+        // https://github.com/tauri-apps/plugins-workspace/blob/shell-v2.3.6/plugins/shell/src/lib.rs#L69-L80
+        #[allow(deprecated)]
+        match enforce_dashboard_navigation(policy, candidate, new_window, |external| {
+            app_handle.shell().open(external.as_str(), None)
+        }) {
+            Ok(allow) => allow,
+            Err(error) => {
+                print_error_chain(&error);
+                app_handle.exit(1);
+                false
+            }
         }
-        Ok(dashboard_bootstrap_url(origin, bootstrap_token).parse()?)
     }
 
     fn install_termination_signal(
@@ -670,13 +830,36 @@ mod desktop {
                                     if let Some(origin) = ready_dashboard_origin(&runtime_stdout)
                                         && let Some(token) = pending_bootstrap_token.take()
                                     {
-                                        match dashboard_url_for_runtime(origin, &token) {
-                                            Ok(url) => {
+                                        match DashboardNavigationPolicy::new(origin, &token) {
+                                            Ok(policy) => {
+                                                let policy = Arc::new(policy);
+                                                let url = policy.bootstrap_url().clone();
+                                                let navigation_policy = Arc::clone(&policy);
+                                                let navigation_app = app_handle.clone();
+                                                let new_window_policy = Arc::clone(&policy);
+                                                let new_window_app = app_handle.clone();
                                                 if let Err(error) = WebviewWindowBuilder::new(
                                                     &app_handle,
                                                     "main",
                                                     WebviewUrl::External(url),
                                                 )
+                                                .on_navigation(move |candidate| {
+                                                    enforce_webview_navigation(
+                                                        &navigation_policy,
+                                                        &navigation_app,
+                                                        candidate,
+                                                        false,
+                                                    )
+                                                })
+                                                .on_new_window(move |candidate, _features| {
+                                                    enforce_webview_navigation(
+                                                        &new_window_policy,
+                                                        &new_window_app,
+                                                        &candidate,
+                                                        true,
+                                                    );
+                                                    NewWindowResponse::Deny
+                                                })
                                                 .title("Floway")
                                                 .inner_size(1280.0, 800.0)
                                                 .build()

@@ -8,6 +8,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -87,6 +88,17 @@ interface CredentialIdentity {
   readonly account: string;
   readonly service: string;
 }
+interface InstalledAppVerificationContext {
+  readonly appRoot: string;
+  readonly contract: string;
+  readonly entry: string;
+  readonly executable: string;
+  readonly keyringNative: string;
+  readonly migrationNames: readonly string[];
+  readonly migrations: string;
+  readonly node: string;
+  readonly platformNode: string;
+}
 const PERSONAL_FAILURE_PHASES: readonly PersonalFailurePhase[] = [
   'app',
   'sidecar',
@@ -95,6 +107,48 @@ const PERSONAL_FAILURE_PHASES: readonly PersonalFailurePhase[] = [
   'migration',
   'credential',
 ];
+
+const createInstalledAppVerificationContext = async (
+  installedApp: string,
+  keyringRelativePath: string,
+  migrationNames: readonly string[],
+): Promise<InstalledAppVerificationContext> => {
+  const context: InstalledAppVerificationContext = {
+    appRoot: installedApp,
+    executable: resolve(installedApp, 'Contents/MacOS/floway-one'),
+    node: resolve(installedApp, 'Contents/MacOS/floway-node'),
+    contract: resolve(installedApp, 'Contents/Resources/desktop-bundle-contract.json'),
+    platformNode: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node'),
+    entry: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node/entry.js'),
+    keyringNative: resolve(installedApp, keyringRelativePath),
+    migrationNames,
+    migrations: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations'),
+  };
+  const ownedPaths = {
+    contract: context.contract,
+    entry: context.entry,
+    executable: context.executable,
+    keyringNative: context.keyringNative,
+    migrations: context.migrations,
+    node: context.node,
+    platformNode: context.platformNode,
+  };
+  for (const [label, path] of Object.entries(ownedPaths)) {
+    const owned = relative(installedApp, path);
+    if (isAbsolute(owned) || owned.split(sep)[0] === '..') {
+      throw new Error(`Installed app verification ${label} escapes its owning application: ${path}`);
+    }
+  }
+  await Promise.all([
+    access(context.executable),
+    access(context.node),
+    access(context.contract),
+    access(context.entry),
+    access(context.keyringNative),
+    access(context.migrations),
+  ]);
+  return context;
+};
 
 const errorChainIncludes = (error: unknown, fragment: string): boolean => {
   if (!(error instanceof Error)) return String(error).includes(fragment);
@@ -377,10 +431,7 @@ const waitForHealthyRuntime = async (
 };
 
 const assertPersonalRuntime = async (
-  executable: string,
-  embeddedNode: string,
-  platformNode: string,
-  entryPath: string,
+  context: InstalledAppVerificationContext,
   verificationRoot: string,
   options: {
     readonly forcedFailure?: PersonalFailurePhase;
@@ -414,7 +465,7 @@ const assertPersonalRuntime = async (
       );
     });
     cleanup.defer('isolated operating-system credential', async () => {
-      await runCredentialScript(embeddedNode, platformNode, credentialIdentity, 'delete');
+      await runCredentialScript(context.node, context.platformNode, credentialIdentity, 'delete');
     });
     cleanup.defer('loopback listener', async () => await assertLoopbackPortReleased(port));
 
@@ -426,12 +477,12 @@ const assertPersonalRuntime = async (
       await utimes(runtimeStatePath, 1, 1);
       seededRuntimeStateMtime = (await stat(runtimeStatePath)).mtimeMs;
     }
-    await writeFile(entryPath, personalEntrySource(
+    await writeFile(context.entry, personalEntrySource(
       verificationRoot,
       credentialIdentity,
       ignoreGracefulTermination ? "process.on('SIGTERM', () => {});" : '',
     ));
-    const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
@@ -457,14 +508,17 @@ const assertPersonalRuntime = async (
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
     try {
       database.exec('PRAGMA busy_timeout = 5000');
-      const migration = database.prepare("SELECT name FROM _migrations WHERE name = '0084_protected_search_secret_columns.sql'").get();
-      if (migration === undefined) throw new Error('Installed personal runtime did not apply the complete migration set');
+      const applied = (database.prepare('SELECT name FROM _migrations ORDER BY name').all() as Array<{ name?: unknown }>)
+        .map(row => String(row.name));
+      if (JSON.stringify(applied) !== JSON.stringify(context.migrationNames)) {
+        throw new Error(`Installed personal runtime applied ${JSON.stringify(applied)} instead of the complete migration contract ${JSON.stringify(context.migrationNames)}`);
+      }
     } finally {
       database.close();
     }
     forcePersonalFailure(forcedFailure, 'migration');
 
-    await runCredentialScript(embeddedNode, platformNode, credentialIdentity, 'require');
+    await runCredentialScript(context.node, context.platformNode, credentialIdentity, 'require');
     if (seedPersistedPort) {
       if (await readFile(runtimeStatePath, 'utf8') !== seededRuntimeState) {
         throw new Error(`Floway shell rewrote the persisted personal endpoint at ${runtimeStatePath}`);
@@ -489,10 +543,7 @@ const assertPersonalRuntime = async (
 };
 
 const assertImmediateTerminationAtBoundary = async (
-  executable: string,
-  embeddedNode: string,
-  platformNode: string,
-  entryPath: string,
+  context: InstalledAppVerificationContext,
   verificationRoot: string,
   boundary: ImmediateTerminationBoundary,
 ): Promise<void> => {
@@ -507,12 +558,12 @@ const assertImmediateTerminationAtBoundary = async (
     await mkdir(verificationRoot, { recursive: true });
     cleanup.defer(`${boundary} application data`, async () => await rm(verificationRoot, { force: true, recursive: true }));
     cleanup.defer(`${boundary} credential`, async () => {
-      await runCredentialScript(embeddedNode, platformNode, credentialIdentity, 'delete');
+      await runCredentialScript(context.node, context.platformNode, credentialIdentity, 'delete');
     });
     cleanup.defer(`${boundary} listener`, async () => await assertLoopbackPortReleased(port));
     await writeFile(resolve(verificationRoot, 'runtime.json'), `${JSON.stringify({ version: 1, port })}\n`);
-    await writeFile(entryPath, personalEntrySource(verificationRoot, credentialIdentity));
-    const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
+    await writeFile(context.entry, personalEntrySource(verificationRoot, credentialIdentity));
+    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
     cleanup.defer(`${boundary} application process group`, async () => await terminateProcessGroup(child));
     if (child.pid === undefined) throw new Error('Floway production app process has no PID');
 
@@ -543,10 +594,7 @@ const assertImmediateTerminationAtBoundary = async (
 };
 
 const assertUnexpectedSidecarExitClosesShell = async (
-  executable: string,
-  embeddedNode: string,
-  platformNode: string,
-  entryPath: string,
+  context: InstalledAppVerificationContext,
   verificationRoot: string,
 ): Promise<void> => {
   const credentialIdentity: CredentialIdentity = {
@@ -563,15 +611,15 @@ const assertUnexpectedSidecarExitClosesShell = async (
     await mkdir(verificationRoot, { recursive: true });
     cleanup.defer('unexpected-exit application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
     cleanup.defer('unexpected-exit credential', async () => {
-      await runCredentialScript(embeddedNode, platformNode, credentialIdentity, 'delete');
+      await runCredentialScript(context.node, context.platformNode, credentialIdentity, 'delete');
     });
     cleanup.defer('unexpected-exit listener', async () => await assertLoopbackPortReleased(port));
-    await writeFile(entryPath, personalEntrySource(
+    await writeFile(context.entry, personalEntrySource(
       verificationRoot,
       credentialIdentity,
       `setTimeout(() => { throw new Error(${JSON.stringify(parentFailure)}, { cause: new Error(${JSON.stringify(originalCause)}) }); }, 1_500);`,
     ));
-    const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
     const sidecarPid = await waitForDirectChild(child);
     await waitForHealthyRuntime(child, output, origin);
@@ -658,7 +706,6 @@ await Promise.all([
   access(nodeExecutable),
   access(contractPath),
   access(resolve(platformNodeRoot, 'entry.js')),
-  access(resolve(platformNodeRoot, 'node_modules/@floway-dev/gateway/migrations/0084_protected_search_secret_columns.sql')),
   access(resolve(runtimeRoot, 'apps/web/dist/client/index.html')),
   access(resolve(runtimeRoot, 'apps/web/dist/client/dashboard-routes.json')),
 ]);
@@ -666,6 +713,7 @@ await Promise.all([
 const packagedNodeVersion = await readPackagedNodeVersion(desktopRoot);
 const contract = JSON.parse(await readFile(contractPath, 'utf8')) as {
   dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
+  migrations?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
   node?: { architecture?: unknown; platform?: unknown; targetTriple?: unknown; version?: unknown };
   schemaVersion?: unknown;
 };
@@ -678,27 +726,50 @@ if (
   || !Array.isArray(contract.dashboard?.assets)
   || contract.dashboard.assets.length === 0
   || contract.dashboard.assets.some(asset => typeof asset.path !== 'string' || !/^[\da-f]{64}$/i.test(String(asset.sha256)))
+  || !Array.isArray(contract.migrations?.files)
+  || contract.migrations.files.length === 0
+  || contract.migrations.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
 ) {
   throw new Error(`Packaged desktop contract does not own ${targetTriple}/Node.js ${packagedNodeVersion}`);
 }
 const packagedDashboardAssets = contract.dashboard.assets as Array<{ path: string; sha256: string }>;
+const packagedMigrations = contract.migrations.files as Array<{ path: string; sha256: string }>;
+
+const validatePackagedFileContract = async (
+  root: string,
+  files: readonly { path: string; sha256: string }[],
+  label: string,
+): Promise<void> => {
+  let previous = '';
+  for (const file of files) {
+    if (file.path <= previous || isAbsolute(file.path) || file.path.split('/').includes('..')) {
+      throw new Error(`Packaged ${label} contract has an unsafe, duplicated, or unsorted path: ${file.path}`);
+    }
+    previous = file.path;
+    const path = resolve(root, file.path);
+    const owned = relative(root, path);
+    if (isAbsolute(owned) || owned.split(sep)[0] === '..') {
+      throw new Error(`Packaged ${label} contract resolves outside its production root: ${file.path}`);
+    }
+    const actualDigest = createHash('sha256').update(await readFile(path)).digest('hex');
+    if (actualDigest !== file.sha256.toLowerCase()) {
+      throw new Error(`Packaged ${label} contract has a stale digest for ${file.path}`);
+    }
+  }
+};
+
 const packagedDashboardRoot = resolve(runtimeRoot, 'apps/web/dist/client');
-let previousDashboardAsset = '';
-for (const asset of packagedDashboardAssets) {
-  if (asset.path <= previousDashboardAsset || isAbsolute(asset.path) || asset.path.split('/').includes('..')) {
-    throw new Error(`Packaged Dashboard contract has an unsafe, duplicated, or unsorted asset path: ${asset.path}`);
-  }
-  previousDashboardAsset = asset.path;
-  const assetPath = resolve(packagedDashboardRoot, asset.path);
-  const relativeAssetPath = relative(packagedDashboardRoot, assetPath);
-  if (isAbsolute(relativeAssetPath) || relativeAssetPath.split(sep)[0] === '..') {
-    throw new Error(`Packaged Dashboard contract resolves outside its production root: ${asset.path}`);
-  }
-  const actualDigest = createHash('sha256').update(await readFile(assetPath)).digest('hex');
-  if (actualDigest !== asset.sha256.toLowerCase()) {
-    throw new Error(`Packaged Dashboard contract has a stale digest for ${asset.path}`);
-  }
+await validatePackagedFileContract(packagedDashboardRoot, packagedDashboardAssets, 'Dashboard');
+const packagedMigrationsRoot = resolve(
+  platformNodeRoot,
+  'node_modules/@floway-dev/gateway/migrations',
+);
+const installedMigrationNames = (await readdir(packagedMigrationsRoot)).filter(name => name.endsWith('.sql')).sort();
+const contractedMigrationNames = packagedMigrations.map(file => file.path);
+if (JSON.stringify(installedMigrationNames) !== JSON.stringify(contractedMigrationNames)) {
+  throw new Error(`Packaged migration inventory ${JSON.stringify(installedMigrationNames)} differs from contract ${JSON.stringify(contractedMigrationNames)}`);
 }
+await validatePackagedFileContract(packagedMigrationsRoot, packagedMigrations, 'migration');
 if (launchSupported) {
   const version = (await execFileAsync(nodeExecutable, ['--version'])).stdout.trim();
   if (version !== `v${packagedNodeVersion}`) {
@@ -798,33 +869,26 @@ if (launchSupported) {
     const installedApp = resolve(isolatedRoot, 'Applications/Floway One.app');
     await mkdir(dirname(installedApp), { recursive: true });
     await rename(appRoot, installedApp);
-    const installedExecutable = resolve(installedApp, 'Contents/MacOS/floway-one');
-    const installedNode = resolve(installedApp, 'Contents/MacOS/floway-node');
-    const installedContract = resolve(installedApp, 'Contents/Resources/desktop-bundle-contract.json');
-    const installedPlatformNode = resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node');
-    const installedEntry = resolve(installedPlatformNode, 'entry.js');
-    const installedKeyringNative = resolve(installedApp, relative(appRoot, loadedKeyringNative!));
-    const productionEntry = await readFile(installedEntry, 'utf8');
-    const productionContract = await readFile(installedContract, 'utf8');
-    cleanup.defer('production runtime entry restoration', async () => await writeFile(installedEntry, productionEntry));
-    cleanup.defer('production bundle contract restoration', async () => await writeFile(installedContract, productionContract));
+    const context = await createInstalledAppVerificationContext(
+      installedApp,
+      relative(appRoot, loadedKeyringNative!),
+      contractedMigrationNames,
+    );
+    const productionEntry = await readFile(context.entry, 'utf8');
+    const productionContract = await readFile(context.contract, 'utf8');
+    cleanup.defer('production runtime entry restoration', async () => await writeFile(context.entry, productionEntry));
+    cleanup.defer('production bundle contract restoration', async () => await writeFile(context.contract, productionContract));
 
     const customPort = await reserveNonDefaultLoopbackPort();
     await assertPersonalRuntime(
-      installedExecutable,
-      installedNode,
-      installedPlatformNode,
-      installedEntry,
+      context,
       resolve(isolatedRoot, 'PersonalData-persisted-port'),
       { port: customPort, seedPersistedPort: true },
     );
     console.log(`Floway production app preserved runtime.json unchanged and loaded persisted personal endpoint http://127.0.0.1:${customPort}`);
 
     await assertPersonalRuntime(
-      installedExecutable,
-      installedNode,
-      installedPlatformNode,
-      installedEntry,
+      context,
       resolve(isolatedRoot, 'PersonalData-success'),
     );
     console.log('Floway production app completed personal migrations, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
@@ -832,10 +896,7 @@ if (launchSupported) {
 
     for (const boundary of ['process', 'registered-sidecar', 'live-listener'] as const) {
       await assertImmediateTerminationAtBoundary(
-        installedExecutable,
-        installedNode,
-        installedPlatformNode,
-        installedEntry,
+        context,
         resolve(isolatedRoot, `PersonalData-immediate-${boundary}`),
         boundary,
       );
@@ -843,20 +904,14 @@ if (launchSupported) {
     }
 
     await assertPersonalRuntime(
-      installedExecutable,
-      installedNode,
-      installedPlatformNode,
-      installedEntry,
+      context,
       resolve(isolatedRoot, 'PersonalData-hard-kill-fallback'),
       { ignoreGracefulTermination: true },
     );
     console.log('Floway production shell used its named hard-kill fallback only after the graceful sidecar deadline');
 
     await assertUnexpectedSidecarExitClosesShell(
-      installedExecutable,
-      installedNode,
-      installedPlatformNode,
-      installedEntry,
+      context,
       resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
     );
     console.log('Floway production shell surfaced the original sidecar failure, exited non-zero, and left no listener or process');
@@ -865,10 +920,7 @@ if (launchSupported) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
       try {
         await assertPersonalRuntime(
-          installedExecutable,
-          installedNode,
-          installedPlatformNode,
-          installedEntry,
+          context,
           verificationRoot,
           { forcedFailure: phase },
         );
@@ -879,7 +931,7 @@ if (launchSupported) {
       console.log(`Floway personal ${phase} fault left no app, sidecar, listener, credential, or data root`);
     }
 
-    await writeFile(installedEntry, productionEntry);
+    await writeFile(context.entry, productionEntry);
     const lazyDashboardAsset = packagedDashboardAssets.find(asset => asset.path.startsWith('assets/'));
     if (lazyDashboardAsset === undefined) throw new Error('Packaged Dashboard contract names no lazy production asset');
     const installedLazyAsset = resolve(installedApp, 'Contents/Resources/runtime/apps/web/dist/client', lazyDashboardAsset.path);
@@ -887,7 +939,7 @@ if (launchSupported) {
       const missingLazyAsset = `${installedLazyAsset}.missing`;
       await rename(installedLazyAsset, missingLazyAsset);
       faultCleanup.defer('missing lazy Dashboard asset restoration', async () => await rename(missingLazyAsset, installedLazyAsset));
-      await observeSetupFailureWithoutSidecar(installedExecutable, [
+      await observeSetupFailureWithoutSidecar(context.executable, [
         'Floway desktop runtime resource is unavailable',
         lazyDashboardAsset.path,
         'No such file',
@@ -897,13 +949,13 @@ if (launchSupported) {
     console.log(`Floway production preflight rejected missing lazy Dashboard asset ${lazyDashboardAsset.path} without spawning a sidecar`);
 
     await withFailureSafeCleanup(async faultCleanup => {
-      faultCleanup.defer('stale bundle contract restoration', async () => await writeFile(installedContract, productionContract));
+      faultCleanup.defer('stale bundle contract restoration', async () => await writeFile(context.contract, productionContract));
       const staleContract = JSON.parse(productionContract) as { dashboard: { assets: Array<{ path: string; sha256: string }> } };
       const staleAsset = staleContract.dashboard.assets.find(asset => asset.path === lazyDashboardAsset.path);
       if (staleAsset === undefined) throw new Error('Stale-contract probe could not find its Dashboard asset');
       staleAsset.sha256 = '0'.repeat(64);
-      await writeFile(installedContract, `${JSON.stringify(staleContract, undefined, 2)}\n`);
-      await observeSetupFailureWithoutSidecar(installedExecutable, [
+      await writeFile(context.contract, `${JSON.stringify(staleContract, undefined, 2)}\n`);
+      await observeSetupFailureWithoutSidecar(context.executable, [
         'Dashboard asset digest is stale',
         lazyDashboardAsset.path,
       ]);
@@ -911,18 +963,50 @@ if (launchSupported) {
     });
     console.log('Floway production preflight rejected a stale Dashboard contract without spawning a sidecar');
 
-    const missingEntry = `${installedEntry}.missing`;
+    const independentMigrations = contractedMigrationNames.filter(name => name !== '0084_protected_search_secret_columns.sql');
+    const [missingMigrationName, modifiedMigrationName] = independentMigrations;
+    if (missingMigrationName === undefined || modifiedMigrationName === undefined) {
+      throw new Error('Packaged migration contract needs two independent non-0084 migrations for fault verification');
+    }
+    const installedMissingMigration = resolve(context.migrations, missingMigrationName);
     await withFailureSafeCleanup(async faultCleanup => {
-      await rename(installedEntry, missingEntry);
-      faultCleanup.defer('missing-entry fault restoration', async () => await rename(missingEntry, installedEntry));
-      await observeProductionApp(installedExecutable, ['Floway desktop runtime resource is unavailable', 'entry.js']);
+      const renamedMigration = `${installedMissingMigration}.missing`;
+      await rename(installedMissingMigration, renamedMigration);
+      faultCleanup.defer('missing migration restoration', async () => await rename(renamedMigration, installedMissingMigration));
+      await observeSetupFailureWithoutSidecar(context.executable, [
+        'Floway desktop runtime resource is unavailable',
+        missingMigrationName,
+        'No such file',
+      ]);
+      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+    });
+    console.log(`Floway production preflight rejected missing independent migration ${missingMigrationName} without spawning a sidecar`);
+
+    const installedModifiedMigration = resolve(context.migrations, modifiedMigrationName);
+    await withFailureSafeCleanup(async faultCleanup => {
+      const originalMigration = await readFile(installedModifiedMigration);
+      faultCleanup.defer('modified migration restoration', async () => await writeFile(installedModifiedMigration, originalMigration));
+      await writeFile(installedModifiedMigration, Buffer.concat([originalMigration, Buffer.from('\n-- tampered\n')]));
+      await observeSetupFailureWithoutSidecar(context.executable, [
+        'migration file digest is stale',
+        modifiedMigrationName,
+      ]);
+      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+    });
+    console.log(`Floway production preflight rejected modified independent migration ${modifiedMigrationName} without spawning a sidecar`);
+
+    const missingEntry = `${context.entry}.missing`;
+    await withFailureSafeCleanup(async faultCleanup => {
+      await rename(context.entry, missingEntry);
+      faultCleanup.defer('missing-entry fault restoration', async () => await rename(missingEntry, context.entry));
+      await observeProductionApp(context.executable, ['Floway desktop runtime resource is unavailable', 'entry.js']);
     });
 
-    await writeFile(installedEntry, 'setInterval(() => {}, 60_000);\n');
+    await writeFile(context.entry, 'setInterval(() => {}, 60_000);\n');
     const blockingFailure = new Error('forced verifier failure with live packaged sidecar');
     try {
       await withFailureSafeCleanup(async blockingCleanup => {
-        const { child } = captureApp(installedExecutable, process.env);
+        const { child } = captureApp(context.executable, process.env);
         blockingCleanup.defer('blocking application process group', async () => await terminateProcessGroup(child));
         const sidecarPid = await waitForDirectChild(child);
         if (!processIsRunning(sidecarPid)) throw new Error('Packaged blocking sidecar did not reach a live state');
@@ -944,8 +1028,8 @@ if (launchSupported) {
       await mkdir(verificationRoot, { recursive: true });
       faultCleanup.defer('Keyring-fault application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
       faultCleanup.defer('Keyring-fault listener', async () => await assertLoopbackPortReleased(port));
-      await writeFile(installedEntry, personalEntrySource(verificationRoot, credentialIdentity));
-      const keyringFile = await open(installedKeyringNative, 'r+');
+      await writeFile(context.entry, personalEntrySource(verificationRoot, credentialIdentity));
+      const keyringFile = await open(context.keyringNative, 'r+');
       faultCleanup.defer('exact loaded Keyring binding file handle', async () => await keyringFile.close());
       const originalKeyringHeader = Buffer.alloc(8);
       await keyringFile.read(originalKeyringHeader, 0, originalKeyringHeader.byteLength, 0);
@@ -955,15 +1039,15 @@ if (launchSupported) {
       });
       await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.sync();
-      const { child, output } = captureApp(installedExecutable, appEnvironmentWithoutPortOverride());
+      const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
       faultCleanup.defer('Keyring-fault application process group', async () => await terminateProcessGroup(child));
       await waitForOutput(child, output, ['Floway runtime exit']);
     });
-    console.log(`Floway corrupted the exact loaded Keyring binding and observed packaged sidecar failure: ${installedKeyringNative}`);
+    console.log(`Floway corrupted the exact loaded Keyring binding and observed packaged sidecar failure: ${context.keyringNative}`);
 
-    await writeFile(installedEntry, productionEntry);
+    await writeFile(context.entry, productionEntry);
     await withFailureSafeCleanup(async faultCleanup => {
-      const nodeFile = await open(installedNode, 'r+');
+      const nodeFile = await open(context.node, 'r+');
       faultCleanup.defer('wrong-architecture sidecar file handle', async () => await nodeFile.close());
       const originalCpuType = Buffer.alloc(4);
       await nodeFile.read(originalCpuType, 0, 4, 4);
@@ -980,7 +1064,7 @@ if (launchSupported) {
       // emitted by the failed sidecar spawn.
       // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/errno.h#L226-L230
       // https://github.com/apple-oss-distributions/Libc/blob/71bbe350ab79eef58113991d817ccc6165061a64/gen/errlst.c#L165-L168
-      await observeProductionApp(installedExecutable, ['Bad CPU type in executable (os error 86)']);
+      await observeProductionApp(context.executable, ['Bad CPU type in executable (os error 86)']);
     });
   });
 }
