@@ -75,7 +75,7 @@ export const createClaudeCodeProvider = (record: UpstreamRecord): Provider => {
       // supplies the provider-owned OAuth auth, and restamps the resolved model
       // id.
       const looksShaped = isClaudeCodeShapedRequest({
-        headers: new Headers(headersForAnthropicMessagesCall([...opts.headers], opts.anthropicBeta).map(([name, value]) => [name, value])),
+        headers: new Headers(headersForAnthropicMessagesCall([...opts.headers], opts.anthropicBeta).map(([name, value]): [string, string] => [name, value])),
         body: ctx.payload,
       });
 

@@ -12,6 +12,10 @@ import {
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
+import {
+  preparePersonalDashboardBootstrap,
+  takePersonalDashboardBootstrapToken,
+} from './personal-dashboard-bootstrap.ts';
 import { installPersonalLogging } from './personal-logging.ts';
 import {
   loadPersonalRuntime,
@@ -28,6 +32,7 @@ import {
   app,
   assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
+  initPersonalDashboardBootstrap,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
   SqlRepo,
@@ -76,16 +81,19 @@ interface NodeServeOptions {
 type NodeServe = (options: NodeServeOptions) => Promise<NodeEntryInfo>;
 
 export interface NodeEntryOverrides {
+  readonly applyMigrations?: typeof applyMigrations;
   readonly args?: readonly string[];
   readonly assertRuntimeProfileData?: (repo: SqlRepo) => Promise<void>;
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
+  readonly initPersonalDashboardBootstrap?: typeof initPersonalDashboardBootstrap;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
   readonly serve?: NodeServe;
   readonly start?: () => Promise<NodeEntryInfo>;
+  readonly takePersonalDashboardBootstrapToken?: typeof takePersonalDashboardBootstrapToken;
 }
 
 const prepareNodePlatform = async (
@@ -95,13 +103,14 @@ const prepareNodePlatform = async (
   personalDatabasePath?: string,
 ): Promise<void> => {
   const { db, deviceMasterKeyCreationLock, personalStorage } = bootstrapped;
+  const migrate = overrides.applyMigrations ?? applyMigrations;
   const hasExistingMigrationState = profile === 'personal'
     && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'")
       .first<{ name: string }>() !== null;
   const createStoredSecrets = overrides.createNodeStoredSecretCodec ?? createNodeStoredSecretCodec;
   let storedSecrets;
   if (hasExistingMigrationState) {
-    await applyMigrations(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
+    await migrate(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
     storedSecrets = await createStoredSecrets(
       'personal',
       db,
@@ -109,10 +118,10 @@ const prepareNodePlatform = async (
       undefined,
       { validate: false },
     );
-    await applyMigrations(db, undefined, storedSecrets);
+    await migrate(db, undefined, storedSecrets);
     await validateStoredSecrets(db, storedSecrets);
   } else {
-    await applyMigrations(db);
+    await migrate(db);
     storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
   }
   if (personalDatabasePath !== undefined) personalStorage?.hardenSqliteFiles(personalDatabasePath);
@@ -150,6 +159,12 @@ const startNodeListener = async (
 };
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
+  // Strip bootstrap authority at the first entry boundary. Personal path
+  // resolution and storage hardening can launch platform helpers (PowerShell on
+  // Windows), so they must only ever inherit an environment with no live token.
+  const pendingDashboardBootstrapToken = (
+    overrides.takePersonalDashboardBootstrapToken ?? takePersonalDashboardBootstrapToken
+  )();
   const args = overrides.args ?? process.argv.slice(2);
   const profile = args.length === 0
     ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
@@ -176,9 +191,20 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   for (const warning of startupWarnings) console.warn(warning);
   const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
 
-  // Passwordless admin login is a dev-only shortcut. Refuse production Node
-  // startup without ADMIN_KEY so misconfiguration surfaces before listening.
-  if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
+  const dashboardBootstrap = personalRuntime === null
+    ? null
+    : preparePersonalDashboardBootstrap({
+        origin: personalRuntime.endpoint,
+        production: process.env.NODE_ENV === 'production',
+        token: pendingDashboardBootstrapToken,
+      });
+  if (dashboardBootstrap === null) {
+    (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(null);
+  }
+
+  // Passwordless admin login is a dev-only server shortcut. Personal production
+  // uses the one-time bootstrap authority resolved above instead.
+  if (profile === 'server' && process.env.NODE_ENV === 'production' && !process.env.ADMIN_KEY) {
     console.error('FATAL: NODE_ENV=production requires ADMIN_KEY. Passwordless admin login is only allowed on dev instances.');
     process.exit(1);
   }
@@ -200,6 +226,9 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       personal?.paths.databasePath,
     ),
     listen: async () => {
+      if (dashboardBootstrap !== null) {
+        (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(dashboardBootstrap.activate());
+      }
       const info = await startNodeListener(profile, personalRuntime, port, overrides);
       startScheduledMaintenance();
       return info;
