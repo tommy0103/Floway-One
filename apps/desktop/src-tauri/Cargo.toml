@@ -18,12 +18,13 @@ required-features = ["desktop"]
 
 [[test]]
 name = "bundle_contract"
-path = "__tests__/bundle_contract_test.rs"
+path = "__tests__/src/bundle_contract_test.rs"
 
 [features]
 default = ["desktop"]
 desktop = [
   "dep:getrandom",
+  "dep:signal-hook",
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
@@ -32,6 +33,8 @@ desktop = [
 [dependencies]
 # https://github.com/rust-random/getrandom/releases/tag/v0.3.4
 getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
+# https://github.com/vorner/signal-hook/releases/tag/v0.4.4
+signal-hook = { version = "=0.4.4", optional = true, features = ["iterator"] }
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5
 tauri = { version = "=2.11.5", optional = true, features = [] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6

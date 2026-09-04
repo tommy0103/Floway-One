@@ -11,6 +11,8 @@ import {
   realpath,
   rename,
   rm,
+  stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -206,6 +208,30 @@ const captureApp = (executable: string, environment: NodeJS.ProcessEnv): {
 // https://github.com/tommy0103/Floway-One/blob/dae7ba3773b50648b8a7ed75c5565b24f988919e/apps/platform-node/src/personal-runtime.ts#L18-L20
 const PERSONAL_DASHBOARD_PORT = 8788;
 
+const reserveNonDefaultLoopbackPort = async (): Promise<number> => await withFailureSafeCleanup(async cleanup => {
+  const server = createServer();
+  cleanup.defer('custom-port reservation', async () => {
+    if (!server.listening) return;
+    await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
+      if (error === undefined) resolveClose();
+      else rejectClose(error);
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  const port = (server.address() as { port: number }).port;
+  if (port === PERSONAL_DASHBOARD_PORT) throw new Error('Operating system reserved the default port for the custom-port probe');
+  return port;
+});
+
+const appEnvironmentWithoutPortOverride = (): NodeJS.ProcessEnv => {
+  const environment = { ...process.env };
+  delete environment.PORT;
+  return environment;
+};
+
 const assertLoopbackPortReleased = async (port: number): Promise<void> => {
   await withFailureSafeCleanup(async cleanup => {
     const server = createServer();
@@ -252,7 +278,12 @@ const runCredentialScript = async (
   });
 };
 
-const personalEntrySource = (dataRoot: string, credentialService: string, credentialAccount: string): string => `
+const personalEntrySource = (
+  dataRoot: string,
+  credentialService: string,
+  credentialAccount: string,
+  afterStartup = '',
+): string => `
 import { createOperatingSystemCredential } from './src/device-master-key.js';
 import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
@@ -271,6 +302,7 @@ await runNodeEntry({
     return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
   },
 });
+${afterStartup}
 `;
 
 const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual: PersonalFailurePhase): void => {
@@ -326,17 +358,37 @@ const assertDashboardBootstrapAndControlPlane = async (
   }
 };
 
+const waitForHealthyRuntime = async (
+  child: CapturedChild,
+  output: () => string,
+  origin: string,
+): Promise<void> => {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+    try {
+      const health = await fetch(`${origin}/api/health`);
+      if (health.ok) return;
+    } catch { /* listener is still starting */ }
+    await new Promise(resolveWait => setTimeout(resolveWait, 50));
+  }
+  throw new Error(`Installed personal runtime did not become healthy\n${output()}`);
+};
+
 const assertPersonalRuntime = async (
   executable: string,
   embeddedNode: string,
   platformNode: string,
   entryPath: string,
   verificationRoot: string,
-  forcedFailure?: PersonalFailurePhase,
+  options: {
+    readonly forcedFailure?: PersonalFailurePhase;
+    readonly port?: number;
+    readonly seedPersistedPort?: boolean;
+  } = {},
 ): Promise<void> => {
+  const { forcedFailure, port = PERSONAL_DASHBOARD_PORT, seedPersistedPort = false } = options;
   const credentialService = `Floway desktop package verification ${randomUUID()}`;
   const credentialAccount = `device-master-key-${randomUUID()}`;
-  const port = PERSONAL_DASHBOARD_PORT;
   const origin = `http://127.0.0.1:${port}`;
 
   await withFailureSafeCleanup(async cleanup => {
@@ -356,24 +408,26 @@ const assertPersonalRuntime = async (
     });
     cleanup.defer('loopback listener', async () => await assertLoopbackPortReleased(port));
 
+    const runtimeStatePath = resolve(verificationRoot, 'runtime.json');
+    const seededRuntimeState = `${JSON.stringify({ version: 1, port })}\n`;
+    let seededRuntimeStateMtime: number | undefined;
+    if (seedPersistedPort) {
+      await writeFile(runtimeStatePath, seededRuntimeState);
+      await utimes(runtimeStatePath, 1, 1);
+      seededRuntimeStateMtime = (await stat(runtimeStatePath)).mtimeMs;
+    }
     await writeFile(entryPath, personalEntrySource(verificationRoot, credentialService, credentialAccount));
-    const { child, output } = captureApp(executable, { ...process.env, PORT: '65534' });
+    const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
-    await waitForDirectChild(child);
+    const sidecarPid = await waitForDirectChild(child);
     forcePersonalFailure(forcedFailure, 'sidecar');
 
-    const deadline = Date.now() + 30_000;
-    let health: Response | undefined;
-    while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
-      try {
-        health = await fetch(`${origin}/api/health`);
-        if (health.ok) break;
-      } catch { /* listener is still starting */ }
-      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    await waitForHealthyRuntime(child, output, origin);
+    if (!output().includes(`Floway listening on ${origin}`)) {
+      throw new Error(`Floway shell did not observe the effective personal endpoint ${origin}\n${output()}`);
     }
-    if (health?.ok !== true) throw new Error(`Installed personal runtime did not become healthy\n${output()}`);
     forcePersonalFailure(forcedFailure, 'listener');
 
     const documentResponse = await fetch(origin);
@@ -397,7 +451,73 @@ const assertPersonalRuntime = async (
     forcePersonalFailure(forcedFailure, 'migration');
 
     await runCredentialScript(embeddedNode, platformNode, credentialService, credentialAccount, 'require');
+    if (seedPersistedPort) {
+      if (await readFile(runtimeStatePath, 'utf8') !== seededRuntimeState) {
+        throw new Error(`Floway shell rewrote the persisted personal endpoint at ${runtimeStatePath}`);
+      }
+      if ((await stat(runtimeStatePath)).mtimeMs !== seededRuntimeStateMtime) {
+        throw new Error(`Floway shell rewrote unchanged persisted runtime state at ${runtimeStatePath}`);
+      }
+    }
     forcePersonalFailure(forcedFailure, 'credential');
+    if (child.pid === undefined) throw new Error('Floway production app process has no PID');
+    process.kill(child.pid, TERMINATION_SIGNAL);
+    await waitForOutput(child, output, ['Floway desktop terminated and waited for its personal runtime']);
+    await waitForChildExit(child, 5_000);
+    if (child.exitCode !== 0) {
+      throw new Error(`Floway shell teardown exited with ${child.exitCode ?? child.signalCode}\n${output()}`);
+    }
+    await waitForProcessStopped(sidecarPid);
+    await assertLoopbackPortReleased(port);
+  });
+};
+
+const assertUnexpectedSidecarExitClosesShell = async (
+  executable: string,
+  embeddedNode: string,
+  platformNode: string,
+  entryPath: string,
+  verificationRoot: string,
+): Promise<void> => {
+  const credentialService = `Floway desktop package verification ${randomUUID()}`;
+  const credentialAccount = `device-master-key-${randomUUID()}`;
+  const port = PERSONAL_DASHBOARD_PORT;
+  const origin = `http://127.0.0.1:${port}`;
+  const parentFailure = 'forced packaged personal runtime failure';
+  const originalCause = 'forced packaged personal runtime cause';
+
+  await withFailureSafeCleanup(async cleanup => {
+    await assertLoopbackPortReleased(port);
+    await mkdir(verificationRoot, { recursive: true });
+    cleanup.defer('unexpected-exit application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
+    cleanup.defer('unexpected-exit credential', async () => {
+      await runCredentialScript(embeddedNode, platformNode, credentialService, credentialAccount, 'delete');
+    });
+    cleanup.defer('unexpected-exit listener', async () => await assertLoopbackPortReleased(port));
+    await writeFile(entryPath, personalEntrySource(
+      verificationRoot,
+      credentialService,
+      credentialAccount,
+      `setTimeout(() => { throw new Error(${JSON.stringify(parentFailure)}, { cause: new Error(${JSON.stringify(originalCause)}) }); }, 1_500);`,
+    ));
+    const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
+    cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
+    const sidecarPid = await waitForDirectChild(child);
+    await waitForHealthyRuntime(child, output, origin);
+    await waitForChildExit(child, 10_000);
+    if (child.exitCode !== 1) {
+      throw new Error(`Floway shell did not fail after its personal runtime exited: ${child.exitCode ?? child.signalCode}\n${output()}`);
+    }
+    const captured = output();
+    for (const fragment of [
+      parentFailure,
+      originalCause,
+      'Floway personal runtime exited unexpectedly',
+    ]) {
+      if (!captured.includes(fragment)) throw new Error(`Floway shell omitted ${JSON.stringify(fragment)}\n${captured}`);
+    }
+    await waitForProcessStopped(sidecarPid);
+    await assertLoopbackPortReleased(port);
   });
 };
 
@@ -563,6 +683,17 @@ if (launchSupported) {
     const productionEntry = await readFile(installedEntry, 'utf8');
     cleanup.defer('production runtime entry restoration', async () => await writeFile(installedEntry, productionEntry));
 
+    const customPort = await reserveNonDefaultLoopbackPort();
+    await assertPersonalRuntime(
+      installedExecutable,
+      installedNode,
+      installedPlatformNode,
+      installedEntry,
+      resolve(isolatedRoot, 'PersonalData-persisted-port'),
+      { port: customPort, seedPersistedPort: true },
+    );
+    console.log(`Floway production app preserved and loaded persisted personal endpoint http://127.0.0.1:${customPort}`);
+
     await assertPersonalRuntime(
       installedExecutable,
       installedNode,
@@ -571,6 +702,15 @@ if (launchSupported) {
       resolve(isolatedRoot, 'PersonalData-success'),
     );
     console.log('Floway production app completed personal migrations, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
+
+    await assertUnexpectedSidecarExitClosesShell(
+      installedExecutable,
+      installedNode,
+      installedPlatformNode,
+      installedEntry,
+      resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
+    );
+    console.log('Floway production shell surfaced the original sidecar failure, exited non-zero, and left no listener or process');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
@@ -581,7 +721,7 @@ if (launchSupported) {
           installedPlatformNode,
           installedEntry,
           verificationRoot,
-          phase,
+          { forcedFailure: phase },
         );
         throw new Error(`Expected forced personal runtime ${phase} phase failure`);
       } catch (error) {
@@ -633,7 +773,7 @@ if (launchSupported) {
       });
       await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.sync();
-      const { child, output } = captureApp(installedExecutable, { ...process.env, PORT: '65534' });
+      const { child, output } = captureApp(installedExecutable, appEnvironmentWithoutPortOverride());
       faultCleanup.defer('Keyring-fault application process group', async () => await terminateProcessGroup(child));
       await waitForOutput(child, output, ['Floway runtime exit']);
     });

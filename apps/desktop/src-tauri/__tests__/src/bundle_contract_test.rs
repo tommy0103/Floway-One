@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use floway_desktop::{
     DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
-    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, dashboard_bootstrap_url, resolve_runtime_bundle,
+    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, PERSONAL_RUNTIME_READY_PREFIX,
+    dashboard_bootstrap_url, ready_dashboard_origin, resolve_runtime_bundle,
 };
 
 fn temporary_root() -> PathBuf {
@@ -49,8 +50,13 @@ fn resolves_only_packaged_runtime_resources_for_the_personal_sidecar() {
     );
     let token = "12".repeat(32);
     assert_eq!(
-        dashboard_bootstrap_url(&token),
+        dashboard_bootstrap_url(DASHBOARD_ORIGIN, &token),
         format!("http://127.0.0.1:8788/#floway-bootstrap={token}")
+    );
+    assert_eq!(PERSONAL_RUNTIME_READY_PREFIX, "Floway listening on ");
+    assert_eq!(
+        ready_dashboard_origin("migration complete\nFloway listening on http://127.0.0.1:9217\n"),
+        Some("http://127.0.0.1:9217")
     );
     assert_eq!(runtime.root, root.join("runtime"));
     assert_eq!(

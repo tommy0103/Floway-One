@@ -815,6 +815,7 @@ name = "floway-desktop"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "signal-hook",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
