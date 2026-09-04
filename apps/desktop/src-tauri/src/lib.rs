@@ -621,7 +621,7 @@ mod desktop {
                 app.manage(Arc::clone(&owner));
                 let app_handle = app.handle().clone();
                 let owner_for_signal = Arc::clone(&owner);
-                let Some((mut events, bootstrap_token)) = spawn_after_lifecycle_setup(
+                let lifecycle = spawn_after_lifecycle_setup(
                     || -> Result<(), Box<dyn Error>> {
                         install_termination_signal(app_handle, owner_for_signal)?;
                         Ok(())
@@ -642,7 +642,16 @@ mod desktop {
                         })?;
                         Ok(events.map(|events| (events, bootstrap_token)))
                     },
-                )?
+                );
+                let Some((mut events, bootstrap_token)) = lifecycle.map_err(|error| {
+                    // Tauri converts setup-hook failures to display text;
+                    // report the owned source chain before crossing that
+                    // boundary so the original OS or handler cause remains
+                    // observable during production startup.
+                    // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/app.rs#L1417-L1427
+                    print_error_chain(error.as_ref());
+                    error
+                })?
                 else {
                     return Ok(());
                 };
