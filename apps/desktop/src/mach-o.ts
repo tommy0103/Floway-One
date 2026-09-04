@@ -1,4 +1,11 @@
-import { open } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { open, rename, rm } from 'node:fs/promises';
+import { promisify } from 'node:util';
+
+import { settleWithCleanup } from './failure-chain.ts';
+
+const execFileAsync = promisify(execFile);
 
 export type MachOArchitecture = 'arm64' | 'x64';
 
@@ -82,4 +89,34 @@ export const assertSingleMachOArchitecture = async (
       `Mach-O package architecture mismatch for ${path}: expected only ${expected}, received ${actual.join(', ')}`,
     );
   }
+};
+
+export const thinMachOToArchitecture = async (
+  path: string,
+  expected: MachOArchitecture,
+): Promise<void> => {
+  const actual = await readMachOArchitectures(path);
+  if (actual.length === 1) {
+    await assertSingleMachOArchitecture(path, expected);
+    return;
+  }
+  if (!actual.includes(expected)) {
+    throw new Error(`Mach-O architecture mismatch for ${path}: expected ${expected}, received ${actual.join(', ')}`);
+  }
+
+  const output = `${path}.floway-thin-${randomUUID()}`;
+  await settleWithCleanup(async () => {
+    // Apple's lipo contract creates a thin output containing only the named
+    // architecture; the package verifier independently rejects any fat result.
+    // https://github.com/apple-oss-distributions/cctools/blob/e0d56624eca2a76c2ace4c21850df9e666de4ca5/man/lipo.1#L91-L100
+    const lipoArchitecture = expected === 'x64' ? 'x86_64' : expected;
+    try {
+      await execFileAsync('lipo', [path, '-thin', lipoArchitecture, '-output', output]);
+      await assertSingleMachOArchitecture(output, expected);
+      await rename(output, path);
+    } catch (cause) {
+      throw new Error(`Could not make packaged native module ${path} thin for ${expected}`, { cause });
+    }
+  }, async () => await rm(output, { force: true }),
+  `Native-module thinning failed for ${path} and temporary-output cleanup also failed`);
 };

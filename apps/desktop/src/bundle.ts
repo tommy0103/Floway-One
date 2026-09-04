@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { exchangeDirectoriesAtomically, type AtomicDirectoryExchange } from './atomic-directory.ts';
 import { settleWithCleanup } from './failure-chain.ts';
 import { visitFileTree } from './filesystem-tree.ts';
-import { assertSingleMachOArchitecture } from './mach-o.ts';
+import { assertSingleMachOArchitecture, thinMachOToArchitecture, type MachOArchitecture } from './mach-o.ts';
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
 import {
   architectureForTargetTriple,
@@ -92,6 +92,17 @@ const removePnpmCommandShims = async (runtimeRoot: string): Promise<void> => {
     if (dirent.isDirectory() && dirent.name === '.bin') {
       await rm(path, { force: true, recursive: true });
       return 'skip-directory';
+    }
+  });
+};
+
+const makeNativeModulesTargetSpecific = async (
+  runtimeRoot: string,
+  architecture: MachOArchitecture,
+): Promise<void> => {
+  await visitFileTree(resolve(runtimeRoot, 'apps/platform-node/node_modules'), async ({ dirent, path }) => {
+    if (dirent.isFile() && dirent.name.endsWith('.node')) {
+      await thinMachOToArchitecture(path, architecture);
     }
   });
 };
@@ -210,6 +221,9 @@ export const prepareDesktopBundle = async ({
     await rename(writableRuntimeRoot, stagedRuntimeRoot);
     await removePnpmCommandShims(stagedRuntimeRoot);
     await compilePackagedRuntime(stagedRuntimeRoot);
+    if (nodePlatform === 'darwin') {
+      await makeNativeModulesTargetSpecific(stagedRuntimeRoot, architectureForTargetTriple(targetTriple));
+    }
     await assertPackagedRuntime(stagedRuntimeRoot);
     try {
       await copyFile(nodeExecutable, stagedNodeSidecar);
