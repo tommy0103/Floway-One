@@ -24,6 +24,10 @@ path = "__tests__/src/bundle_contract_test.rs"
 name = "navigation"
 path = "__tests__/src/navigation_test.rs"
 
+[[test]]
+name = "sidecar_supervisor"
+path = "__tests__/src/sidecar_supervisor_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [

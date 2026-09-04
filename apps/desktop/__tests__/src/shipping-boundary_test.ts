@@ -70,6 +70,8 @@ test('issue 15 process safety introduces no issue 17 window or owner-lifetime po
   }
   expect(combined).toContain('Window, tray, singleton, restart,');
   expect(combined).toContain('RunEvent::ExitRequested');
+  expect(combined).toContain('ProcessState::StopRequested');
+  expect(combined).toContain('ProcessState::Terminated');
   expect(combined).toContain('std::process::exit(1)');
 });
 

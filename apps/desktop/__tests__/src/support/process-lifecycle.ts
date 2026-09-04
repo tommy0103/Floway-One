@@ -120,6 +120,15 @@ export const captureApp = (executable: string, environment: NodeJS.ProcessEnv): 
   return { child, output: () => captured };
 };
 
+export const requestNormalApplicationExit = async (appRoot: string): Promise<void> => {
+  // A standard application quit request reaches Tauri's RunEvent::ExitRequested
+  // without defining #17's tray, window-close, signal, or graceful-quit policy.
+  await execFileAsync('/usr/bin/osascript', [
+    '-e',
+    `tell application ${JSON.stringify(appRoot)} to quit`,
+  ]);
+};
+
 // The personal runtime owns this stable port, and the desktop Dashboard origin
 // must use the same authority for bootstrap and control-plane CORS.
 // https://github.com/tommy0103/Floway-One/blob/dae7ba3773b50648b8a7ed75c5565b24f988919e/apps/platform-node/src/personal-runtime.ts#L18-L20

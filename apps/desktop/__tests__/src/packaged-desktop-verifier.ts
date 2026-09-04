@@ -103,9 +103,13 @@ if (launchSupported) {
     );
     console.log(`Floway production app preserved runtime.json unchanged and loaded persisted personal endpoint http://127.0.0.1:${customPort}`);
 
-    await assertPersonalRuntime(context, resolve(isolatedRoot, 'PersonalData-success'));
+    await assertPersonalRuntime(
+      context,
+      resolve(isolatedRoot, 'PersonalData-success'),
+      { requestApplicationExit: true },
+    );
     console.log('Floway production app completed the canonical migration set, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
-    console.log('Floway verifier cleanup terminated the installed app process group and proved no sidecar, listener, credential, or data root remained');
+    console.log('Floway normal Tauri application exit terminated and waited for its packaged runtime with no sidecar, listener, credential, or data root remaining');
 
     await assertUnexpectedSidecarExitClosesShell(
       context,

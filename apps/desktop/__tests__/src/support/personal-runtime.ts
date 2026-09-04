@@ -11,10 +11,12 @@ import {
   assertLoopbackPortReleased,
   captureApp,
   PERSONAL_DASHBOARD_PORT,
+  requestNormalApplicationExit,
   terminateProcessGroup,
   type CapturedChild,
   waitForChildExit,
   waitForDirectChild,
+  waitForOutput,
   waitForProcessStopped,
 } from './process-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
@@ -167,12 +169,14 @@ export const assertPersonalRuntime = async (
   options: {
     readonly forcedFailure?: PersonalFailurePhase;
     readonly port?: number;
+    readonly requestApplicationExit?: boolean;
     readonly seedPersistedPort?: boolean;
   } = {},
 ): Promise<void> => {
   const {
     forcedFailure,
     port = PERSONAL_DASHBOARD_PORT,
+    requestApplicationExit = false,
     seedPersistedPort = false,
   } = options;
   const credentialIdentity: CredentialIdentity = {
@@ -214,7 +218,7 @@ export const assertPersonalRuntime = async (
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
-    await waitForDirectChild(child);
+    const sidecarPid = await waitForDirectChild(child);
     forcePersonalFailure(forcedFailure, 'sidecar');
     await waitForHealthyRuntime(child, output, origin);
     if (!output().includes(`Floway listening on ${origin}`)) {
@@ -255,6 +259,16 @@ export const assertPersonalRuntime = async (
       }
     }
     forcePersonalFailure(forcedFailure, 'credential');
+    if (requestApplicationExit) {
+      await requestNormalApplicationExit(context.appRoot);
+      await waitForOutput(child, output, ['Floway desktop stopped and waited for its packaged runtime']);
+      await waitForChildExit(child, 10_000);
+      if (child.exitCode !== 0) {
+        throw new Error(`Floway normal application exit returned ${child.exitCode ?? child.signalCode}\n${output()}`);
+      }
+      await waitForProcessStopped(sidecarPid);
+      await assertLoopbackPortReleased(port);
+    }
   });
 };
 
