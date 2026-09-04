@@ -78,14 +78,12 @@ class NodeSqliteDatabase implements SqlDatabase {
   constructor(
     private readonly db: DatabaseSync,
     private readonly hardenFiles: () => void,
-    private readonly observeTransactionPhase: (phase: TransactionLifecyclePhase) => void = () => undefined,
   ) {}
 
-  private recoverTransaction(cause: unknown, state: TransactionLifecycleState): never {
+  private recoverTransaction(cause: unknown, lifecycle: TransactionLifecycle): never {
     const failures = [cause];
-    const recovery = advanceTransactionLifecycle(state, LIFECYCLE_STATES[state.kind].recovery);
-    this.observeTransactionPhase(transactionPhase(recovery));
-    if (recovery.kind === 'recover-active') {
+    const recovery = lifecycle.recover();
+    if (recovery.authority === 'active') {
       try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
     }
     try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
@@ -98,12 +96,8 @@ class NodeSqliteDatabase implements SqlDatabase {
     body: () => T | Promise<T>,
   ): Promise<T> {
     const plan = TRANSACTION_LIFECYCLES[kind];
-    let state: TransactionLifecycleState = { kind: 'not-begun', lifecycle: kind };
-    this.observeTransactionPhase(transactionPhase(state));
-    const transition = (next: TransactionLifecycleStateKind): void => {
-      state = advanceTransactionLifecycle(state, next);
-      this.observeTransactionPhase(transactionPhase(state));
-    };
+    const lifecycle = createTransactionLifecycle(kind);
+    const transition = (next: TransactionLifecycleStateKind): void => { lifecycle.advance(next); };
     try {
       this.db.exec(plan.beginSql);
       transition('begun');
@@ -117,7 +111,7 @@ class NodeSqliteDatabase implements SqlDatabase {
       transition('done');
       return result;
     } catch (cause) {
-      this.recoverTransaction(cause, state);
+      this.recoverTransaction(cause, lifecycle);
     }
   }
 
@@ -171,12 +165,11 @@ class NodeSqliteDatabase implements SqlDatabase {
 
 interface CreateNodeSqliteDatabaseOptions {
   readonly permissions?: InitializedPersonalStorage;
-  readonly observeTransactionPhase?: (phase: TransactionLifecyclePhase) => void;
 }
 
-type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
-type TransactionLifecycleKind = 'batch' | 'interactive';
-type TransactionLifecycleStateKind =
+export type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
+export type TransactionLifecycleKind = 'batch' | 'interactive';
+export type TransactionLifecycleStateKind =
   | 'not-begun'
   | 'begun'
   | 'body'
@@ -250,6 +243,30 @@ const advanceTransactionLifecycle = (
 const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase =>
   LIFECYCLE_STATES[state.kind].phase;
 
+export interface TransactionLifecycle {
+  readonly phase: TransactionLifecyclePhase;
+  advance(next: TransactionLifecycleStateKind): TransactionLifecyclePhase;
+  recover(): { readonly authority: 'active' | 'closed'; readonly phase: 'recovery' };
+}
+
+export const createTransactionLifecycle = (kind: TransactionLifecycleKind): TransactionLifecycle => {
+  let state: TransactionLifecycleState = { kind: 'not-begun', lifecycle: kind };
+  return {
+    get phase() { return transactionPhase(state); },
+    advance(next) {
+      state = advanceTransactionLifecycle(state, next);
+      return transactionPhase(state);
+    },
+    recover() {
+      state = advanceTransactionLifecycle(state, LIFECYCLE_STATES[state.kind].recovery);
+      return {
+        authority: state.kind === 'recover-active' ? 'active' : 'closed',
+        phase: 'recovery',
+      };
+    },
+  };
+};
+
 export const createNodeSqliteDatabase = (
   path: string,
   options: CreateNodeSqliteDatabaseOptions = {},
@@ -270,5 +287,5 @@ export const createNodeSqliteDatabase = (
   // enforcement, so turn it on at open.
   db.exec('PRAGMA foreign_keys = ON');
   hardenFiles();
-  return new NodeSqliteDatabase(db, hardenFiles, options.observeTransactionPhase);
+  return new NodeSqliteDatabase(db, hardenFiles);
 };

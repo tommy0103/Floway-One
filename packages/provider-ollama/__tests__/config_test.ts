@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 
-import { assertOllamaUpstreamRecord } from '../src/config.ts';
+import { assertOllamaUpstreamRecord, ollamaUpstreamConfigForSafeExport } from '../src/config.ts';
 import type { UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, assertThrows } from '@floway-dev/test-utils';
 
@@ -87,4 +87,18 @@ test('assertOllamaUpstreamRecord rejects rerank models', () => {
     Error,
     'rerank models require a custom upstream',
   );
+});
+
+test('safe export retains Ollama origin and path presence without a usable capability path', () => {
+  const safe = ollamaUpstreamConfigForSafeExport({
+    ...baseRecord,
+    config: {
+      ...(baseRecord.config as Record<string, unknown>),
+      baseUrl: 'https://user:password@ollama.example.com/secret-capability-path?token=query-secret#fragment-secret',
+    },
+  }) as Record<string, unknown>;
+
+  assertEquals(safe.baseUrl, 'https://ollama.example.com');
+  assertEquals(safe.basePathConfigured, true);
+  assertEquals(JSON.stringify(safe).includes('secret'), false);
 });

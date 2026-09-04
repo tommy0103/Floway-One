@@ -108,8 +108,10 @@ export const assertOllamaUpstreamRecord = (record: UpstreamRecord): OllamaUpstre
 
 export const ollamaUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
   const config = assertOllamaUpstreamRecord(record).config;
+  const safeBaseUrl = new URL(routingUrlForSafeExport(config.baseUrl));
   return {
-    baseUrl: routingUrlForSafeExport(config.baseUrl),
+    baseUrl: safeBaseUrl.origin,
+    ...(safeBaseUrl.pathname === '/' ? {} : { basePathConfigured: true }),
     cloudUsage: config.cloudUsage,
     models: upstreamModelsForSafeExport(config.models),
   };

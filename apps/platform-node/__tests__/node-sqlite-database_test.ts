@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { test, vi } from 'vitest';
 
-import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
+import { createNodeSqliteDatabase, createTransactionLifecycle, type TransactionLifecycleStateKind } from '../src/node-sqlite-database.ts';
 import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
 import { initializePersonalStorage } from '../src/personal-storage.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
@@ -105,16 +105,26 @@ test('batch executes statements in order and returns each result', () => withTem
   assertEquals(rows.results, [{ id: 1, name: 'A' }, { id: 2, name: 'b' }]);
 }));
 
-test('batch and interactive transactions expose their complete ordered lifecycle', () => withTempDb(async path => {
-  const phases: string[] = [];
-  const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });
-  await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
-  await db.batch!([db.prepare('INSERT INTO t (id) VALUES (1)')]);
-  assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'committed', 'finalize', 'done']);
-  phases.length = 0;
-  await db.transaction!(async () => { await db.prepare('INSERT INTO t (id) VALUES (2)').run(); });
-  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'committed', 'done']);
-}));
+test('pure transaction lifecycle exposes complete ordered success and recovery phases', () => {
+  const transcript = (kind: 'batch' | 'interactive', transitions: TransactionLifecycleStateKind[]) => {
+    const lifecycle = createTransactionLifecycle(kind);
+    return [lifecycle.phase, ...transitions.map(transition => lifecycle.advance(transition))];
+  };
+  assertEquals(transcript('batch', ['begun', 'body', 'commit', 'committed', 'postcommit-finalize', 'done']),
+    ['not-begun', 'begun', 'body', 'commit', 'committed', 'finalize', 'done']);
+  assertEquals(transcript('interactive', ['begun', 'body', 'precommit-finalize', 'commit', 'committed', 'done']),
+    ['not-begun', 'begun', 'body', 'finalize', 'commit', 'committed', 'done']);
+
+  const notBegun = createTransactionLifecycle('batch');
+  assertEquals(notBegun.recover(), { authority: 'closed', phase: 'recovery' });
+  const active = createTransactionLifecycle('interactive');
+  active.advance('begun');
+  active.advance('body');
+  assertEquals(active.recover(), { authority: 'active', phase: 'recovery' });
+  const committed = createTransactionLifecycle('batch');
+  for (const phase of ['begun', 'body', 'commit', 'committed', 'postcommit-finalize'] as const) committed.advance(phase);
+  assertEquals(committed.recover(), { authority: 'closed', phase: 'recovery' });
+});
 
 test('batch post-commit hardening failure preserves committed data and never attempts rollback', async () => {
   const root = await mkdtemp(join(tmpdir(), 'node-sqlite-committed-recovery-'));
@@ -123,29 +133,20 @@ test('batch post-commit hardening failure preserves committed data and never att
     const permissions = initializePersonalStorage(paths);
     const hardenOriginal = permissions.hardenSqliteFiles.bind(permissions);
     const hardeningFailure = new Error('forced post-commit hardening failure');
-    const phases: string[] = [];
-    let failNextHardening = false;
+    let hardeningCalls = 0;
     const harden = vi.spyOn(permissions, 'hardenSqliteFiles').mockImplementation(path => {
-      if (failNextHardening) {
-        failNextHardening = false;
-        throw hardeningFailure;
-      }
+      hardeningCalls++;
+      if (hardeningCalls === 5) throw hardeningFailure;
       hardenOriginal(path);
     });
-    const db = createNodeSqliteDatabase(paths.databasePath, {
-      permissions,
-      observeTransactionPhase: phase => {
-        phases.push(phase);
-        if (phase === 'finalize') failNextHardening = true;
-      },
-    });
+    const db = createNodeSqliteDatabase(paths.databasePath, { permissions });
     await db.prepare('CREATE TABLE committed (id INTEGER PRIMARY KEY)').run();
 
     let observed: unknown;
     try { await db.batch!([db.prepare('INSERT INTO committed (id) VALUES (1)')]); } catch (cause) { observed = cause; }
 
     assertEquals(observed, hardeningFailure);
-    assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'committed', 'finalize', 'recovery']);
+    assertEquals(hardeningCalls, 6);
     assertEquals((await db.prepare('SELECT id FROM committed').all<{ id: number }>()).results, [{ id: 1 }]);
     harden.mockRestore();
   } finally {
@@ -154,17 +155,14 @@ test('batch post-commit hardening failure preserves committed data and never att
 });
 
 test('begin and commit failures preserve their phase and original precedence', () => withTempDb(async path => {
-  const phases: string[] = [];
-  const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });
+  const db = createNodeSqliteDatabase(path);
   await db.exec('BEGIN');
   let beginFailure: unknown;
   try { await db.batch!([db.prepare('SELECT 1')]); } catch (cause) { beginFailure = cause; }
   assert(beginFailure instanceof Error);
   assert(beginFailure.message.includes('transaction'));
-  assertEquals(phases, ['not-begun', 'recovery']);
   await db.exec('ROLLBACK');
 
-  phases.length = 0;
   let commitFailure: unknown;
   try {
     await db.transaction!(async () => { await db.exec('COMMIT'); });
@@ -172,7 +170,6 @@ test('begin and commit failures preserve their phase and original precedence', (
   assert(commitFailure instanceof AggregateError);
   assertEquals(commitFailure.cause, commitFailure.errors[0]);
   assert((commitFailure.cause as Error).message.includes('no transaction is active'));
-  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'recovery']);
 }));
 
 test('batch rolls back on mid-batch failure', () => withTempDb(async path => {

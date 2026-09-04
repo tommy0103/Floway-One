@@ -634,7 +634,7 @@ test('safe export structurally omits every authentication-bearing field', async 
     ...OLLAMA_UPSTREAM,
     config: {
       ...(OLLAMA_UPSTREAM.config as Record<string, unknown>),
-      baseUrl: 'https://ollama-user:ollama-password@ollama.example.com/v1?token=ollama-query-secret#ollama-fragment-secret',
+      baseUrl: 'https://ollama-user:ollama-password@ollama.example.com/ollama-path-capability-secret?token=ollama-query-secret#ollama-fragment-secret',
     },
   };
   await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
@@ -711,8 +711,9 @@ test('safe export structurally omits every authentication-bearing field', async 
   assertEquals(hasOwn(codex.state.accounts[0], 'refresh_token'), false);
   assertEquals(hasOwn(codex.state.accounts[0], 'accessToken'), false);
   const ollama = exported.data.upstreams.find((upstream: any) => upstream.id === OLLAMA_UPSTREAM.id);
-  assertEquals(ollama.config.baseUrl, 'https://ollama.example.com/v1');
-  assertEquals(Object.keys(ollama.config).toSorted(), ['baseUrl', 'cloudUsage', 'models']);
+  assertEquals(ollama.config.baseUrl, 'https://ollama.example.com');
+  assertEquals(ollama.config.basePathConfigured, true);
+  assertEquals(Object.keys(ollama.config).toSorted(), ['basePathConfigured', 'baseUrl', 'cloudUsage', 'models']);
   assertEquals(ollama.config.cloudUsage, true);
   assertEquals(hasOwn(ollama.config, 'apiKey'), false);
   const claude = exported.data.upstreams.find((upstream: any) => upstream.id === CLAUDE_CODE_UPSTREAM.id);
@@ -761,6 +762,7 @@ test('safe export structurally omits every authentication-bearing field', async 
     'azure-password',
     'ollama-user',
     'ollama-password',
+    'ollama-path-capability-secret',
     'ollama-query-secret',
     'ollama-fragment-secret',
     'proxy-user',
