@@ -42,8 +42,14 @@ type ImportSelection =
 
 type ImportArchiveState =
   | { kind: 'empty'; error: string | null }
-  | { kind: 'reading'; file: File }
-  | { kind: 'ready'; error: string | null; file: File; selection: ImportSelection };
+  | { kind: 'reading'; file: File; token: number }
+  | { kind: 'ready'; error: string | null; file: File; selection: ImportSelection; token: number };
+
+const transitionCurrentImport = (
+  current: ImportArchiveState,
+  token: number,
+  transition: (ready: Extract<ImportArchiveState, { kind: 'ready' }>) => ImportArchiveState,
+): ImportArchiveState => current.kind === 'ready' && current.token === token ? transition(current) : current;
 
 const downloadJson = (data: unknown, name: string): void => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -138,7 +144,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
     (file: File) => {
       const readSequence = ++readSequenceRef.current;
       readerRef.current?.abort();
-      setImportArchive({ kind: 'reading', file });
+      setImportArchive({ kind: 'reading', file, token: readSequence });
 
       const reader = new FileReader();
       readerRef.current = reader;
@@ -152,7 +158,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             invalidateImportArchive(t(result.error.clientMessageKey));
             return;
           }
-          setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive } });
+          setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive }, token: readSequence });
           return;
         }
         const result = parseBackupFile(raw);
@@ -160,7 +166,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
           invalidateImportArchive(t(result.error.clientMessageKey));
           return;
         }
-        setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload } });
+        setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence });
       };
       reader.onerror = () => {
         if (readSequence !== readSequenceRef.current) return;
@@ -214,6 +220,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   const doImport = useCallback(async () => {
     if (importArchive.kind !== 'ready') return;
     const selection = importArchive.selection;
+    const token = importArchive.token;
     setImporting(true);
     setImportArchive({ ...importArchive, error: null });
 
@@ -229,20 +236,12 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
 
     if (result.error) {
       handle.settle();
-      setImportArchive(current => current.kind === 'ready'
-        && current.file === importArchive.file
-        && current.selection === selection
-        ? { ...current, error: result.error.message }
-        : current);
+      setImportArchive(current => transitionCurrentImport(current, token, ready => ({ ...ready, error: result.error.message })));
       setImporting(false);
       return;
     }
 
-    setImportArchive(current => current.kind === 'ready'
-      && current.file === importArchive.file
-      && current.selection === selection
-      ? { kind: 'empty', error: null }
-      : current);
+    setImportArchive(current => transitionCurrentImport(current, token, () => ({ kind: 'empty', error: null })));
     setRestorePassword('');
     setImporting(false);
     const summary = recordSummary(result.data.imported, t, locale);

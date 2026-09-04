@@ -85,6 +85,23 @@ class NodeSqliteDatabase implements SqlDatabase {
     throw new AggregateError(failures, 'Floway transaction failed and recovery was incomplete.', { cause });
   }
 
+  private async runTransactionLifecycle<T>(
+    begin: 'BEGIN' | 'BEGIN IMMEDIATE',
+    body: () => T | Promise<T>,
+    hardenBeforeCommit: boolean,
+  ): Promise<T> {
+    this.db.exec(begin);
+    try {
+      const result = await body();
+      if (hardenBeforeCommit) this.hardenFiles();
+      this.db.exec('COMMIT');
+      if (!hardenBeforeCommit) this.hardenFiles();
+      return result;
+    } catch (cause) {
+      this.recoverTransaction(cause);
+    }
+  }
+
   private readonly schedule = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (this.transactionContext.getStore()) return Promise.resolve().then(operation);
     const pending = this.operationTail.then(operation, operation);
@@ -118,39 +135,14 @@ class NodeSqliteDatabase implements SqlDatabase {
     // A repository-level batch inside a broader restore transaction is
     // already protected by that transaction and must not open a nested BEGIN.
     if (this.transactionContext.getStore()) return this.schedule(runStatements);
-    return this.schedule(() => {
-      this.db.exec('BEGIN');
-      try {
-        const results = runStatements();
-        this.db.exec('COMMIT');
-        this.hardenFiles();
-        return results;
-      } catch (e) {
-        // SQLite may auto-roll back on a hard error class. Recovery retains
-        // this primary error as the cause while also exposing rollback or
-        // hardening failures instead of silently discarding their stacks.
-        this.recoverTransaction(e);
-      }
-    });
+    return this.schedule(() => this.runTransactionLifecycle('BEGIN', runStatements, false));
   }
 
   transaction<T>(operation: () => Promise<T>): Promise<T> {
-    return this.schedule(() => this.transactionContext.run(true, async () => {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const result = await operation();
-        // Private-storage verification is part of the transaction's success
-        // condition. A failure reaches the catch block while ROLLBACK is still
-        // possible, so live owner, key, upstream, and alias state remains intact.
-        this.hardenFiles();
-        this.db.exec('COMMIT');
-        return result;
-      } catch (cause) {
-        // Preserve the application/storage failure even when SQLite already
-        // ended the transaction or file hardening also fails during cleanup.
-        this.recoverTransaction(cause);
-      }
-    }));
+    return this.schedule(() => this.transactionContext.run(
+      true,
+      async () => await this.runTransactionLifecycle('BEGIN IMMEDIATE', operation, true),
+    ));
   }
 
   exec(sql: string): Promise<unknown> {

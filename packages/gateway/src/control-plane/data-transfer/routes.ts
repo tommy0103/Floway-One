@@ -165,7 +165,7 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
 
 interface IdentityRule<T> {
   readonly value: (record: T) => string;
-  readonly duplicate: (value: string, prior: T, priorIndex: number, record: T, index: number) => string;
+  readonly duplicate: (context: { value: string; prior: T; priorIndex: number; record: T; index: number }) => string;
   readonly mergeConflict?: (value: string, existing: T, record: T) => string | null;
 }
 
@@ -181,7 +181,7 @@ const validateIndexedIdentities = <T>(
       const record = records[index];
       const value = rule.value(record);
       const prior = imported.get(value);
-      if (prior !== undefined) return rule.duplicate(value, prior.record, prior.index, record, index);
+      if (prior !== undefined) return rule.duplicate({ value, prior: prior.record, priorIndex: prior.index, record, index });
       imported.set(value, { index, record });
     }
     if (mode === 'merge' && rule.mergeConflict !== undefined) {
@@ -203,16 +203,16 @@ const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly
   validateIndexedIdentities(records, existing, mode, [
     {
       value: record => record.id,
-      duplicate: (id, _prior, priorIndex, _record, index) => `duplicate apiKeys id ${id} at indexes ${priorIndex} and ${index}`,
+      duplicate: ({ value, priorIndex, index }) => `duplicate apiKeys id ${value} at indexes ${priorIndex} and ${index}`,
     },
     {
       value: record => record.key,
-      duplicate: (_key, prior, _priorIndex, record) => `duplicate apiKeys raw key used by ${prior.id} and ${record.id}`,
+      duplicate: ({ prior, record }) => `duplicate apiKeys raw key used by ${prior.id} and ${record.id}`,
       mergeConflict: (_key, prior, record) => prior.id === record.id ? null : `apiKeys raw key for ${record.id} conflicts with existing api key ${prior.id}`,
     },
     {
       value: record => record.serverSecret,
-      duplicate: (_secret, prior, _priorIndex, record) => `duplicate apiKeys server secret used by ${prior.id} and ${record.id}`,
+      duplicate: ({ prior, record }) => `duplicate apiKeys server secret used by ${prior.id} and ${record.id}`,
       mergeConflict: (_secret, prior, record) => prior.id === record.id ? null : `apiKeys server secret for ${record.id} conflicts with existing api key ${prior.id}`,
     },
   ]);
@@ -243,14 +243,23 @@ const validateModelAliasIdentities = (
 ): string | null => validateIndexedIdentities(records, existing, mode, [
   {
     value: record => record.id,
-    duplicate: (id, _prior, priorIndex, _record, index) => `duplicate id ${id} at indexes ${priorIndex} and ${index}`,
+    duplicate: ({ value, priorIndex, index }) => `duplicate id ${value} at indexes ${priorIndex} and ${index}`,
   },
   {
     value: record => record.name,
-    duplicate: (name, _prior, priorIndex, _record, index) => `duplicate name ${name} at indexes ${priorIndex} and ${index}`,
+    duplicate: ({ value, priorIndex, index }) => `duplicate name ${value} at indexes ${priorIndex} and ${index}`,
     mergeConflict: (name, prior, record) => prior.id === record.id ? null : `name ${name} conflicts with existing alias ${prior.id}`,
   },
 ]);
+
+const validateCollectionIdentities = <T>(
+  label: string,
+  records: readonly T[],
+  value: (record: T) => string,
+): string | null => validateIndexedIdentities(records, [], 'replace', [{
+  value,
+  duplicate: ({ value: identity, priorIndex, index }) => `duplicate ${label} identity ${identity} at indexes ${priorIndex} and ${index}`,
+}]);
 
 export const exportData = async (c: CtxWithQuery<typeof exportQuery>) => {
   const query = c.req.valid('query');
@@ -301,6 +310,13 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
 
   const profileError = runtimeProfileDataError(users, apiKeys);
   if (profileError) return c.json({ error: `invalid personal profile data: ${profileError}` }, 400);
+  const outerIdentityErrors = [
+    validateCollectionIdentities('upstreams', upstreams, record => record.id),
+    validateCollectionIdentities('usage', usage, record => JSON.stringify([record.keyId, record.model, record.upstream, record.modelKey, record.hour, record.pricingSelector])),
+    validateCollectionIdentities('searchUsage', searchUsage, record => JSON.stringify([record.provider, record.keyId, record.action, record.hour])),
+    validateCollectionIdentities('performance', performance, record => JSON.stringify([record.keyId, record.model, record.upstream, record.operation, record.runtimeLocation, record.hour])),
+  ].find(error => error !== null);
+  if (outerIdentityErrors) return c.json({ error: outerIdentityErrors }, 400);
   const preservePersonalOwner = mode === 'replace' && isPersonalRuntimeProfile();
 
   const repo = getRepo();

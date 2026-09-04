@@ -1604,6 +1604,27 @@ test('import rejects api key unique identity conflicts before mutating', async (
   assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
 });
 
+test('import rejects duplicate outer collection identities before mutating any state', async () => {
+  const { app, repo } = setup();
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+
+  const attempts = [
+    await doImport(app, 'replace', latestImportData({ upstreams: [CUSTOM_UPSTREAM, { ...CUSTOM_UPSTREAM, name: 'Hybrid', config: { baseUrl: 'https://different.example' } }] })),
+    await doImport(app, 'replace', latestImportData({ usage: [USAGE_2, { ...USAGE_2, requests: USAGE_2.requests + 1 }] })),
+    await doImport(app, 'replace', latestImportData({ searchUsage: [WEB_SEARCH_USAGE_2, { ...WEB_SEARCH_USAGE_2, requests: WEB_SEARCH_USAGE_2.requests + 1 }] })),
+    await doImport(app, 'replace', latestImportData({ performanceIncluded: true, performance: [PERFORMANCE_2, { ...PERFORMANCE_2, ttftMsSum: PERFORMANCE_2.ttftMsSum + 1 }] })),
+  ];
+
+  for (const attempt of attempts) assertEquals(attempt.status, 400);
+  assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+  assertEquals(await repo.usage.listAll(), [USAGE_1]);
+  assertEquals(await repo.webSearchUsage.listAll(), [WEB_SEARCH_USAGE_1]);
+  assertEquals(await repo.performance.listAll(), [PERFORMANCE_1]);
+});
+
 test('import requires an exact lowercase hexadecimal serverSecret on every api key', async () => {
   const { app, repo } = setup();
   await repo.apiKeys.save(KEY_A);
