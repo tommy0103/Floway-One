@@ -10,13 +10,14 @@ use tauri_plugin_shell::process::CommandChild;
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) trait PackagedChild: Send {
-    fn stop_now(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    fn stop_now(self: Box<Self>) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 #[cfg(feature = "desktop")]
 impl PackagedChild for CommandChild {
-    fn stop_now(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.kill()
+    fn stop_now(self: Box<Self>) -> Result<(), Box<dyn Error + Send + Sync>> {
+        (*self)
+            .kill()
             .map_err(|source| Box::new(source) as Box<dyn Error + Send + Sync>)
     }
 }

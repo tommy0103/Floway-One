@@ -27,7 +27,7 @@ struct ObservedChild {
 }
 
 impl PackagedChild for ObservedChild {
-    fn stop_now(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn stop_now(self: Box<Self>) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.stop_requested.store(true, Ordering::SeqCst);
         self.stopped
             .send(())
