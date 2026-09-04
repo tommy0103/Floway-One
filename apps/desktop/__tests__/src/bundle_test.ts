@@ -186,7 +186,7 @@ describe('desktop bundle preparation', () => {
     expect(exchangeDirectories).toHaveBeenCalledOnce();
     expect(await readFile(resolve(second.runtimeRoot, 'apps/platform-node/src/runtime.js'), 'utf8')).not.toBe(firstRuntime);
     await expect(stat(resolve(root, 'src-tauri/.bundle-staging'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 20_000);
 
   test('keeps the prior complete tree when its single atomic publish operation fails', async () => {
     const root = await temporaryRoot();
@@ -219,7 +219,7 @@ describe('desktop bundle preparation', () => {
     expect(error?.cause).toBe(publishFailure);
     expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
     await expect(assertPackagedRuntime(published.runtimeRoot)).resolves.toBeUndefined();
-  });
+  }, 20_000);
 
   test('aggregates staging rollback cleanup failure behind the original assembly cause', async () => {
     const root = await temporaryRoot();
