@@ -1,3 +1,5 @@
+import { formatWithOptions } from 'node:util';
+
 import { Hono } from 'hono';
 import { expect, test, vi } from 'vitest';
 
@@ -11,12 +13,14 @@ vi.mock('../../../src/data-plane/providers/models-cache.ts', () => ({
   fetchUpstreamModelsCached: () => Promise.resolve([]),
 }));
 
-import { createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
+import { BackupArchiveAuthenticationError, createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
 import { createFullBackup, exportData, importData } from '../../../src/control-plane/data-transfer/routes.ts';
 import { exportQuery, fullBackupBody, importBody } from '../../../src/control-plane/schemas.ts';
 import { upstreamRecordToFullJson } from '../../../src/control-plane/upstreams/serialize.ts';
 import { DEFAULT_WEB_SEARCH_CONFIG } from '../../../src/data-plane/tools/web-search/config.ts';
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
+import { ClientSafeBadRequestError } from '../../../src/middleware/client-safe-error.ts';
+import { internalErrorResponse } from '../../../src/middleware/internal-error-response.ts';
 import { zValidator } from '../../../src/middleware/zod-validator.ts';
 import { initRepo } from '../../../src/repo/index.ts';
 import { SqlRepo } from '../../../src/repo/sql.ts';
@@ -229,6 +233,47 @@ const CODEX_UPSTREAM: UpstreamRecord = {
   },
 };
 
+const CLAUDE_CODE_UPSTREAM: UpstreamRecord = {
+  id: 'up_claude_code_a',
+  kind: 'claude-code',
+  name: 'Claude Code (alice)',
+  enabled: true,
+  sortOrder: 35,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  flagOverrides: {},
+  disabledPublicModelIds: [],
+  proxyFallbackList: [],
+  modelPrefix: null,
+  modelsCache: null,
+  hue: 210,
+  config: {
+    accounts: [{
+      email: 'alice@example.com',
+      accountUuid: 'claude-account-a',
+      organizationUuid: null,
+      subscriptionType: 'pro',
+      rateLimitTier: 'default_claude_pro',
+    }],
+  },
+  state: {
+    accounts: [{
+      accountUuid: 'claude-account-a',
+      tokenKind: 'oauth',
+      refreshToken: 'claude-refresh-secret',
+      state: 'active',
+      stateUpdatedAt: '2026-01-01T00:00:00.000Z',
+      accessToken: {
+        token: 'claude-access-secret',
+        expiresAt: 1_900_000_000_000,
+        refreshedAt: '2026-01-01T00:00:00.000Z',
+      },
+      quotaSnapshot: null,
+      usageProbeSnapshot: null,
+    }],
+  },
+};
+
 const USAGE_1: UsageRecord = {
   keyId: 'key-a',
   model: 'claude-opus-4-7',
@@ -334,6 +379,7 @@ const ROUTING_ALIAS: ModelAliasRecord = {
 const setupWithRepo = <T extends Repo>(repo: T) => {
   initRepo(repo);
   const app = new Hono();
+  app.onError(internalErrorResponse);
   app.get('/export', zValidator('query', exportQuery), exportData);
   app.post('/export', zValidator('json', fullBackupBody), createFullBackup);
   app.post('/import', zValidator('json', importBody), importData);
@@ -483,6 +529,9 @@ test('personal full backup encrypts every recovery secret under the supplied pas
   await repo.users.save(SEED_ADMIN);
   await repo.apiKeys.save(KEY_A);
   await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.upstreams.save(COPILOT_UPSTREAM);
+  await repo.upstreams.save(AZURE_UPSTREAM);
+  await repo.upstreams.save(CODEX_UPSTREAM);
   await repo.webSearchConfig.save({
     provider: 'tavily',
     tavily: { apiKey: 'tavily-recovery-secret' },
@@ -508,7 +557,7 @@ test('personal full backup encrypts every recovery secret under the supplied pas
     const restored = await openEncryptedBackupArchive(archive, 'portable-password') as Record<string, any>;
     assertEquals(restored.version, 20);
     assertEquals(restored.data.apiKeys, [KEY_A]);
-    assertEquals(restored.data.upstreams[0].config.apiKey, 'sk-custom');
+    assertEquals(restored.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id).config.apiKey, 'sk-custom');
     assertEquals(restored.data.searchConfig.tavily.apiKey, 'tavily-recovery-secret');
   } finally {
     initRuntimeProfile('server');
@@ -520,6 +569,11 @@ test('safe export structurally omits every authentication-bearing field', async 
   await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
   await repo.apiKeys.save(KEY_A);
   await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.upstreams.save(COPILOT_UPSTREAM);
+  await repo.upstreams.save(AZURE_UPSTREAM);
+  await repo.upstreams.save(CODEX_UPSTREAM);
+  await repo.upstreams.save(OLLAMA_UPSTREAM);
+  await repo.upstreams.save(CLAUDE_CODE_UPSTREAM);
   await repo.proxies.save({
     id: 'proxy-safe-export',
     name: 'Authenticated proxy',
@@ -550,12 +604,46 @@ test('safe export structurally omits every authentication-bearing field', async 
   assertEquals(exported.data.apiKeys[0].name, KEY_A.name);
   assertEquals(hasOwn(exported.data.apiKeys[0], 'key'), false);
   assertEquals(hasOwn(exported.data.apiKeys[0], 'serverSecret'), false);
-  assertEquals(exported.data.upstreams[0].kind, CUSTOM_UPSTREAM.kind);
-  assertEquals(hasOwn(exported.data.upstreams[0], 'config'), false);
-  assertEquals(hasOwn(exported.data.upstreams[0], 'state'), false);
+  const custom = exported.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id);
+  assertEquals(custom.config.baseUrl, 'https://custom.example.com');
+  assertEquals(custom.config.endpoints, CUSTOM_UPSTREAM.config && (CUSTOM_UPSTREAM.config as any).endpoints);
+  assertEquals(custom.config.ingressHeadersRules, [
+    { key: 'x-request-id', source: 'client' },
+    { key: 'x-route', source: 'configured' },
+  ]);
+  assertEquals(hasOwn(custom.config, 'apiKey'), false);
+  assertEquals(custom.state, null);
+  const copilot = exported.data.upstreams.find((upstream: any) => upstream.id === COPILOT_UPSTREAM.id);
+  assertEquals(copilot.config.githubHost, 'github.com');
+  assertEquals(copilot.config.user.login, 'alice');
+  assertEquals(hasOwn(copilot.config, 'githubToken'), false);
+  const azure = exported.data.upstreams.find((upstream: any) => upstream.id === AZURE_UPSTREAM.id);
+  assertEquals(azure.config.endpoint, 'https://example.openai.azure.com');
+  assertEquals(azure.config.models.length, 2);
+  assertEquals(hasOwn(azure.config, 'apiKey'), false);
+  const codex = exported.data.upstreams.find((upstream: any) => upstream.id === CODEX_UPSTREAM.id);
+  assertEquals(codex.config.accounts[0].email, 'alice@example.com');
+  assertEquals(codex.state.accounts[0].state, 'active');
+  assertEquals(codex.state.accounts[0].openaiDeviceId, '11111111-2222-4333-8444-555555555555');
+  assertEquals(hasOwn(codex.state.accounts[0], 'refresh_token'), false);
+  assertEquals(hasOwn(codex.state.accounts[0], 'accessToken'), false);
+  const ollama = exported.data.upstreams.find((upstream: any) => upstream.id === OLLAMA_UPSTREAM.id);
+  assertEquals(ollama.config.baseUrl, 'https://ollama.com');
+  assertEquals(ollama.config.cloudUsage, true);
+  assertEquals(hasOwn(ollama.config, 'apiKey'), false);
+  const claude = exported.data.upstreams.find((upstream: any) => upstream.id === CLAUDE_CODE_UPSTREAM.id);
+  assertEquals(claude.config.accounts[0].subscriptionType, 'pro');
+  assertEquals(claude.state.accounts[0].state, 'active');
+  assertEquals(hasOwn(claude.state.accounts[0], 'refreshToken'), false);
+  assertEquals(hasOwn(claude.state.accounts[0], 'accessToken'), false);
   assertEquals(exported.data.proxies[0], { id: 'proxy-safe-export', name: 'Authenticated proxy', dial_timeout_seconds: 9 });
   assertEquals(exported.data.searchConfig, {
     provider: 'tavily',
+    credentials: {
+      tavily: { configured: true },
+      'microsoft-web-iq': { configured: true },
+      jina: { configured: true },
+    },
     passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
   });
   const serialized = JSON.stringify(exported);
@@ -564,6 +652,12 @@ test('safe export structurally omits every authentication-bearing field', async 
     KEY_A.key,
     KEY_A.serverSecret,
     'sk-custom',
+    'ghu-alice',
+    'az-key',
+    'rt_alice_v3',
+    'ollama-key',
+    'claude-refresh-secret',
+    'claude-access-secret',
     'proxy-user',
     'proxy-password',
     'tavily-safe-export-secret',
@@ -606,6 +700,46 @@ test('personal restore authenticates an encrypted full backup before changing li
     assertEquals(restored.status, 200);
     assertEquals(await repo.apiKeys.list(), [KEY_B]);
   } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('backup authentication rejection retains its internal cause chain but returns and logs no secrets', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const password = 'PASSWORD_NOT_FOR_RESPONSE_21';
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({ apiKeys: [KEY_B], upstreams: [upstreamRecordToFullJson(CUSTOM_UPSTREAM)] }),
+  }, password);
+  const tampered = { ...archive, ciphertext: `${archive.ciphertext.slice(0, -2)}AA` };
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive: tampered, password }),
+    });
+    const body = await response.text();
+
+    assertEquals(response.status, 400);
+    assertEquals(JSON.parse(body), { error: 'The backup could not be authenticated or validated.' });
+    const reported = logged[0]?.[0];
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toBeInstanceOf(BackupArchiveAuthenticationError);
+    expect(((reported as ClientSafeBadRequestError).cause as BackupArchiveAuthenticationError).cause).toBeInstanceOf(Error);
+    const rendered = formatWithOptions({ colors: false, depth: null }, '%o', reported);
+    for (const secret of [password, KEY_B.key, KEY_B.serverSecret, 'sk-custom']) {
+      expect(`${body}\n${rendered}`).not.toContain(secret);
+    }
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+  } finally {
+    log.mockRestore();
     initRuntimeProfile('server');
   }
 });
@@ -1935,6 +2069,92 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
   assertEquals((await repo.usage.listAll()).find(u => u.keyId === restoredKeyA.id && u.hour === USAGE_1.hour), { ...USAGE_1, keyId: restoredKeyA.id });
   assertEquals((await repo.performance.listAll()).find(p => p.keyId === restoredKeyA.id && p.hour === PERFORMANCE_1.hour), { ...PERFORMANCE_1, keyId: restoredKeyA.id });
   assertEquals(await repo.webSearchConfig.get(), config);
+});
+
+test('model alias duplicate ids and names are rejected before personal or server data mutation', async () => {
+  for (const profile of ['server', 'personal'] as const) {
+    const { app, repo } = setup();
+    await repo.apiKeys.save(KEY_A);
+    await repo.upstreams.save(CUSTOM_UPSTREAM);
+    await repo.modelAliases.insert(ROUTING_ALIAS);
+    initRuntimeProfile(profile);
+    try {
+      const duplicate = { ...ROUTING_ALIAS, updatedAt: '2026-02-02T00:00:00.000Z' };
+      const data = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [ROUTING_ALIAS, duplicate],
+      });
+      const result = profile === 'personal'
+        ? await doEncryptedImport(app, 'replace', data)
+        : await doImport(app, 'replace', data);
+
+      assertEquals(result.status, 400);
+      assertEquals(result.body.error, `invalid modelAliases: duplicate id ${ROUTING_ALIAS.id} at indexes 0 and 1`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+
+      const duplicateName = { ...ROUTING_ALIAS, id: 'alias-duplicate-name' };
+      const duplicateNameData = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [ROUTING_ALIAS, duplicateName],
+      });
+      const duplicateNameResult = profile === 'personal'
+        ? await doEncryptedImport(app, 'replace', duplicateNameData)
+        : await doImport(app, 'replace', duplicateNameData);
+      assertEquals(duplicateNameResult.status, 400);
+      assertEquals(duplicateNameResult.body.error, `invalid modelAliases: duplicate name ${ROUTING_ALIAS.name} at indexes 0 and 1`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+    } finally {
+      initRuntimeProfile('server');
+    }
+  }
+});
+
+test('model alias merge name conflicts are rejected before personal or server data mutation', async () => {
+  for (const profile of ['server', 'personal'] as const) {
+    const { app, repo } = setup();
+    await repo.apiKeys.save(KEY_A);
+    await repo.upstreams.save(CUSTOM_UPSTREAM);
+    await repo.modelAliases.insert(ROUTING_ALIAS);
+    initRuntimeProfile(profile);
+    try {
+      const conflicting = { ...ROUTING_ALIAS, id: 'alias-different-id' };
+      const data = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [conflicting],
+      });
+      const result = profile === 'personal'
+        ? await doEncryptedImport(app, 'merge', data)
+        : await doImport(app, 'merge', data);
+
+      assertEquals(result.status, 400);
+      assertEquals(result.body.error, `invalid modelAliases: name ${ROUTING_ALIAS.name} conflicts with existing alias ${ROUTING_ALIAS.id}`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+    } finally {
+      initRuntimeProfile('server');
+    }
+  }
+});
+
+test('legacy v20 replace imports preserve aliases when modelAliases is omitted and clear them when explicitly empty', async () => {
+  const { app, repo } = setup();
+  await repo.modelAliases.insert(ROUTING_ALIAS);
+
+  const omitted = await doImport(app, 'replace', latestImportData());
+  assertEquals(omitted.status, 200);
+  assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+
+  const explicitEmpty = await doImport(app, 'replace', latestImportData({ modelAliases: [] }));
+  assertEquals(explicitEmpty.status, 200);
+  assertEquals(await repo.modelAliases.list(), []);
 });
 
 test('any data bearing a historical version is rejected on the version gate, before mutating', async () => {

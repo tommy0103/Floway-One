@@ -35,7 +35,7 @@ export interface ParsedImportData {
   users: User[];
   apiKeys: ApiKey[];
   upstreams: UpstreamRecord[];
-  modelAliases: ModelAliasRecord[];
+  modelAliases: ModelAliasRecord[] | undefined;
   proxies: SerializedProxy[];
   usage: UsageRecord[];
   searchUsage: WebSearchUsageRecord[];
@@ -519,8 +519,10 @@ export const parseImportData = (value: unknown): ImportDataParseResult => {
   if (usage.type === 'invalid') return usage;
   const upstreams = parseCollection('upstreams', upstreamWireSchema, value.upstreams, { arrayError: 'upstreams must be an array' });
   if (upstreams.type === 'invalid') return upstreams;
-  const modelAliases = parseCollection('modelAliases', modelAliasSchema, value.modelAliases, { arrayError: 'modelAliases must be an array', optional: true });
-  if (modelAliases.type === 'invalid') return modelAliases;
+  const modelAliases = hasOwn(value, 'modelAliases')
+    ? parseCollection('modelAliases', modelAliasSchema, value.modelAliases, { arrayError: 'modelAliases must be an array' })
+    : undefined;
+  if (modelAliases?.type === 'invalid') return modelAliases;
   const proxies = parseCollection('proxies', proxySchema, value.proxies, { arrayError: 'proxies must be an array', optional: true });
   if (proxies.type === 'invalid') return proxies;
   const proxyIds = new Map<string, number>();
@@ -563,7 +565,7 @@ export const parseImportData = (value: unknown): ImportDataParseResult => {
       users: users.records,
       apiKeys: apiKeys.records,
       upstreams: upstreams.records,
-      modelAliases: modelAliases.records,
+      modelAliases: modelAliases?.records,
       proxies: proxies.records,
       usage: usage.records,
       searchUsage: searchUsage.records,

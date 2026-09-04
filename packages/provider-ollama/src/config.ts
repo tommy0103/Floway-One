@@ -105,3 +105,8 @@ export const assertOllamaUpstreamRecord = (record: UpstreamRecord): OllamaUpstre
   if (record.kind !== 'ollama') throw new Error(`Expected ollama upstream record, got ${record.kind}`);
   return { ...record, kind: 'ollama', config: parseOllamaUpstreamConfig(record.config) };
 };
+
+export const ollamaUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
+  const { apiKey: _apiKey, ...config } = assertOllamaUpstreamRecord(record).config;
+  return config;
+};

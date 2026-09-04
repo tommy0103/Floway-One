@@ -2,9 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
+import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
+import { initializePersonalStorage } from '../src/personal-storage.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const withTempDb = async (fn: (dbPath: string) => Promise<void>): Promise<void> => {
@@ -110,6 +112,57 @@ test('interactive transaction rolls back awaited writes and rethrows the origina
   const rows = await db.prepare('SELECT id FROM t ORDER BY id').all<{ id: number }>();
   assertEquals(rows.results, [{ id: 1 }]);
 }));
+
+test('final private-storage hardening fails before commit and rolls back every restored entity', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'node-sqlite-hardening-'));
+  const paths = resolvePersonalRuntimePaths({ dataDir: join(root, 'data'), stableUserHome: root });
+  try {
+    const permissions = initializePersonalStorage(paths);
+    const hardenOriginal = permissions.hardenSqliteFiles.bind(permissions);
+    const nativeFailure = Object.assign(new Error('forced chmod failure'), { code: 'EACCES' });
+    const hardeningFailure = new Error('Floway could not finalize private SQLite storage', { cause: nativeFailure });
+    let armed = false;
+    const harden = vi.spyOn(permissions, 'hardenSqliteFiles').mockImplementation(path => {
+      hardenOriginal(path);
+      if (armed) throw hardeningFailure;
+    });
+    const db = createNodeSqliteDatabase(paths.databasePath, { permissions });
+    await db.prepare('CREATE TABLE restored (kind TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+    for (const kind of ['owner', 'key', 'upstream', 'alias']) {
+      await db.prepare('INSERT INTO restored (kind, value) VALUES (?, ?)').bind(kind, `prior-${kind}`).run();
+    }
+
+    armed = true;
+    let operationFinished = false;
+    let observed: unknown;
+    try {
+      await db.transaction!(async () => {
+        await db.prepare('DELETE FROM restored').run();
+        for (const kind of ['owner', 'key', 'upstream', 'alias']) {
+          await db.prepare('INSERT INTO restored (kind, value) VALUES (?, ?)').bind(kind, `restored-${kind}`).run();
+        }
+        operationFinished = true;
+      });
+    } catch (cause) {
+      observed = cause;
+    }
+
+    assertEquals(operationFinished, true);
+    assertEquals(observed, hardeningFailure);
+    assertEquals((observed as Error).cause, nativeFailure);
+    armed = false;
+    const rows = await db.prepare('SELECT kind, value FROM restored ORDER BY kind').all<{ kind: string; value: string }>();
+    assertEquals(rows.results, [
+      { kind: 'alias', value: 'prior-alias' },
+      { kind: 'key', value: 'prior-key' },
+      { kind: 'owner', value: 'prior-owner' },
+      { kind: 'upstream', value: 'prior-upstream' },
+    ]);
+    harden.mockRestore();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('ordinary database work cannot interleave with an awaited transaction', () => withTempDb(async path => {
   const db = createNodeSqliteDatabase(path);

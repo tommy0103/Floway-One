@@ -12,9 +12,11 @@ import { parseImportData, type SerializedProxy } from './import-schema.ts';
 import { parseWebSearchConfigDefault, parseWebSearchConfigStrict } from '../../data-plane/tools/web-search/config.ts';
 import type { WebSearchConfig } from '../../data-plane/tools/web-search/types.ts';
 import { notifyDisabledBestEffort } from '../../dump/registry.ts';
+import { ClientSafeBadRequestError } from '../../middleware/client-safe-error.ts';
 import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
+import { upstreamStoredSecretsForSafeExport, webSearchStoredSecretsForSafeExport } from '../../repo/stored-secret-fields.ts';
 import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type fullBackupBody, type importBody } from '../schemas.ts';
@@ -41,7 +43,12 @@ interface ExportPayload {
 
 const EXPORT_VERSION = 20;
 
-const collectExportPayload = async (includePerformance: boolean): Promise<ExportPayload> => {
+interface CollectedExport {
+  payload: ExportPayload;
+  upstreams: UpstreamRecord[];
+}
+
+const collectExportPayload = async (includePerformance: boolean): Promise<CollectedExport> => {
   const repo = getRepo();
   const [users, apiKeys, usage, webSearchUsage, performance, rawWebSearchConfig, upstreams, modelAliases, proxies] = await Promise.all([
     repo.users.listIncludingDeleted(),
@@ -71,13 +78,16 @@ const collectExportPayload = async (includePerformance: boolean): Promise<Export
     },
   };
   if (includePerformance) payload.data.performance = performance;
-  return payload;
+  return { payload, upstreams };
 };
 
-const safeExport = (payload: ExportPayload) => {
+const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) => {
   const users = payload.data.users.map(({ passwordHash: _passwordHash, ...user }) => user);
   const apiKeys = payload.data.apiKeys.map(({ key: _key, serverSecret: _serverSecret, ...apiKey }) => apiKey);
-  const upstreams = payload.data.upstreams.map(({ config: _config, state: _state, ...upstream }) => upstream);
+  const upstreams = payload.data.upstreams.map((upstream, index) => ({
+    ...upstream,
+    ...upstreamStoredSecretsForSafeExport(sourceUpstreams[index]),
+  }));
   const proxies = payload.data.proxies.map(({ url: _url, ...proxy }) => proxy);
   const { provider, passthroughOpenAiSearch } = payload.data.searchConfig;
   return {
@@ -94,7 +104,11 @@ const safeExport = (payload: ExportPayload) => {
       searchUsage: payload.data.searchUsage,
       ...(payload.data.performance === undefined ? {} : { performance: payload.data.performance }),
       performanceIncluded: payload.data.performanceIncluded,
-      searchConfig: { provider, passthroughOpenAiSearch },
+      searchConfig: {
+        provider,
+        credentials: webSearchStoredSecretsForSafeExport(payload.data.searchConfig),
+        passthroughOpenAiSearch,
+      },
     },
   };
 };
@@ -156,18 +170,47 @@ const validateProxyFallbackReferences = (
   return null;
 };
 
+const validateModelAliasIdentities = (
+  records: readonly ModelAliasRecord[],
+  existing: readonly ModelAliasRecord[],
+  mode: 'merge' | 'replace',
+): string | null => {
+  const ids = new Map<string, number>();
+  const names = new Map<string, number>();
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    const priorId = ids.get(record.id);
+    if (priorId !== undefined) return `duplicate id ${record.id} at indexes ${priorId} and ${index}`;
+    ids.set(record.id, index);
+    const priorName = names.get(record.name);
+    if (priorName !== undefined) return `duplicate name ${record.name} at indexes ${priorName} and ${index}`;
+    names.set(record.name, index);
+  }
+
+  if (mode === 'merge') {
+    const existingByName = new Map(existing.map(record => [record.name, record.id]));
+    for (const record of records) {
+      const existingId = existingByName.get(record.name);
+      if (existingId !== undefined && existingId !== record.id) {
+        return `name ${record.name} conflicts with existing alias ${existingId}`;
+      }
+    }
+  }
+  return null;
+};
+
 export const exportData = async (c: CtxWithQuery<typeof exportQuery>) => {
   const query = c.req.valid('query');
   if (isPersonalRuntimeProfile() && query.kind !== 'safe') {
     return c.json({ error: 'Personal profile exports must be either a password-protected full backup or a safe export.' }, 400);
   }
-  const payload = await collectExportPayload(query.include_performance === '1');
-  return c.json(query.kind === 'safe' ? safeExport(payload) : payload);
+  const collected = await collectExportPayload(query.include_performance === '1');
+  return c.json(query.kind === 'safe' ? safeExport(collected) : collected.payload);
 };
 
 export const createFullBackup = async (c: CtxWithJson<typeof fullBackupBody>) => {
   const { password, includePerformance = false } = c.req.valid('json');
-  const payload = await collectExportPayload(includePerformance);
+  const { payload } = await collectExportPayload(includePerformance);
   return c.json(await createEncryptedBackupArchive(payload, password));
 };
 
@@ -181,7 +224,11 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
       opened = await openEncryptedBackupArchive(request.archive, request.password ?? '');
     } catch (cause) {
       if (cause instanceof BackupArchiveAuthenticationError || cause instanceof InvalidBackupArchiveError) {
-        return c.json({ error: cause.message }, 400);
+        throw new ClientSafeBadRequestError(
+          'Encrypted Floway backup restore was rejected',
+          'The backup could not be authenticated or validated.',
+          cause,
+        );
       }
       throw cause;
     }
@@ -214,6 +261,11 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   const existingProxyIdsForRefs = mode === 'merge' ? (await repo.proxies.list()).map(proxy => proxy.id) : [];
   const fallbackRefError = validateProxyFallbackReferences(upstreams, proxies, existingProxyIdsForRefs);
   if (fallbackRefError) return c.json({ error: `invalid upstreams: ${fallbackRefError}` }, 400);
+  if (modelAliases !== undefined) {
+    const existingAliases = mode === 'merge' ? await repo.modelAliases.list() : [];
+    const aliasIdentityError = validateModelAliasIdentities(modelAliases, existingAliases, mode);
+    if (aliasIdentityError) return c.json({ error: `invalid modelAliases: ${aliasIdentityError}` }, 400);
+  }
 
   const applyImport = async (): Promise<void> => {
     if (mode === 'replace') {
@@ -227,12 +279,12 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
         repo.usage.deleteAll(),
         repo.webSearchUsage.deleteAll(),
         repo.upstreams.deleteAll(),
-        repo.modelAliases.deleteAll(),
         repo.proxies.deleteAll(),
         repo.proxyBackoffs.deleteAll(),
         repo.openaiResponsesSnapshots.deleteAll(),
         repo.openaiResponsesItems.deleteAll(),
       ];
+      if (modelAliases !== undefined) deletes.push(repo.modelAliases.deleteAll());
       if (!preservePersonalOwner) deletes.push(repo.users.deleteAll());
       if (performanceIncluded) deletes.push(repo.performance.deleteAll());
       await Promise.all(deletes);
@@ -255,7 +307,7 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
     for (const record of usage) await repo.usage.set(record);
     for (const record of searchUsage) await repo.webSearchUsage.set(record);
     for (const upstream of upstreams) await repo.upstreams.save(upstream);
-    for (const alias of modelAliases) {
+    for (const alias of modelAliases ?? []) {
       if (await repo.modelAliases.getById(alias.id)) await repo.modelAliases.update(alias);
       else await repo.modelAliases.insert(alias);
     }

@@ -1021,6 +1021,10 @@ const zhHansCN = {
         },
       },
       backupRestore: {
+        runtimeError: {
+          title: '备份控件不可用',
+          message: 'Floway 无法确定当前运行时配置。未启用任何导出或恢复控件。{{message}}',
+        },
         export: {
           heading: '导出',
           description:
@@ -1034,6 +1038,7 @@ const zhHansCN = {
           button: '导出 JSON',
           fullButton: '下载完整备份',
           safeButton: '下载安全导出',
+          actionsLabel: '备份导出操作',
           pending: '正在准备导出',
           success: '已下载 {{name}}',
         },

@@ -234,3 +234,14 @@ export const assertCustomUpstreamRecord = (record: UpstreamRecord): CustomUpstre
   const apiKey = nonEmptyStringField(raw.apiKey, 'apiKey');
   return { ...record, kind: 'custom', config: { ...base, authStyle, apiKey } };
 };
+
+export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
+  const config = assertCustomUpstreamRecord(record).config;
+  const safeConfig: Record<string, unknown> = { ...config };
+  delete safeConfig.apiKey;
+  safeConfig.ingressHeadersRules = config.ingressHeadersRules.map(rule => ({
+    key: rule.key,
+    source: rule.value === null ? 'client' : 'configured',
+  }));
+  return safeConfig;
+};

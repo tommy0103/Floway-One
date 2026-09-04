@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@floway-dev/protocols": "workspace:*",
+    "@floway-dev/platform": "workspace:*",
     "@floway-dev/provider": "workspace:*",
     "@floway-dev/provider-custom": "workspace:*",
     "@floway-dev/proxy": "workspace:*",

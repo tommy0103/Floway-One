@@ -34,3 +34,8 @@ export const assertAzureUpstreamRecord = (record: UpstreamRecord): AzureUpstream
     config,
   };
 };
+
+export const azureUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
+  const { apiKey: _apiKey, ...config } = assertAzureUpstreamRecord(record).config;
+  return config;
+};

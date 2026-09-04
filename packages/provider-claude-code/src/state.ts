@@ -232,6 +232,13 @@ export const readClaudeCodeUpstreamState = (raw: unknown): ClaudeCodeUpstreamSta
   return raw;
 };
 
+export const claudeCodeUpstreamStateForSafeExport = (raw: unknown): unknown => {
+  const state = readClaudeCodeUpstreamState(raw);
+  return {
+    accounts: state.accounts.map(({ refreshToken: _refreshToken, accessToken: _accessToken, ...account }) => account),
+  };
+};
+
 // Immutable patch helper: replace the sole account by running `patch` over
 // it. The asserter pins `accounts` to exactly one entry, so this helper
 // always rewrites index 0; encoding that invariant in the name keeps call

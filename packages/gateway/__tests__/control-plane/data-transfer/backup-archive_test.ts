@@ -1,8 +1,11 @@
-import { expect, test } from 'vitest';
+import { formatWithOptions } from 'node:util';
+
+import { expect, test, vi } from 'vitest';
 
 import {
   BackupArchiveAuthenticationError,
   createEncryptedBackupArchive,
+  InvalidBackupArchiveError,
   openEncryptedBackupArchive,
 } from '../../../src/control-plane/data-transfer/backup-archive.ts';
 
@@ -40,5 +43,63 @@ test('a wrong password or modified ciphertext fails authenticated backup opening
       expect(error).toBeInstanceOf(BackupArchiveAuthenticationError);
       expect((error as BackupArchiveAuthenticationError).cause).toBeInstanceOf(Error);
     }
+  }
+});
+
+test('authenticated opening preserves the exact crypto failure code without exposing password or recovery data', async () => {
+  const password = 'PASSWORD_NEVER_LOG_21';
+  const archive = await createEncryptedBackupArchive(RECOVERY_DATA, password);
+  const cryptoFailure = Object.assign(new Error('stable authenticated-decryption failure'), {
+    code: 'ERR_CRYPTO_INVALID_AUTH_TAG',
+  });
+  const subtle = new Proxy(globalThis.crypto.subtle, {
+    get(target, property) {
+      if (property === 'decrypt') return async () => { throw cryptoFailure; };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const failingCrypto = new Proxy(globalThis.crypto, {
+    get(target, property) {
+      if (property === 'subtle') return subtle;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  let observed: BackupArchiveAuthenticationError | undefined;
+  try {
+    await openEncryptedBackupArchive(archive, password, failingCrypto);
+  } catch (error) {
+    if (error instanceof BackupArchiveAuthenticationError) observed = error;
+  }
+
+  expect(observed?.cause).toBe(cryptoFailure);
+  expect((observed?.cause as typeof cryptoFailure).code).toBe('ERR_CRYPTO_INVALID_AUTH_TAG');
+  const rendered = formatWithOptions({ colors: false, depth: null }, '%o', observed);
+  expect(rendered).not.toContain(password);
+  expect(rendered).not.toContain('sk-floway-client-secret');
+  expect(rendered).not.toContain('provider-secret');
+});
+
+test('decrypted JSON failures retain safe parser diagnostics without retaining protected plaintext', async () => {
+  const archive = await createEncryptedBackupArchive(RECOVERY_DATA, 'parser-password');
+  const sentinel = 'DECRYPTED_JSON_SECRET_21';
+  const parserFailure = new SyntaxError(`Unexpected token ${sentinel} at position 4`);
+  Object.defineProperty(parserFailure, 'code', { value: 'ERR_BACKUP_JSON_PARSE' });
+  const parse = vi.spyOn(JSON, 'parse').mockImplementation(() => { throw parserFailure; });
+  try {
+    let observed: InvalidBackupArchiveError | undefined;
+    try {
+      await openEncryptedBackupArchive(archive, 'parser-password');
+    } catch (error) {
+      if (error instanceof InvalidBackupArchiveError) observed = error;
+    }
+    const cause = observed?.cause as SyntaxError & { code?: string };
+    expect(cause).toBeInstanceOf(SyntaxError);
+    expect(cause.code).toBe('ERR_BACKUP_JSON_PARSE');
+    expect(formatWithOptions({ colors: false, depth: null }, '%o', observed)).not.toContain(sentinel);
+  } finally {
+    parse.mockRestore();
   }
 });

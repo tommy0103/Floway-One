@@ -71,3 +71,8 @@ export function assertCodexUpstreamRecord(record: UpstreamRecord): asserts recor
   }
   assertCodexUpstreamConfig(record.config);
 }
+
+export const codexUpstreamConfigForSafeExport = (record: UpstreamRecord): CodexUpstreamConfig => {
+  assertCodexUpstreamRecord(record);
+  return record.config;
+};

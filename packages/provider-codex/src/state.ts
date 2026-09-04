@@ -255,3 +255,10 @@ export const readCodexUpstreamState = (raw: unknown): CodexUpstreamState => {
     })),
   };
 };
+
+export const codexUpstreamStateForSafeExport = (raw: unknown): unknown => {
+  const state = readCodexUpstreamState(raw);
+  return {
+    accounts: state.accounts.map(({ refresh_token: _refreshToken, accessToken: _accessToken, ...account }) => account),
+  };
+};

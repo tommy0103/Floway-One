@@ -85,7 +85,13 @@ class NodeSqliteDatabase implements SqlDatabase {
   };
 
   prepare(query: string): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], this.hardenFiles, this.schedule);
+    const hardenAfterStatement = (): void => {
+      // A personal restore transaction hardens the complete SQLite file set
+      // once, after every write succeeds and before COMMIT. Per-statement
+      // hardening would fail earlier and could not verify that final state.
+      if (!this.transactionContext.getStore()) this.hardenFiles();
+    };
+    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], hardenAfterStatement, this.schedule);
   }
 
   // Wraps the supplied statements in a single transaction so the batch is
@@ -131,8 +137,11 @@ class NodeSqliteDatabase implements SqlDatabase {
       this.db.exec('BEGIN IMMEDIATE');
       try {
         const result = await operation();
-        this.db.exec('COMMIT');
+        // Private-storage verification is part of the transaction's success
+        // condition. A failure reaches the catch block while ROLLBACK is still
+        // possible, so live owner, key, upstream, and alias state remains intact.
         this.hardenFiles();
+        this.db.exec('COMMIT');
         return result;
       } catch (cause) {
         // Preserve the application/storage failure even when SQLite already

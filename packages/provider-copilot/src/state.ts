@@ -192,3 +192,8 @@ export const readCopilotUpstreamState = (raw: unknown): CopilotUpstreamState => 
     seat: raw.seat ?? null,
   };
 };
+
+export const copilotUpstreamStateForSafeExport = (raw: unknown): Omit<CopilotUpstreamState, 'copilotToken'> => {
+  const { copilotToken: _copilotToken, ...state } = readCopilotUpstreamState(raw);
+  return state;
+};

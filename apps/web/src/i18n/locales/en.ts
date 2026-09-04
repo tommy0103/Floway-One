@@ -1070,6 +1070,10 @@ const en = {
         },
       },
       backupRestore: {
+        runtimeError: {
+          title: 'Backup controls are unavailable',
+          message: 'Floway could not determine this runtime profile. No export or restore controls were enabled. {{message}}',
+        },
         export: {
           heading: 'Export',
           description:
@@ -1085,6 +1089,7 @@ const en = {
           button: 'Export JSON',
           fullButton: 'Download Full Backup',
           safeButton: 'Download Safe Export',
+          actionsLabel: 'Backup export actions',
           pending: 'Preparing the export',
           success: 'Downloaded {{name}}',
         },

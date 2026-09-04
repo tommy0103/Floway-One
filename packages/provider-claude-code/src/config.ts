@@ -94,3 +94,8 @@ export function assertClaudeCodeUpstreamRecord(record: UpstreamRecord): asserts 
   }
   assertClaudeCodeUpstreamConfig(record.config);
 }
+
+export const claudeCodeUpstreamConfigForSafeExport = (record: UpstreamRecord): ClaudeCodeUpstreamConfig => {
+  assertClaudeCodeUpstreamRecord(record);
+  return record.config;
+};

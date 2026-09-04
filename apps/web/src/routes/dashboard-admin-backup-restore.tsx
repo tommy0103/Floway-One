@@ -6,6 +6,7 @@ import { requireDashboardAdmin } from './guards';
 import { api, callApi } from '../api/client';
 import { BACKUP_FILE_VERSION, parseBackupFile, parseEncryptedBackupFile, type BackupFile, type EncryptedBackupFile } from '../components/backup-restore/file';
 import { BackupFilePicker, BackupFileStats, BackupFileSummary } from '../components/backup-restore/file-picker';
+import { resolveBackupRestoreRuntime } from '../components/backup-restore/runtime';
 import { countRecords, PREVIEW_LABEL_KEYS, recordSummary } from '../components/backup-restore/summary';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
@@ -31,7 +32,7 @@ const {
 export async function clientLoader() {
   await requireDashboardAdmin();
   const runtime = await callApi(() => api.api['runtime-info'].$get());
-  return { personal: runtime.data?.profile.mode === 'personal' };
+  return { runtime: resolveBackupRestoreRuntime(runtime) };
 }
 
 type ImportSelection =
@@ -54,7 +55,8 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   const { t } = useTranslation();
   const locale = useLocale();
   const toasts = useOutcomeToasts();
-  const personal = loaderData.personal;
+  const runtime = loaderData.runtime;
+  const personal = runtime.profile === 'personal';
 
   const [includePerformance, setIncludePerformance] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -240,6 +242,17 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
     void doImport();
   }, [confirmDialog, doImport, importSelection, replaceExisting]);
 
+  if (runtime.error) {
+    return <section className="dashboard-page max-w-[960px]">
+      <DashboardPageHeader description={t('dashboard.pages.backupRestore')} title={t('dashboard.nav.backupRestore')} />
+      <Panel>
+        <OutcomeMessageBar intent="error" title={t('dashboard.backupRestore.runtimeError.title')}>
+          {t('dashboard.backupRestore.runtimeError.message', { message: runtime.error.message })}
+        </OutcomeMessageBar>
+      </Panel>
+    </section>;
+  }
+
   return (
     <section className="dashboard-page max-w-[960px]">
       <DashboardPageHeader description={t('dashboard.pages.backupRestore')} title={t('dashboard.nav.backupRestore')} />
@@ -281,7 +294,11 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
         )}
 
         <div className="pt-1">
-          <div className="flex flex-wrap gap-2">
+          <div
+            aria-label={t('dashboard.backupRestore.export.actionsLabel')}
+            className="flex flex-wrap gap-[var(--spacingHorizontalS)]"
+            role="group"
+          >
             <Button
               appearance="primary"
               disabled={personal && backupPassword.length === 0}

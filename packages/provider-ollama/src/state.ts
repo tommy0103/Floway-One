@@ -154,3 +154,6 @@ export const readOllamaUpstreamState = (raw: unknown): OllamaUpstreamState => {
       : null,
   };
 };
+
+export const ollamaUpstreamStateForSafeExport = (raw: unknown): OllamaUpstreamState =>
+  readOllamaUpstreamState(raw);

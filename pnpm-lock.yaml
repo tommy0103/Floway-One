@@ -145,6 +145,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@floway-dev/platform':
+        specifier: workspace:*
+        version: link:../../packages/platform
       '@floway-dev/protocols':
         specifier: workspace:*
         version: link:../../packages/protocols

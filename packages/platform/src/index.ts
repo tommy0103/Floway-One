@@ -1,4 +1,5 @@
 export * from './background.ts';
+export * from './backup-archive.ts';
 export * from './channel-broker.ts';
 export * from './env.ts';
 export * from './external-resource-fetcher.ts';
