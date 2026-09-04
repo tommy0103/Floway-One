@@ -19,5 +19,6 @@ test('shipping desktop and Node sources contain no verification modes or environ
   }
   expect(sources[0]).not.toContain('.env("ADMIN_KEY"');
   expect(sources[0]).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token)');
-  expect(sources[0]).toContain('WebviewUrl::External(dashboard_url)');
+  expect(sources[0]).toContain('WebviewUrl::External(url)');
+  expect(sources[0]).toContain('runtime_stdout.contains(&ready_marker)');
 });

@@ -129,8 +129,8 @@ mod desktop {
     use tauri_plugin_shell::process::CommandEvent;
 
     use super::{
-        NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, dashboard_bootstrap_url,
-        resolve_runtime_bundle,
+        DASHBOARD_ORIGIN, NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
+        dashboard_bootstrap_url, resolve_runtime_bundle,
     };
 
     #[derive(Debug)]
@@ -193,26 +193,38 @@ mod desktop {
                     .env("NODE_ENV", "production")
                     .env("PORT", dashboard_port.to_string())
                     .spawn()?;
-
-                let window =
-                    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(dashboard_url))
-                        .title("Floway")
-                        .inner_size(1280.0, 800.0)
-                        .build();
-                if let Err(error) = window {
-                    let _ = child.kill();
-                    return Err(error.into());
-                }
                 app.manage(Mutex::new(child));
 
+                let app_handle = app.handle().clone();
+                let ready_marker = format!("Floway listening on {DASHBOARD_ORIGIN}");
                 tauri::async_runtime::spawn(async move {
+                    let mut pending_dashboard_url = Some(dashboard_url);
+                    let mut runtime_stdout = String::new();
                     while let Some(event) = events.recv().await {
                         match event {
                             CommandEvent::Stdout(bytes) => {
-                                eprintln!(
-                                    "[Floway runtime stdout] {}",
-                                    String::from_utf8_lossy(&bytes)
-                                );
+                                let output = String::from_utf8_lossy(&bytes);
+                                eprintln!("[Floway runtime stdout] {}", output);
+                                if pending_dashboard_url.is_some() {
+                                    runtime_stdout.push_str(&output);
+                                    if runtime_stdout.contains(&ready_marker) {
+                                        if let Some(url) = pending_dashboard_url.take()
+                                            && let Err(error) = WebviewWindowBuilder::new(
+                                                &app_handle,
+                                                "main",
+                                                WebviewUrl::External(url),
+                                            )
+                                            .title("Floway")
+                                            .inner_size(1280.0, 800.0)
+                                            .build()
+                                        {
+                                            print_error_chain(&error);
+                                            app_handle.exit(1);
+                                            return;
+                                        }
+                                        runtime_stdout.clear();
+                                    }
+                                }
                             }
                             CommandEvent::Stderr(bytes) => {
                                 eprintln!(
