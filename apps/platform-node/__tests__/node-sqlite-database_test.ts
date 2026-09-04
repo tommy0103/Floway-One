@@ -18,6 +18,39 @@ const withTempDb = async (fn: (dbPath: string) => Promise<void>): Promise<void> 
   }
 };
 
+const withRecoveryFailures = async (
+  operation: (db: ReturnType<typeof createNodeSqliteDatabase>) => Promise<unknown>,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), 'node-sqlite-recovery-'));
+  const paths = resolvePersonalRuntimePaths({ dataDir: join(root, 'data'), stableUserHome: root });
+  try {
+    const permissions = initializePersonalStorage(paths);
+    const db = createNodeSqliteDatabase(paths.databasePath, { permissions });
+    const primary = new Error('forced primary transaction failure');
+    const hardening = new Error('forced recovery hardening failure');
+    let hardeningCalls = 0;
+    const harden = vi.spyOn(permissions, 'hardenSqliteFiles').mockImplementation(() => {
+      if (hardeningCalls++ === 0) throw primary;
+      throw hardening;
+    });
+    let observed: unknown;
+    try {
+      await operation(db);
+    } catch (cause) {
+      observed = cause;
+    }
+    assert(observed instanceof AggregateError);
+    assertEquals(observed.cause, primary);
+    assertEquals(observed.errors[0], primary);
+    assert(observed.errors[1] instanceof Error);
+    assert((observed.errors[1] as Error).message.includes('no transaction is active'));
+    assertEquals(observed.errors[2], hardening);
+    harden.mockRestore();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
 test('prepare/all returns rows in SqlResult envelope', () => withTempDb(async path => {
   const db = createNodeSqliteDatabase(path);
   await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)').run();
@@ -90,6 +123,11 @@ test('batch rolls back on mid-batch failure', () => withTempDb(async path => {
   assertEquals(rows.results, [{ id: 1 }]);
 }));
 
+test('batch preserves its primary failure and aggregates rollback and hardening recovery failures', () =>
+  withRecoveryFailures(async db => {
+    await db.batch!([db.prepare('ROLLBACK')]);
+  }));
+
 test('interactive transaction rolls back awaited writes and rethrows the original failure', () => withTempDb(async path => {
   const db = createNodeSqliteDatabase(path);
   assert(db.transaction !== undefined, 'transaction must be implemented');
@@ -112,6 +150,13 @@ test('interactive transaction rolls back awaited writes and rethrows the origina
   const rows = await db.prepare('SELECT id FROM t ORDER BY id').all<{ id: number }>();
   assertEquals(rows.results, [{ id: 1 }]);
 }));
+
+test('interactive transaction preserves its primary failure and aggregates rollback and hardening recovery failures', () =>
+  withRecoveryFailures(async db => {
+    await db.transaction!(async () => {
+      await db.exec('ROLLBACK');
+    });
+  }));
 
 test('final private-storage hardening fails before commit and rolls back every restored entity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'node-sqlite-hardening-'));
@@ -148,8 +193,10 @@ test('final private-storage hardening fails before commit and rolls back every r
     }
 
     assertEquals(operationFinished, true);
-    assertEquals(observed, hardeningFailure);
-    assertEquals((observed as Error).cause, nativeFailure);
+    assert(observed instanceof AggregateError);
+    assertEquals(observed.cause, hardeningFailure);
+    assertEquals(observed.errors, [hardeningFailure, hardeningFailure]);
+    assertEquals((observed.cause as Error).cause, nativeFailure);
     armed = false;
     const rows = await db.prepare('SELECT kind, value FROM restored ORDER BY kind').all<{ kind: string; value: string }>();
     assertEquals(rows.results, [

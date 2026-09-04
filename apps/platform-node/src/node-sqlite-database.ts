@@ -77,6 +77,14 @@ class NodeSqliteDatabase implements SqlDatabase {
 
   constructor(private readonly db: DatabaseSync, private readonly hardenFiles: () => void) {}
 
+  private recoverTransaction(cause: unknown): never {
+    const failures = [cause];
+    try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
+    try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
+    if (failures.length === 1) throw cause;
+    throw new AggregateError(failures, 'Floway transaction failed and recovery was incomplete.', { cause });
+  }
+
   private readonly schedule = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (this.transactionContext.getStore()) return Promise.resolve().then(operation);
     const pending = this.operationTail.then(operation, operation);
@@ -118,16 +126,10 @@ class NodeSqliteDatabase implements SqlDatabase {
         this.hardenFiles();
         return results;
       } catch (e) {
-        // SQLite auto-rolls-back on a hard error class (SQLITE_FULL,
-        // SQLITE_IOERR, SQLITE_BUSY, SQLITE_NOMEM, SQLITE_INTERRUPT — see
-        // https://www.sqlite.org/lang_transaction.html "Response To Errors
-        // Within A Transaction"); the explicit ROLLBACK then throws
-        // "cannot rollback - no transaction is active" and would replace
-        // the original failure on the way out. Swallow that recovery throw
-        // so `throw e` always wins and the operator sees the real cause.
-        try { this.db.exec('ROLLBACK'); } catch { /* txn already auto-rolled-back */ }
-        try { this.hardenFiles(); } catch { /* preserve the transaction failure */ }
-        throw e;
+        // SQLite may auto-roll back on a hard error class. Recovery retains
+        // this primary error as the cause while also exposing rollback or
+        // hardening failures instead of silently discarding their stacks.
+        this.recoverTransaction(e);
       }
     });
   }
@@ -146,9 +148,7 @@ class NodeSqliteDatabase implements SqlDatabase {
       } catch (cause) {
         // Preserve the application/storage failure even when SQLite already
         // ended the transaction or file hardening also fails during cleanup.
-        try { this.db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
-        try { this.hardenFiles(); } catch { /* preserve the original cause */ }
-        throw cause;
+        this.recoverTransaction(cause);
       }
     }));
   }

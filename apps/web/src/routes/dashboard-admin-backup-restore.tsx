@@ -40,6 +40,11 @@ type ImportSelection =
   | { kind: 'encrypted'; archive: EncryptedBackupFile }
   | { kind: 'legacy'; payload: BackupFile };
 
+type ImportArchiveState =
+  | { kind: 'empty'; error: string | null }
+  | { kind: 'reading'; file: File }
+  | { kind: 'ready'; error: string | null; file: File; selection: ImportSelection };
+
 const downloadJson = (data: unknown, name: string): void => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -64,12 +69,10 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   const [exportError, setExportError] = useState<string | null>(null);
   const [backupPassword, setBackupPassword] = useState('');
 
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importSelection, setImportSelection] = useState<ImportSelection | null>(null);
+  const [importArchive, setImportArchive] = useState<ImportArchiveState>({ kind: 'empty', error: null });
   const [restorePassword, setRestorePassword] = useState('');
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [importError, setImportError] = useState<string | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -118,47 +121,55 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   // the later-finishing one wins. `abort()` raises neither `load` nor `error`,
   // so the losing read reaches no state at all.
   const readerRef = useRef<FileReader | null>(null);
-  useEffect(() => () => readerRef.current?.abort(), []);
+  const readSequenceRef = useRef(0);
+  useEffect(() => () => {
+    readSequenceRef.current++;
+    readerRef.current?.abort();
+  }, []);
+
+  const invalidateImportArchive = useCallback((error: string | null = null) => {
+    readSequenceRef.current++;
+    readerRef.current?.abort();
+    readerRef.current = null;
+    setImportArchive({ kind: 'empty', error });
+  }, []);
 
   const handleFile = useCallback(
     (file: File) => {
-      setImportError(null);
+      const readSequence = ++readSequenceRef.current;
       readerRef.current?.abort();
+      setImportArchive({ kind: 'reading', file });
 
       const reader = new FileReader();
       readerRef.current = reader;
       reader.onload = () => {
+        if (readSequence !== readSequenceRef.current) return;
         readerRef.current = null;
         const raw = reader.result as string;
         if (personal) {
           const result = parseEncryptedBackupFile(raw);
           if (!result.ok) {
-            setImportError(t(result.error.clientMessageKey));
-            setImportFile(null);
-            setImportSelection(null);
+            invalidateImportArchive(t(result.error.clientMessageKey));
             return;
           }
-          setImportFile(file);
-          setImportSelection({ kind: 'encrypted', archive: result.archive });
+          setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive } });
           return;
         }
         const result = parseBackupFile(raw);
         if (!result.ok) {
-          setImportError(t(result.error.clientMessageKey));
-          setImportFile(null);
-          setImportSelection(null);
+          invalidateImportArchive(t(result.error.clientMessageKey));
           return;
         }
-        setImportFile(file);
-        setImportSelection({ kind: 'legacy', payload: result.payload });
+        setImportArchive({ kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload } });
       };
       reader.onerror = () => {
+        if (readSequence !== readSequenceRef.current) return;
         readerRef.current = null;
-        setImportError(t('dashboard.backupRestore.import.errorReadFile'));
+        invalidateImportArchive(t('dashboard.backupRestore.import.errorReadFile'));
       };
       reader.readAsText(file);
     },
-    [personal, t],
+    [invalidateImportArchive, personal, t],
   );
 
   const handleFileSelect = useCallback(
@@ -196,52 +207,62 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
 
   const handleChangeFile = useCallback(() => {
-    setImportFile(null);
-    setImportSelection(null);
-    setImportError(null);
+    invalidateImportArchive();
     fileInputRef.current?.click();
-  }, []);
+  }, [invalidateImportArchive]);
 
   const doImport = useCallback(async () => {
-    if (!importSelection) return;
+    if (importArchive.kind !== 'ready') return;
+    const selection = importArchive.selection;
     setImporting(true);
-    setImportError(null);
+    setImportArchive({ ...importArchive, error: null });
 
     const handle = toasts.start(t('dashboard.backupRestore.import.pending'));
     const mode = replaceExisting ? 'replace' as const : 'merge' as const;
-    const result = importSelection.kind === 'encrypted'
+    const result = selection.kind === 'encrypted'
       ? await callApi(() => api.api.import.$post({
-          json: { mode, archive: importSelection.archive, password: restorePassword },
+          json: { mode, archive: selection.archive, password: restorePassword },
         }))
       : await callApi(() => api.api.import.$post({
-          json: legacyImportRequest(importSelection.payload, mode),
+          json: legacyImportRequest(selection.payload, mode),
         }));
 
     if (result.error) {
       handle.settle();
-      setImportError(result.error.message);
+      setImportArchive(current => current.kind === 'ready'
+        && current.file === importArchive.file
+        && current.selection === selection
+        ? { ...current, error: result.error.message }
+        : current);
       setImporting(false);
       return;
     }
 
-    setImportFile(null);
-    setImportSelection(null);
+    setImportArchive(current => current.kind === 'ready'
+      && current.file === importArchive.file
+      && current.selection === selection
+      ? { kind: 'empty', error: null }
+      : current);
     setRestorePassword('');
     setImporting(false);
     const summary = recordSummary(result.data.imported, t, locale);
     handle.succeed(summary
       ? t('dashboard.backupRestore.import.success', { summary })
       : t('dashboard.backupRestore.import.successEmpty'));
-  }, [importSelection, locale, replaceExisting, restorePassword, t, toasts]);
+  }, [importArchive, locale, replaceExisting, restorePassword, t, toasts]);
 
   const handleImportClick = useCallback(() => {
-    if (!importSelection) return;
+    if (importArchive.kind !== 'ready') return;
     if (replaceExisting) {
       confirmDialog.open();
       return;
     }
     void doImport();
-  }, [confirmDialog, doImport, importSelection, replaceExisting]);
+  }, [confirmDialog, doImport, importArchive.kind, replaceExisting]);
+
+  const legacyImportPayload = importArchive.kind === 'ready' && importArchive.selection.kind === 'legacy'
+    ? importArchive.selection.payload
+    : null;
 
   return (
     <section className="dashboard-page max-w-[960px]">
@@ -328,7 +349,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             onChange={handleFileSelect}
           />
 
-          {importSelection && importFile
+          {importArchive.kind === 'ready'
             ? <BackupFileSummary
                 accepting={dragOver}
                 action={<Button disabled={importing} onClick={handleChangeFile}>
@@ -336,8 +357,8 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
                 </Button>}
                 drop={dropHandlers}
                 name={t('dashboard.backupRestore.import.fileSelected', {
-                  name: importFile.name,
-                  size: importFile.size,
+                  name: importArchive.file.name,
+                  size: importArchive.file.size,
                 })}
               />
             : <BackupFilePicker
@@ -350,13 +371,13 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
                   : t('dashboard.backupRestore.import.dropzone')}
               />}
 
-          {importSelection?.kind === 'legacy' && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
+          {legacyImportPayload && <BackupFileStats items={PREVIEW_LABEL_KEYS.map(key => ({
             key,
             label: t(`dashboard.backupRestore.import.previewLabel.${key}`),
-            value: formatCount(countRecords(importSelection.payload.data)[key], locale),
+            value: formatCount(countRecords(legacyImportPayload.data)[key], locale),
           }))} />}
 
-          {importSelection?.kind === 'encrypted' && <Field
+          {importArchive.kind === 'ready' && importArchive.selection.kind === 'encrypted' && <Field
             hint={t('dashboard.backupRestore.import.passwordHint')}
             label={t('dashboard.backupRestore.import.password')}
           >
@@ -370,7 +391,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             />
           </Field>}
 
-          {importSelection && <Field hint={t(personal
+          {importArchive.kind === 'ready' && <Field hint={t(personal
             ? 'dashboard.backupRestore.import.replaceHintPersonal'
             : 'dashboard.backupRestore.import.replaceHint')}>
             <Checkbox
@@ -381,7 +402,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             />
           </Field>}
 
-          {importSelection && replaceExisting && (
+          {importArchive.kind === 'ready' && replaceExisting && (
             <OutcomeMessageBar intent="warning">
               {t(personal
                 ? 'dashboard.backupRestore.import.replaceWarningPersonal'
@@ -389,19 +410,19 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             </OutcomeMessageBar>
           )}
 
-          {importError && (
+          {importArchive.kind !== 'reading' && importArchive.error && (
             <OutcomeMessageBar
-              onDismiss={() => setImportError(null)}
+              onDismiss={() => setImportArchive(current => current.kind === 'reading' ? current : { ...current, error: null })}
               title={t('dashboard.backupRestore.import.error')}
             >
-              {importError}
+              {importArchive.error}
             </OutcomeMessageBar>
           )}
 
           <div className="pt-1">
             <Button
               appearance="primary"
-              disabled={!importSelection || (importSelection.kind === 'encrypted' && restorePassword.length === 0)}
+              disabled={importArchive.kind !== 'ready' || (importArchive.selection.kind === 'encrypted' && restorePassword.length === 0)}
               disabledFocusable={importing}
               icon={importing ? <Spinner size="tiny" /> : <ArrowUploadRegular />}
               onClick={handleImportClick}

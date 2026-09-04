@@ -163,43 +163,59 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
   };
 };
 
-const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly ApiKey[], mode: 'merge' | 'replace'): string | null => {
-  const ids = new Map<string, number>();
-  const rawKeys = new Map<string, string>();
-  const serverSecrets = new Map<string, string>();
+interface IdentityRule<T> {
+  readonly value: (record: T) => string;
+  readonly duplicate: (value: string, prior: T, priorIndex: number, record: T, index: number) => string;
+  readonly mergeConflict?: (value: string, existing: T, record: T) => string | null;
+}
 
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
-    const existingIdIndex = ids.get(record.id);
-    if (existingIdIndex !== undefined) return `duplicate apiKeys id ${record.id} at indexes ${existingIdIndex} and ${i}`;
-    ids.set(record.id, i);
-
-    const existingRawKeyId = rawKeys.get(record.key);
-    if (existingRawKeyId !== undefined) return `duplicate apiKeys raw key used by ${existingRawKeyId} and ${record.id}`;
-    rawKeys.set(record.key, record.id);
-
-    const existingServerSecretId = serverSecrets.get(record.serverSecret);
-    if (existingServerSecretId !== undefined) return `duplicate apiKeys server secret used by ${existingServerSecretId} and ${record.id}`;
-    serverSecrets.set(record.serverSecret, record.id);
-  }
-
-  if (mode === 'merge') {
-    const existingRawKeys = new Map(existing.map(record => [record.key, record.id]));
-    const existingServerSecrets = new Map(existing.map(record => [record.serverSecret, record.id]));
-    for (const record of records) {
-      const existingId = existingRawKeys.get(record.key);
-      if (existingId !== undefined && existingId !== record.id) {
-        return `apiKeys raw key for ${record.id} conflicts with existing api key ${existingId}`;
-      }
-      const existingServerSecretId = existingServerSecrets.get(record.serverSecret);
-      if (existingServerSecretId !== undefined && existingServerSecretId !== record.id) {
-        return `apiKeys server secret for ${record.id} conflicts with existing api key ${existingServerSecretId}`;
+const validateIndexedIdentities = <T>(
+  records: readonly T[],
+  existing: readonly T[],
+  mode: 'merge' | 'replace',
+  rules: readonly IdentityRule<T>[],
+): string | null => {
+  for (const rule of rules) {
+    const imported = new Map<string, { index: number; record: T }>();
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index];
+      const value = rule.value(record);
+      const prior = imported.get(value);
+      if (prior !== undefined) return rule.duplicate(value, prior.record, prior.index, record, index);
+      imported.set(value, { index, record });
+    }
+    if (mode === 'merge' && rule.mergeConflict !== undefined) {
+      const existingByValue = new Map(existing.map(record => [rule.value(record), record]));
+      for (const record of records) {
+        const value = rule.value(record);
+        const conflict = existingByValue.get(value);
+        if (conflict !== undefined) {
+          const message = rule.mergeConflict(value, conflict, record);
+          if (message !== null) return message;
+        }
       }
     }
   }
-
   return null;
 };
+
+const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly ApiKey[], mode: 'merge' | 'replace'): string | null =>
+  validateIndexedIdentities(records, existing, mode, [
+    {
+      value: record => record.id,
+      duplicate: (id, _prior, priorIndex, _record, index) => `duplicate apiKeys id ${id} at indexes ${priorIndex} and ${index}`,
+    },
+    {
+      value: record => record.key,
+      duplicate: (_key, prior, _priorIndex, record) => `duplicate apiKeys raw key used by ${prior.id} and ${record.id}`,
+      mergeConflict: (_key, prior, record) => prior.id === record.id ? null : `apiKeys raw key for ${record.id} conflicts with existing api key ${prior.id}`,
+    },
+    {
+      value: record => record.serverSecret,
+      duplicate: (_secret, prior, _priorIndex, record) => `duplicate apiKeys server secret used by ${prior.id} and ${record.id}`,
+      mergeConflict: (_secret, prior, record) => prior.id === record.id ? null : `apiKeys server secret for ${record.id} conflicts with existing api key ${prior.id}`,
+    },
+  ]);
 
 // Every fallback must resolve in the post-import catalog. Merge mode may refer
 // to an existing local proxy; replace mode may only refer to imported proxies
@@ -224,30 +240,17 @@ const validateModelAliasIdentities = (
   records: readonly ModelAliasRecord[],
   existing: readonly ModelAliasRecord[],
   mode: 'merge' | 'replace',
-): string | null => {
-  const ids = new Map<string, number>();
-  const names = new Map<string, number>();
-  for (let index = 0; index < records.length; index++) {
-    const record = records[index];
-    const priorId = ids.get(record.id);
-    if (priorId !== undefined) return `duplicate id ${record.id} at indexes ${priorId} and ${index}`;
-    ids.set(record.id, index);
-    const priorName = names.get(record.name);
-    if (priorName !== undefined) return `duplicate name ${record.name} at indexes ${priorName} and ${index}`;
-    names.set(record.name, index);
-  }
-
-  if (mode === 'merge') {
-    const existingByName = new Map(existing.map(record => [record.name, record.id]));
-    for (const record of records) {
-      const existingId = existingByName.get(record.name);
-      if (existingId !== undefined && existingId !== record.id) {
-        return `name ${record.name} conflicts with existing alias ${existingId}`;
-      }
-    }
-  }
-  return null;
-};
+): string | null => validateIndexedIdentities(records, existing, mode, [
+  {
+    value: record => record.id,
+    duplicate: (id, _prior, priorIndex, _record, index) => `duplicate id ${id} at indexes ${priorIndex} and ${index}`,
+  },
+  {
+    value: record => record.name,
+    duplicate: (name, _prior, priorIndex, _record, index) => `duplicate name ${name} at indexes ${priorIndex} and ${index}`,
+    mergeConflict: (name, prior, record) => prior.id === record.id ? null : `name ${name} conflicts with existing alias ${prior.id}`,
+  },
+]);
 
 export const exportData = async (c: CtxWithQuery<typeof exportQuery>) => {
   const query = c.req.valid('query');
