@@ -22,6 +22,14 @@ export const routingUrlForSafeExport = (value: string): string => {
   return url.pathname === '/' ? url.origin : `${url.origin}${url.pathname}`;
 };
 
+export const routingBaseForSafeExport = (value: string): { baseUrl: string; basePathConfigured?: true } => {
+  const url = new URL(routingUrlForSafeExport(value));
+  return {
+    baseUrl: url.origin,
+    ...(url.pathname === '/' ? {} : { basePathConfigured: true }),
+  };
+};
+
 export const modelEndpointsForSafeExport = (source: ModelEndpoints): ModelEndpoints => {
   const endpoints: ModelEndpoints = {};
   for (const key of SAFE_EXPORT_ENDPOINT_KEYS) {

@@ -20,7 +20,7 @@
 // upstream id.
 
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { modelsField, routingUrlForSafeExport, upstreamModelsForSafeExport } from '@floway-dev/provider';
+import { modelsField, routingBaseForSafeExport, upstreamModelsForSafeExport } from '@floway-dev/provider';
 
 export interface OllamaUpstreamConfig {
   baseUrl: string;
@@ -108,10 +108,8 @@ export const assertOllamaUpstreamRecord = (record: UpstreamRecord): OllamaUpstre
 
 export const ollamaUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
   const config = assertOllamaUpstreamRecord(record).config;
-  const safeBaseUrl = new URL(routingUrlForSafeExport(config.baseUrl));
   return {
-    baseUrl: safeBaseUrl.origin,
-    ...(safeBaseUrl.pathname === '/' ? {} : { basePathConfigured: true }),
+    ...routingBaseForSafeExport(config.baseUrl),
     cloudUsage: config.cloudUsage,
     models: upstreamModelsForSafeExport(config.models),
   };

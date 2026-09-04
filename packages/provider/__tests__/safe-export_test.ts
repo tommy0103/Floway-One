@@ -1,11 +1,17 @@
 import { expect, test } from 'vitest';
 
-import { routingUrlForSafeExport, upstreamModelsForSafeExport } from '../src/safe-export.ts';
+import { routingBaseForSafeExport, routingUrlForSafeExport, upstreamModelsForSafeExport } from '../src/safe-export.ts';
 
 test('safe routing URLs retain origin and path but cannot carry authority, query, or fragment credentials', () => {
   expect(routingUrlForSafeExport('https://user:password@example.com:8443/v1?api_key=query-secret#fragment-secret'))
     .toBe('https://example.com:8443/v1');
   expect(routingUrlForSafeExport('https://example.com')).toBe('https://example.com');
+});
+
+test('safe routing bases retain only origin and non-usable path presence', () => {
+  expect(routingBaseForSafeExport('https://user:password@example.com:8443/capability/path?api_key=secret#secret'))
+    .toEqual({ baseUrl: 'https://example.com:8443', basePathConfigured: true });
+  expect(routingBaseForSafeExport('https://example.com')).toEqual({ baseUrl: 'https://example.com' });
 });
 
 test('safe model projections allow only explicit routing identity and capability fields', () => {

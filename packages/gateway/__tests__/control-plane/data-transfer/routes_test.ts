@@ -630,13 +630,15 @@ test('safe export structurally omits every authentication-bearing field', async 
       endpoint: 'https://azure-user:azure-password@example.openai.azure.com/openai/v1',
     },
   };
+  const { apiKey: _ollamaApiKey, ...unauthenticatedOllamaConfig } = OLLAMA_UPSTREAM.config as Record<string, unknown>;
   const ollamaWithUrlSecrets: UpstreamRecord = {
     ...OLLAMA_UPSTREAM,
     config: {
-      ...(OLLAMA_UPSTREAM.config as Record<string, unknown>),
+      ...unauthenticatedOllamaConfig,
       baseUrl: 'https://ollama-user:ollama-password@ollama.example.com/ollama-path-capability-secret?token=ollama-query-secret#ollama-fragment-secret',
     },
   };
+  assertEquals(hasOwn(ollamaWithUrlSecrets.config as object, 'apiKey'), false);
   await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
   await repo.apiKeys.save(KEY_A);
   await repo.upstreams.save(customWithUrlSecrets);

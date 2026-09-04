@@ -90,15 +90,18 @@ test('assertOllamaUpstreamRecord rejects rerank models', () => {
 });
 
 test('safe export retains Ollama origin and path presence without a usable capability path', () => {
+  const { apiKey: _apiKey, ...unauthenticatedConfig } = baseRecord.config as Record<string, unknown>;
   const safe = ollamaUpstreamConfigForSafeExport({
     ...baseRecord,
     config: {
-      ...(baseRecord.config as Record<string, unknown>),
+      ...unauthenticatedConfig,
       baseUrl: 'https://user:password@ollama.example.com/secret-capability-path?token=query-secret#fragment-secret',
     },
   }) as Record<string, unknown>;
 
+  assertEquals('apiKey' in unauthenticatedConfig, false);
   assertEquals(safe.baseUrl, 'https://ollama.example.com');
   assertEquals(safe.basePathConfigured, true);
+  assertEquals('apiKey' in safe, false);
   assertEquals(JSON.stringify(safe).includes('secret'), false);
 });
