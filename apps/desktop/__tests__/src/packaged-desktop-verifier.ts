@@ -384,7 +384,12 @@ const observeProductionApp = async (
 ): Promise<string> => await withFailureSafeCleanup(async cleanup => {
   const { child, output } = captureApp(executable, environment);
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
-  return await waitForOutput(child, output, expectedFragments);
+  await waitForOutput(child, output, expectedFragments);
+  await waitForChildExit(child, 5_000);
+  if (child.exitCode === 0) {
+    throw new Error(`Floway production app unexpectedly succeeded after fault injection\n${output()}`);
+  }
+  return output();
 });
 
 await Promise.all([
@@ -615,7 +620,7 @@ if (launchSupported) {
       // emitted by the failed sidecar spawn.
       // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/errno.h#L226-L230
       // https://github.com/apple-oss-distributions/Libc/blob/71bbe350ab79eef58113991d817ccc6165061a64/gen/errlst.c#L165-L168
-      await observeProductionApp(installedExecutable, ['Floway desktop application failed', 'Bad CPU type in executable']);
+      await observeProductionApp(installedExecutable, ['Bad CPU type in executable (os error 86)']);
     });
   });
 }
