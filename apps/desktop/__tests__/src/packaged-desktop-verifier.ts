@@ -277,6 +277,54 @@ const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual
   if (expected === actual) throw new Error(`forced personal runtime ${actual} phase failure`);
 };
 
+const assertDashboardBootstrapAndControlPlane = async (
+  origin: string,
+  databasePath: string,
+): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  let sessionToken: string | undefined;
+  while (Date.now() < deadline) {
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const session = database.prepare('SELECT id FROM sessions WHERE user_id = 1 ORDER BY created_at DESC LIMIT 1')
+        .get() as { id?: unknown } | undefined;
+      if (typeof session?.id === 'string') {
+        sessionToken = session.id;
+        break;
+      }
+    } finally {
+      database.close();
+    }
+    await new Promise(resolveWait => setTimeout(resolveWait, 50));
+  }
+  if (sessionToken === undefined) {
+    throw new Error('Installed Dashboard did not exchange its one-time bootstrap authority for an owner session');
+  }
+
+  const sessionResponse = await fetch(`${origin}/auth/me`, {
+    headers: { origin, 'x-floway-session': sessionToken },
+  });
+  if (!sessionResponse.ok) {
+    throw new Error(`Installed Dashboard owner session could not reach the personal control plane: ${sessionResponse.status}`);
+  }
+  if (sessionResponse.headers.get('access-control-allow-origin') !== origin) {
+    throw new Error('Installed personal control plane did not bind CORS to the active Dashboard origin');
+  }
+  const session = await sessionResponse.json() as { user?: { id?: unknown }; viaApiKey?: unknown };
+  if (session.user?.id !== 1 || session.viaApiKey !== false) {
+    throw new Error(`Installed Dashboard bootstrap returned an unexpected owner session: ${JSON.stringify(session)}`);
+  }
+
+  const reusableLogin = await fetch(`${origin}/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin },
+    body: JSON.stringify({ username: '', password: '' }),
+  });
+  if (reusableLogin.status !== 401) {
+    throw new Error(`Installed personal runtime accepted reusable owner login with status ${reusableLogin.status}`);
+  }
+};
+
 const assertPersonalRuntime = async (
   executable: string,
   embeddedNode: string,
@@ -334,6 +382,7 @@ const assertPersonalRuntime = async (
     if (assetPath === undefined) throw new Error('Installed Dashboard document names no asset');
     const assetResponse = await fetch(`${origin}${assetPath}`);
     if (!assetResponse.ok) throw new Error(`Installed Dashboard asset returned ${assetResponse.status}`);
+    await assertDashboardBootstrapAndControlPlane(origin, resolve(verificationRoot, 'floway.db'));
     forcePersonalFailure(forcedFailure, 'dashboard');
 
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
@@ -570,9 +619,6 @@ if (launchSupported) {
       await assertLoopbackPortReleased(port);
       await mkdir(verificationRoot, { recursive: true });
       faultCleanup.defer('Keyring-fault application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
-      faultCleanup.defer('Keyring-fault credential', async () => {
-        await runCredentialScript(installedNode, installedPlatformNode, credentialService, credentialAccount, 'delete');
-      });
       faultCleanup.defer('Keyring-fault listener', async () => await assertLoopbackPortReleased(port));
       await writeFile(installedEntry, personalEntrySource(verificationRoot, credentialService, credentialAccount));
       const keyringFile = await open(installedKeyringNative, 'r+');
