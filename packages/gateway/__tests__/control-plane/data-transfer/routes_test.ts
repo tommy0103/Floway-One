@@ -571,6 +571,19 @@ test('safe export structurally omits every authentication-bearing field', async 
     config: {
       ...(CUSTOM_UPSTREAM.config as Record<string, unknown>),
       baseUrl: 'https://custom-user:custom-password@custom.example.com/gateway?api_key=custom-query-secret#custom-fragment-secret',
+      pathOverrides: {
+        '/chat/completions': '/v1/chat?api_key=path-override-secret#path-override-fragment-secret',
+      },
+      modelsFetch: { enabled: true, endpoint: '/models?api_key=models-fetch-secret#models-fetch-fragment-secret' },
+      models: [{
+        upstreamModelId: 'rerank-safe-export',
+        kind: 'rerank',
+        endpoints: { rerank: {} },
+        rerankTarget: {
+          protocol: 'cohere-v2',
+          path: '/rerank?api_key=rerank-path-secret#rerank-path-fragment-secret',
+        },
+      }],
     },
   };
   const azureWithUrlSecrets: UpstreamRecord = {
@@ -628,13 +641,16 @@ test('safe export structurally omits every authentication-bearing field', async 
   const custom = exported.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id);
   assertEquals(custom.config.baseUrl, 'https://custom.example.com/gateway');
   assertEquals(Object.keys(custom.config).toSorted(), [
-    'authStyle', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch',
+    'authStyle', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch', 'pathOverrides',
   ]);
   assertEquals(custom.config.endpoints, CUSTOM_UPSTREAM.config && (CUSTOM_UPSTREAM.config as any).endpoints);
   assertEquals(custom.config.ingressHeadersRules, [
     { key: 'x-request-id', source: 'client' },
     { key: 'x-route', source: 'configured' },
   ]);
+  assertEquals(custom.config.pathOverrides, { '/chat/completions': '/v1/chat' });
+  assertEquals(custom.config.modelsFetch, { enabled: true, endpoint: '/models' });
+  assertEquals(custom.config.models[0].rerankTarget, { protocol: 'cohere-v2', path: '/rerank' });
   assertEquals(hasOwn(custom.config, 'apiKey'), false);
   assertEquals(custom.state, null);
   const copilot = exported.data.upstreams.find((upstream: any) => upstream.id === COPILOT_UPSTREAM.id);
@@ -696,6 +712,12 @@ test('safe export structurally omits every authentication-bearing field', async 
     'custom-password',
     'custom-query-secret',
     'custom-fragment-secret',
+    'path-override-secret',
+    'path-override-fragment-secret',
+    'models-fetch-secret',
+    'models-fetch-fragment-secret',
+    'rerank-path-secret',
+    'rerank-path-fragment-secret',
     'azure-user',
     'azure-password',
     'ollama-user',

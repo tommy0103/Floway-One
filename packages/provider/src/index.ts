@@ -105,7 +105,7 @@ export { directFetcher, dispatchUpstreamFetch, identityWrapUpstreamCall, isRepla
 
 export { isAbortError } from './abort.ts';
 
-export { modelEndpointsForSafeExport, routingUrlForSafeExport, upstreamModelsForSafeExport } from './safe-export.ts';
+export { modelEndpointsForSafeExport, routingPathForSafeExport, routingUrlForSafeExport, upstreamModelsForSafeExport } from './safe-export.ts';
 
 export { jsonRequestBody } from './json-request.ts';
 export { sha256Json, sha256JsonHex } from './json-hash.ts';

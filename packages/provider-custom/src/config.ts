@@ -22,7 +22,7 @@
 import { customIngressHeaderNameIssue, isCustomIngressHeaderValue } from './ingress-header-rules.ts';
 import type { ModelEndpoints } from '@floway-dev/protocols/common';
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { endpointsField, modelEndpointsForSafeExport, modelsField, routingUrlForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
+import { endpointsField, modelEndpointsForSafeExport, modelsField, routingPathForSafeExport, routingUrlForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
 
 export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 
@@ -252,7 +252,7 @@ export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unkno
       '/audio/transcriptions',
     ] as const satisfies readonly CustomPathOverrideKey[]) {
       const path = pathOverrides[key];
-      if (path !== undefined) safePathOverrides[key] = path;
+      if (path !== undefined) safePathOverrides[key] = routingPathForSafeExport(path);
     }
   }
   return {
@@ -265,7 +265,7 @@ export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unkno
     })),
     modelsFetch: config.modelsFetch.endpoint === undefined
       ? { enabled: config.modelsFetch.enabled }
-      : { enabled: config.modelsFetch.enabled, endpoint: config.modelsFetch.endpoint },
+      : { enabled: config.modelsFetch.enabled, endpoint: routingPathForSafeExport(config.modelsFetch.endpoint) },
     models: upstreamModelsForSafeExport(config.models),
     authStyle: config.authStyle,
   };
