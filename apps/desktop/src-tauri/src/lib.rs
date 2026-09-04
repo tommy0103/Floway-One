@@ -447,7 +447,7 @@ mod desktop {
                                         source: command_error.take(),
                                     };
                                     print_error_chain(&error);
-                                    app_handle.exit(1);
+                                    std::process::exit(1);
                                 }
                                 return;
                             }
