@@ -1,8 +1,9 @@
 import { test, vi } from 'vitest';
 
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
+import { assertRuntimeProfileData } from '../../../src/runtime/profile-policy.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
-import { buildCustomUpstreamRecord, copilotModels, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { buildCustomUpstreamRecord, copilotModels, requestApp, setupAppTest, setupPersonalAppTest } from '../../test-utils/app.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
 import { assertEquals, assertExists, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
 
@@ -10,6 +11,13 @@ const ownerPatch = (id: string, body: unknown, rawKey: string) =>
   requestApp(`/api/keys/${id}`, {
     method: 'PATCH',
     headers: { 'x-api-key': rawKey, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const ownerSessionPatch = (id: string, body: unknown, session: string) =>
+  requestApp(`/api/keys/${id}`, {
+    method: 'PATCH',
+    headers: { 'x-floway-session': session, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 
@@ -38,12 +46,15 @@ test('server POST /api/keys accepts an API key and defaults durable OpenAI Respo
 });
 
 test('personal API keys remain data-plane-only while Dashboard sessions manage owner keys', async () => {
-  const { repo, adminSession } = await setupAppTest();
-  initRuntimeProfile('personal');
+  const { repo, adminSession: ownerSession } = await setupPersonalAppTest();
   try {
+    assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [1]);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), []);
+    await assertRuntimeProfileData();
+
     const createResponse = await requestApp('/api/keys', {
       method: 'POST',
-      headers: { 'x-floway-session': adminSession, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'personal-key' }),
     });
     assertEquals(createResponse.status, 201);
@@ -68,7 +79,7 @@ test('personal API keys remain data-plane-only while Dashboard sessions manage o
     assertEquals((await repo.apiKeys.listIncludingDeleted()).length, keyCount);
 
     const sessionRead = await requestApp('/api/keys', {
-      headers: { 'x-floway-session': adminSession },
+      headers: { 'x-floway-session': ownerSession },
     });
     assertEquals(sessionRead.status, 200);
 
@@ -98,9 +109,148 @@ test('personal API keys remain data-plane-only while Dashboard sessions manage o
       const body = (await dataPlane.json()) as { data: Array<{ id: string }> };
       assertEquals(body.data.some(model => model.id === 'personal-data-plane-model'), true);
     });
+    await assertRuntimeProfileData();
   } finally {
     initRuntimeProfile('server');
   }
+});
+
+test('personal profile keeps multiple key lifecycles, routing, capture, and Agent Setup independent', async () => {
+  const { repo, adminSession: ownerSession } = await setupPersonalAppTest();
+
+  type KeyResponse = {
+    id: string;
+    name: string;
+    key: string;
+    upstream_ids: string[] | null;
+    dump_retention_seconds: number | null;
+    responses_retention_seconds: number;
+  };
+  const create = async (body: Record<string, unknown>): Promise<KeyResponse> => {
+    const response = await requestApp('/api/keys', {
+      method: 'POST',
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assertEquals(response.status, 201);
+    return (await response.json()) as KeyResponse;
+  };
+
+  try {
+    await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_a', name: 'Personal A' }));
+    await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_personal_b', name: 'Personal B' }));
+    assertEquals((await repo.users.listIncludingDeleted()).map(user => ({
+      id: user.id,
+      isAdmin: user.isAdmin,
+      upstreamIds: user.upstreamIds,
+      deletedAt: user.deletedAt,
+    })), [{ id: 1, isAdmin: true, upstreamIds: null, deletedAt: null }]);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), []);
+    await assertRuntimeProfileData();
+
+    const codex = await create({ name: 'Codex project' });
+    const claude = await create({
+      name: 'Claude project',
+      upstream_ids: ['up_personal_b', 'up_personal_a'],
+      dump_retention_seconds: 3600,
+    });
+
+    assertEquals(codex.upstream_ids, null);
+    assertEquals(codex.dump_retention_seconds, null);
+    assertEquals(codex.responses_retention_seconds, 0);
+    assertEquals(claude.upstream_ids, ['up_personal_b', 'up_personal_a']);
+    assertEquals(claude.dump_retention_seconds, 3600);
+    assertEquals((await repo.apiKeys.listByUserId(1)).filter(key => [codex.id, claude.id].includes(key.id)).length, 2);
+
+    const renamed = await ownerSessionPatch(codex.id, {
+      name: 'Codex rotated project',
+      upstream_ids: ['up_personal_a'],
+    }, ownerSession);
+    assertEquals(renamed.status, 200);
+    assertEquals(((await renamed.json()) as KeyResponse).name, 'Codex rotated project');
+
+    const beforeClaude = await repo.apiKeys.getById(claude.id);
+    assertExists(beforeClaude);
+    const rotated = await requestApp(`/api/keys/${codex.id}/rotate`, {
+      method: 'POST',
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assertEquals(rotated.status, 200);
+    const rotatedCodex = (await rotated.json()) as KeyResponse;
+    assertEquals(rotatedCodex.id, codex.id);
+    assertEquals(rotatedCodex.name, 'Codex rotated project');
+    assertEquals(rotatedCodex.upstream_ids, ['up_personal_a']);
+    assertEquals(rotatedCodex.dump_retention_seconds, null);
+    if (rotatedCodex.key === codex.key) throw new Error('rotation did not replace the selected API key value');
+    assertEquals(await repo.apiKeys.getById(claude.id), beforeClaude);
+
+    const setup = await requestApp('/api/setup', {
+      method: 'POST',
+      headers: { 'x-floway-session': ownerSession, 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKeyId: claude.id }),
+    });
+    assertEquals(setup.status, 200);
+    const lease = (await setup.json()) as { scripts: { codex: { sh: string } } };
+    const script = await requestApp(lease.scripts.codex.sh, { headers: { 'x-floway-session': ownerSession } });
+    assertEquals(script.status, 200);
+    const scriptText = await script.text();
+    if (!scriptText.includes(claude.key) || !scriptText.includes(claude.name)) {
+      throw new Error('Agent Setup did not render the independently selected personal API key');
+    }
+
+    const deleted = await requestApp(`/api/keys/${codex.id}`, {
+      method: 'DELETE',
+      headers: { 'x-floway-session': ownerSession },
+    });
+    assertEquals(deleted.status, 200);
+    assertEquals(await repo.apiKeys.getById(codex.id), null);
+    assertEquals(await repo.apiKeys.getById(claude.id), beforeClaude);
+    await assertRuntimeProfileData();
+
+    const surviving = await requestApp('/api/keys', { headers: { 'x-floway-session': ownerSession } });
+    assertEquals(surviving.status, 200);
+    assertEquals(((await surviving.json()) as KeyResponse[]).map(key => key.id), [claude.id]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('server fixture preserves multi-user key creation through user sessions', async () => {
+  const { repo, apiKey } = await setupAppTest();
+  assertEquals((await repo.users.listIncludingDeleted()).map(user => user.id), [1, 2]);
+  assertEquals(apiKey.userId, 2);
+  await assertRuntimeProfileData();
+
+  const userSession = (await repo.sessions.create(2)).id;
+  const response = await requestApp('/api/keys', {
+    method: 'POST',
+    headers: { 'x-floway-session': userSession, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Server user key' }),
+  });
+  assertEquals(response.status, 201);
+  const created = (await response.json()) as {
+    id: string;
+    upstream_ids: string[] | null;
+    dump_retention_seconds: number | null;
+    responses_retention_seconds: number;
+  };
+  const stored = await repo.apiKeys.getById(created.id);
+  assertExists(stored);
+  assertEquals({
+    userId: stored.userId,
+    upstreamIds: stored.upstreamIds,
+    dumpRetentionSeconds: stored.dumpRetentionSeconds,
+    openaiResponsesRetentionSeconds: stored.openaiResponsesRetentionSeconds,
+  }, {
+    userId: 2,
+    upstreamIds: null,
+    dumpRetentionSeconds: null,
+    openaiResponsesRetentionSeconds: 0,
+  });
+  assertEquals(created.upstream_ids, null);
+  assertEquals(created.dump_retention_seconds, null);
+  assertEquals(created.responses_retention_seconds, 0);
 });
 
 test('PATCH /api/keys/:id changes only the rolling OpenAI Responses duration', async () => {
