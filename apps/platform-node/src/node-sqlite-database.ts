@@ -83,7 +83,7 @@ class NodeSqliteDatabase implements SqlDatabase {
 
   private recoverTransaction(cause: unknown, state: TransactionLifecycleState): never {
     const failures = [cause];
-    const recovery = advanceTransactionLifecycle(state, { kind: LIFECYCLE_STATES[state.kind].recovery });
+    const recovery = advanceTransactionLifecycle(state, LIFECYCLE_STATES[state.kind].recovery);
     this.observeTransactionPhase(transactionPhase(recovery));
     if (recovery.kind === 'recover-active') {
       try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
@@ -97,29 +97,24 @@ class NodeSqliteDatabase implements SqlDatabase {
     kind: TransactionLifecycleKind,
     body: () => T | Promise<T>,
   ): Promise<T> {
-    let state: TransactionLifecycleState = { kind: 'not-begun' };
+    const plan = TRANSACTION_LIFECYCLES[kind];
+    let state: TransactionLifecycleState = { kind: 'not-begun', lifecycle: kind };
     this.observeTransactionPhase(transactionPhase(state));
-    const transition = (next: TransactionLifecycleState): void => {
+    const transition = (next: TransactionLifecycleStateKind): void => {
       state = advanceTransactionLifecycle(state, next);
       this.observeTransactionPhase(transactionPhase(state));
     };
     try {
-      this.db.exec(kind === 'batch' ? 'BEGIN' : 'BEGIN IMMEDIATE');
-      transition({ kind: 'begun' });
-      transition({ kind: 'body' });
+      this.db.exec(plan.beginSql);
+      transition('begun');
+      transition('body');
       const result = await body();
-      if (kind === 'interactive') {
-        transition({ kind: 'precommit-finalize' });
-        this.hardenFiles();
-      }
-      transition({ kind: 'commit' });
+      plan.beforeCommit(transition, this.hardenFiles);
+      transition('commit');
       this.db.exec('COMMIT');
-      transition({ kind: 'committed' });
-      if (kind === 'batch') {
-        transition({ kind: 'postcommit-finalize' });
-        this.hardenFiles();
-      }
-      transition({ kind: 'done' });
+      transition('committed');
+      plan.afterCommit(transition, this.hardenFiles);
+      transition('done');
       return result;
     } catch (cause) {
       this.recoverTransaction(cause, state);
@@ -192,35 +187,64 @@ type TransactionLifecycleStateKind =
   | 'recover-active'
   | 'recover-closed'
   | 'done';
-type TransactionLifecycleState = { readonly kind: TransactionLifecycleStateKind };
+type TransactionLifecycleState = {
+  readonly kind: TransactionLifecycleStateKind;
+  readonly lifecycle: TransactionLifecycleKind;
+};
 type RecoveryStateKind = 'recover-active' | 'recover-closed';
 
+type TransactionLifecycleTransition = (next: TransactionLifecycleStateKind) => void;
+interface TransactionLifecyclePlan {
+  readonly beginSql: 'BEGIN' | 'BEGIN IMMEDIATE';
+  readonly beforeCommit: (transition: TransactionLifecycleTransition, hardenFiles: () => void) => void;
+  readonly afterCommit: (transition: TransactionLifecycleTransition, hardenFiles: () => void) => void;
+}
+
+const TRANSACTION_LIFECYCLES = {
+  batch: {
+    beginSql: 'BEGIN',
+    beforeCommit: () => undefined,
+    afterCommit: (transition, hardenFiles) => {
+      transition('postcommit-finalize');
+      hardenFiles();
+    },
+  },
+  interactive: {
+    beginSql: 'BEGIN IMMEDIATE',
+    beforeCommit: (transition, hardenFiles) => {
+      transition('precommit-finalize');
+      hardenFiles();
+    },
+    afterCommit: () => undefined,
+  },
+} as const satisfies Record<TransactionLifecycleKind, TransactionLifecyclePlan>;
+
 const LIFECYCLE_STATES = {
-  'not-begun': { phase: 'not-begun', recovery: 'recover-closed', next: ['begun', 'recover-closed'] },
-  begun: { phase: 'begun', recovery: 'recover-active', next: ['body', 'recover-active'] },
-  body: { phase: 'body', recovery: 'recover-active', next: ['commit', 'precommit-finalize', 'recover-active'] },
-  'precommit-finalize': { phase: 'finalize', recovery: 'recover-active', next: ['commit', 'recover-active'] },
-  commit: { phase: 'commit', recovery: 'recover-active', next: ['committed', 'recover-active'] },
-  committed: { phase: 'committed', recovery: 'recover-closed', next: ['done', 'postcommit-finalize', 'recover-closed'] },
-  'postcommit-finalize': { phase: 'finalize', recovery: 'recover-closed', next: ['done', 'recover-closed'] },
-  'recover-active': { phase: 'recovery', recovery: 'recover-active', next: [] },
-  'recover-closed': { phase: 'recovery', recovery: 'recover-closed', next: [] },
-  done: { phase: 'done', recovery: 'recover-closed', next: ['recover-closed'] },
+  'not-begun': { phase: 'not-begun', recovery: 'recover-closed', next: { batch: ['begun', 'recover-closed'], interactive: ['begun', 'recover-closed'] } },
+  begun: { phase: 'begun', recovery: 'recover-active', next: { batch: ['body', 'recover-active'], interactive: ['body', 'recover-active'] } },
+  body: { phase: 'body', recovery: 'recover-active', next: { batch: ['commit', 'recover-active'], interactive: ['precommit-finalize', 'recover-active'] } },
+  'precommit-finalize': { phase: 'finalize', recovery: 'recover-active', next: { batch: [], interactive: ['commit', 'recover-active'] } },
+  commit: { phase: 'commit', recovery: 'recover-active', next: { batch: ['committed', 'recover-active'], interactive: ['committed', 'recover-active'] } },
+  committed: { phase: 'committed', recovery: 'recover-closed', next: { batch: ['postcommit-finalize', 'recover-closed'], interactive: ['done', 'recover-closed'] } },
+  'postcommit-finalize': { phase: 'finalize', recovery: 'recover-closed', next: { batch: ['done', 'recover-closed'], interactive: [] } },
+  'recover-active': { phase: 'recovery', recovery: 'recover-active', next: { batch: [], interactive: [] } },
+  'recover-closed': { phase: 'recovery', recovery: 'recover-closed', next: { batch: [], interactive: [] } },
+  done: { phase: 'done', recovery: 'recover-closed', next: { batch: ['recover-closed'], interactive: ['recover-closed'] } },
 } as const satisfies Record<TransactionLifecycleStateKind, {
   readonly phase: TransactionLifecyclePhase;
   readonly recovery: RecoveryStateKind;
-  readonly next: readonly TransactionLifecycleStateKind[];
+  readonly next: Record<TransactionLifecycleKind, readonly TransactionLifecycleStateKind[]>;
 }>;
 
 const advanceTransactionLifecycle = (
   current: TransactionLifecycleState,
-  next: TransactionLifecycleState,
+  next: TransactionLifecycleStateKind,
 ): TransactionLifecycleState => {
-  const allowed = LIFECYCLE_STATES[current.kind].next as readonly TransactionLifecycleStateKind[];
-  if (!allowed.includes(next.kind)) {
-    throw new Error(`Invalid Floway transaction lifecycle transition: ${current.kind} -> ${next.kind}`);
+  const allowed = LIFECYCLE_STATES[current.kind].next[current.lifecycle] as readonly TransactionLifecycleStateKind[];
+  if (!allowed.includes(next)) {
+    throw new Error(`Invalid Floway ${current.lifecycle} transaction lifecycle transition: ${current.kind} -> ${next}`);
   }
-  return next;
+  return { kind: next, lifecycle: current.lifecycle };
 };
 
 const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase =>
