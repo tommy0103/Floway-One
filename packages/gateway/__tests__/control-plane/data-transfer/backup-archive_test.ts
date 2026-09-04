@@ -103,3 +103,54 @@ test('decrypted JSON failures retain safe parser diagnostics without retaining p
     parse.mockRestore();
   }
 });
+
+test('fatal UTF-8 decoding preserves the exact decoder error after reaching invalid plaintext bytes', async () => {
+  const password = 'UTF8_PASSWORD_NEVER_EXPOSE_21';
+  const archive = await createEncryptedBackupArchive(RECOVERY_DATA, password);
+  const invalidPlaintext = Uint8Array.from([0xff, 0xfe, 0xfd]);
+  const subtle = new Proxy(globalThis.crypto.subtle, {
+    get(target, property) {
+      if (property === 'decrypt') return async () => invalidPlaintext.buffer;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const decryptingCrypto = new Proxy(globalThis.crypto, {
+    get(target, property) {
+      if (property === 'subtle') return subtle;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const fatalDecoder = new TextDecoder('utf-8', { fatal: true });
+  let reachedBytes: number[] | undefined;
+  let decoderFailure: unknown;
+  const instrumentedDecoder: Pick<TextDecoder, 'decode'> = {
+    decode(input) {
+      reachedBytes = [...new Uint8Array(input as ArrayBuffer)];
+      try {
+        return fatalDecoder.decode(input);
+      } catch (cause) {
+        decoderFailure = cause;
+        throw cause;
+      }
+    },
+  };
+
+  let observed: InvalidBackupArchiveError | undefined;
+  try {
+    await openEncryptedBackupArchive(archive, password, decryptingCrypto, instrumentedDecoder);
+  } catch (error) {
+    if (error instanceof InvalidBackupArchiveError) observed = error;
+  }
+
+  expect(reachedBytes).toEqual([0xff, 0xfe, 0xfd]);
+  expect(decoderFailure).toBeInstanceOf(TypeError);
+  expect(observed?.cause).toBe(decoderFailure);
+  expect(observed?.message).toBe('The decrypted backup payload is not valid UTF-8.');
+  const exposed = JSON.stringify({ error: observed?.message });
+  expect(exposed).not.toContain(password);
+  expect(exposed).not.toContain(archive.ciphertext);
+  expect(exposed).not.toContain('255');
+  expect(exposed).not.toContain('UTF8_PASSWORD');
+});

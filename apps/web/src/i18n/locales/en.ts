@@ -1151,8 +1151,7 @@ const en = {
             performance_other: '{{count, number}} performance records',
           },
           error: 'Import failed.',
-          errorInvalidFile:
-              'The selected file is not a valid Floway backup file: {{message}}',
+          errorInvalidFile: 'The selected file is not a valid Floway backup file.',
           errorReadFile: 'The selected backup file could not be read.',
           previewLabel: {
             users: 'Users',

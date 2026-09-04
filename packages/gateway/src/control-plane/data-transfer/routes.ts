@@ -20,7 +20,7 @@ import { upstreamStoredSecretsForSafeExport, webSearchStoredSecretsForSafeExport
 import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type fullBackupBody, type importBody } from '../schemas.ts';
-import { warmModelsCache } from '../shared/warm-models-cache.ts';
+import { reportModelsCacheWarmFailure, warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
 import type { UpstreamRecord } from '@floway-dev/provider';
 
@@ -383,7 +383,13 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
       }
     }
   }
-  await Promise.allSettled(upstreams.map(upstream => warmModelsCache(upstream, c)));
+  const warmResults = await Promise.allSettled(upstreams.map(upstream => warmModelsCache(upstream, c)));
+  for (let index = 0; index < warmResults.length; index++) {
+    const result = warmResults[index];
+    if (result.status === 'rejected') {
+      reportModelsCacheWarmFailure(upstreams[index], 'post-import warm', result.reason);
+    }
+  }
 
   return c.json({
     ok: true,

@@ -3,14 +3,16 @@ import { formatWithOptions } from 'node:util';
 import { Hono } from 'hono';
 import { expect, test, vi } from 'vitest';
 
-// The import handler warms the SWR models cache for every saved upstream by
-// calling each provider's getProvidedModels, which for Copilot / Custom would
-// make real upstream HTTP requests the test sandbox cannot serve and hang
-// until the vitest timeout. Stub the cache layer to a no-op so the import
-// path's own behavior (upserts, identity validation, etc.) is what the tests
-// exercise — the warm itself has dedicated coverage in models-cache_test.ts.
-vi.mock('../../../src/data-plane/providers/models-cache.ts', () => ({
-  fetchUpstreamModelsCached: () => Promise.resolve([]),
+const { warmModelsCacheMock } = vi.hoisted(() => ({
+  warmModelsCacheMock: vi.fn<(record: UpstreamRecord) => Promise<unknown>>(() => Promise.resolve(null)),
+}));
+
+// Import exercises the post-commit warm boundary without making provider
+// network calls. The actual reporter remains loaded so rejection observation
+// is tested through the production error boundary rather than a test double.
+vi.mock('../../../src/control-plane/shared/warm-models-cache.ts', async () => ({
+  ...await vi.importActual('../../../src/control-plane/shared/warm-models-cache.ts'),
+  warmModelsCache: warmModelsCacheMock,
 }));
 
 import { BackupArchiveAuthenticationError, createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
@@ -766,6 +768,50 @@ test('personal restore authenticates an encrypted full backup before changing li
     assertEquals(restored.status, 200);
     assertEquals(await repo.apiKeys.list(), [KEY_B]);
   } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('post-import cache warming reports every original rejection after the personal restore commits', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const customNative = Object.assign(new Error('custom provider unavailable'), { code: 'ECONNRESET' });
+  const azureNative = Object.assign(new Error('azure provider unavailable'), { code: 'ETIMEDOUT' });
+  const customFailure = new Error('custom cache warm failed', { cause: customNative });
+  const azureFailure = new Error('azure cache warm failed', { cause: azureNative });
+  warmModelsCacheMock.mockImplementation(record => {
+    if (record.id === CUSTOM_UPSTREAM.id) return Promise.reject(customFailure);
+    if (record.id === AZURE_UPSTREAM.id) return Promise.reject(azureFailure);
+    return Promise.resolve(null);
+  });
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  initRuntimeProfile('personal');
+  try {
+    const result = await doEncryptedImport(app, 'replace', latestImportData({
+      apiKeys: [KEY_B],
+      upstreams: [upstreamRecordToFullJson(CUSTOM_UPSTREAM), upstreamRecordToFullJson(AZURE_UPSTREAM)],
+    }));
+
+    assertEquals(result.status, 200);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_B]);
+    assertEquals((await repo.upstreams.list()).map(upstream => upstream.id).toSorted(), [
+      AZURE_UPSTREAM.id,
+      CUSTOM_UPSTREAM.id,
+    ].toSorted());
+    const warmLogs = logged.filter(args => args[0] === '[models-cache] post-import warm failed');
+    assertEquals(warmLogs.length, 2);
+    const failuresById = new Map(warmLogs.map(args => [args[1], args[2]]));
+    expect(failuresById.get(CUSTOM_UPSTREAM.id)).toBe(customFailure);
+    expect((failuresById.get(CUSTOM_UPSTREAM.id) as Error).cause).toBe(customNative);
+    expect(failuresById.get(AZURE_UPSTREAM.id)).toBe(azureFailure);
+    expect((failuresById.get(AZURE_UPSTREAM.id) as Error).cause).toBe(azureNative);
+  } finally {
+    log.mockRestore();
+    warmModelsCacheMock.mockReset();
+    warmModelsCacheMock.mockResolvedValue(null);
     initRuntimeProfile('server');
   }
 });

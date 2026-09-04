@@ -31,6 +31,7 @@ export class InvalidBackupArchiveError extends Error {
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
+type BackupPayloadDecoder = Pick<TextDecoder, 'decode'>;
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = '';
@@ -112,6 +113,7 @@ export const openEncryptedBackupArchive = async (
   rawArchive: unknown,
   password: string,
   webCrypto: Crypto = globalThis.crypto,
+  decoder: BackupPayloadDecoder = textDecoder,
 ): Promise<unknown> => {
   let archive: EncryptedBackupArchive;
   try {
@@ -139,11 +141,21 @@ export const openEncryptedBackupArchive = async (
     throw new BackupArchiveAuthenticationError(cause);
   }
 
+  let decoded: string;
   try {
-    return JSON.parse(textDecoder.decode(plaintext));
+    decoded = decoder.decode(plaintext);
   } catch (cause) {
     throw new InvalidBackupArchiveError(
-      'The decrypted backup payload is not valid UTF-8 JSON.',
+      'The decrypted backup payload is not valid UTF-8.',
+      cause,
+    );
+  }
+
+  try {
+    return JSON.parse(decoded);
+  } catch (cause) {
+    throw new InvalidBackupArchiveError(
+      'The decrypted backup payload is not valid JSON.',
       secretSafeJsonSyntaxError(cause, 'Decrypted backup payload contains malformed JSON'),
     );
   }

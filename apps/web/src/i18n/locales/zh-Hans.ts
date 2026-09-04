@@ -1085,7 +1085,7 @@ const zhHansCN = {
             performance_other: '{{count, number}} 条性能记录',
           },
           error: '导入失败。',
-          errorInvalidFile: '所选文件不是有效的 Floway 备份文件：{{message}}',
+          errorInvalidFile: '所选文件不是有效的 Floway 备份文件。',
           errorReadFile: '无法读取所选备份文件。',
           previewLabel: {
             users: '用户',

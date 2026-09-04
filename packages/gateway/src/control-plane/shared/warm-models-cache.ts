@@ -7,9 +7,14 @@ import { getRepo } from '../../repo/index.ts';
 import { backgroundSchedulerFromContext } from '../../runtime/background.ts';
 import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
 import type { UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
-import { logInfo } from '@floway-dev/provider-claude-code';
 
-const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+export const reportModelsCacheWarmFailure = (
+  record: Pick<UpstreamRecord, 'id'>,
+  where: string,
+  error: unknown,
+): void => {
+  console.error(`[models-cache] ${where} failed`, record.id, error);
+};
 
 // Populate the SWR model cache synchronously after saving an upstream so the
 // next dashboard read sees the new catalog. The cache layer persists upstream
@@ -26,7 +31,7 @@ export const warmModelsCache = async (record: UpstreamRecord, c: Context): Promi
   try {
     await fetchUpstreamModelsCached(provider, { scheduler, fetcher, force: true });
   } catch (error) {
-    logInfo('warm_models_cache_failed', { upstream_id: record.id, error: errorMessage(error) });
+    reportModelsCacheWarmFailure(record, 'warm', error);
   }
   // Read back rather than reconstructing: on the failure path the row keeps
   // whatever catalog it already had, annotated with this attempt's error.

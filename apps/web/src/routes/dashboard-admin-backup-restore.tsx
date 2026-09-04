@@ -133,7 +133,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
         if (personal) {
           const result = parseEncryptedBackupFile(raw);
           if (!result.ok) {
-            setImportError(t('dashboard.backupRestore.import.errorInvalidFile', { message: result.message }));
+            setImportError(t(result.error.clientMessageKey));
             setImportFile(null);
             setImportSelection(null);
             return;
@@ -144,7 +144,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
         }
         const result = parseBackupFile(raw);
         if (!result.ok) {
-          setImportError(t('dashboard.backupRestore.import.errorInvalidFile', { message: result.message }));
+          setImportError(t(result.error.clientMessageKey));
           setImportFile(null);
           setImportSelection(null);
           return;

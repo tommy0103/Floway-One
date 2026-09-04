@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { BACKUP_FILE_VERSION, legacyImportRequest, parseBackupFile, parseEncryptedBackupFile } from '../../../src/components/backup-restore/file';
+import { BACKUP_FILE_VERSION, BackupFileDiagnosticError, legacyImportRequest, parseBackupFile, parseEncryptedBackupFile } from '../../../src/components/backup-restore/file';
 
 const data = {
   users: [],
@@ -54,6 +54,34 @@ describe('backup file validation', () => {
     const explicitRequest = legacyImportRequest(explicit.payload, 'replace');
     expect(Object.hasOwn(explicit.payload.data, 'modelAliases')).toBe(true);
     expect(explicitRequest.data.modelAliases).toEqual([]);
+  });
+
+  it('retains a secret-bearing JSON parser cause internally without exposing or logging its excerpt', () => {
+    const sentinel = 'BROWSER_BACKUP_PARSE_SECRET_21';
+    const parserFailure = new SyntaxError(`Unexpected token near ${sentinel}`);
+    const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => { throw parserFailure; });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = parseBackupFile(`{"credential":"${sentinel}",broken}`);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBeInstanceOf(BackupFileDiagnosticError);
+      expect(result.error.code).toBe('malformed-json');
+      expect(result.error.cause).toBe(parserFailure);
+      expect(result.error.clientMessageKey).toBe('dashboard.backupRestore.import.errorInvalidFile');
+      expect(result.error.message).not.toContain(sentinel);
+      expect(JSON.stringify(result)).not.toContain(sentinel);
+      expect(log).not.toHaveBeenCalled();
+      expect(info).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      log.mockRestore();
+      parse.mockRestore();
+    }
   });
 });
 
