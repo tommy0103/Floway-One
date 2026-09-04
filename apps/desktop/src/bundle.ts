@@ -14,6 +14,7 @@ import {
 } from './release-contract.ts';
 
 export interface PrepareDesktopBundleOptions {
+  readonly canonicalMigrationsRoot: string;
   readonly desktopRoot: string;
   readonly generateRuntime: (outputRoot: string) => Promise<void>;
   readonly nodeArchitecture: NodeJS.Architecture;
@@ -108,11 +109,7 @@ const dashboardAssetContract = async (runtimeRoot: string): Promise<readonly Bun
   return assets;
 };
 
-const migrationFileContract = async (runtimeRoot: string): Promise<readonly BundleFileContract[]> => {
-  const migrationsRoot = resolve(
-    runtimeRoot,
-    'apps/platform-node/node_modules/@floway-dev/gateway/migrations',
-  );
+const migrationFileContract = async (migrationsRoot: string): Promise<readonly BundleFileContract[]> => {
   const names = (await readdir(migrationsRoot)).filter(name => name.endsWith('.sql')).sort();
   const files = await Promise.all(names.map(async path => ({
     path,
@@ -122,6 +119,36 @@ const migrationFileContract = async (runtimeRoot: string): Promise<readonly Bund
     throw new Error(`Desktop bundle migration manifest is empty beneath ${migrationsRoot}`);
   }
   return files;
+};
+
+const assertCanonicalMigrations = async (
+  deployedRoot: string,
+  canonicalFiles: readonly BundleFileContract[],
+): Promise<void> => {
+  let deployedNames: string[];
+  try {
+    deployedNames = (await readdir(deployedRoot)).filter(name => name.endsWith('.sql')).sort();
+  } catch (cause) {
+    throw new Error(`Desktop bundle migrations are unavailable at ${deployedRoot}`, { cause });
+  }
+  const canonicalNames = canonicalFiles.map(file => file.path);
+  if (JSON.stringify(deployedNames) !== JSON.stringify(canonicalNames)) {
+    throw new Error(
+      `Deployed migration inventory ${JSON.stringify(deployedNames)} differs from canonical source ${JSON.stringify(canonicalNames)}`,
+    );
+  }
+  for (const canonical of canonicalFiles) {
+    const deployedPath = resolve(deployedRoot, canonical.path);
+    let deployedDigest: string;
+    try {
+      deployedDigest = createHash('sha256').update(await readFile(deployedPath)).digest('hex');
+    } catch (cause) {
+      throw new Error(`Deployed migration is unavailable at ${deployedPath}`, { cause });
+    }
+    if (deployedDigest !== canonical.sha256) {
+      throw new Error(`Deployed migration differs from canonical source at ${deployedPath}`);
+    }
+  }
 };
 
 const requirePhysicalProductionDependencies = async (runtimeRoot: string): Promise<void> => {
@@ -228,6 +255,7 @@ const publishPreparedInputs = async (
 };
 
 export const prepareDesktopBundle = async ({
+  canonicalMigrationsRoot,
   desktopRoot,
   generateRuntime,
   nodeArchitecture,
@@ -272,10 +300,15 @@ export const prepareDesktopBundle = async ({
       await makeNativeModulesTargetSpecific(stagedRuntimeRoot, architectureForTargetTriple(targetTriple));
     }
     await assertPackagedRuntime(stagedRuntimeRoot);
+    const canonicalMigrations = await migrationFileContract(canonicalMigrationsRoot);
+    await assertCanonicalMigrations(
+      resolve(stagedRuntimeRoot, 'apps/platform-node/node_modules/@floway-dev/gateway/migrations'),
+      canonicalMigrations,
+    );
     const contract: DesktopBundleContract = {
       schemaVersion: 1,
       dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
-      migrations: { files: await migrationFileContract(stagedRuntimeRoot) },
+      migrations: { files: canonicalMigrations },
       node: {
         architecture: nodeArchitecture,
         platform: nodePlatform,

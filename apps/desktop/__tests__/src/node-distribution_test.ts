@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 
-import { nodeDistributionForTarget } from '../../src/node-distribution.ts';
+import { nodeDistributionForTarget } from './node-distribution.ts';
 
 test('associates each macOS target with its own locked Node archive and checksum', () => {
   expect(nodeDistributionForTarget('24.19.0', 'aarch64-apple-darwin')).toEqual({

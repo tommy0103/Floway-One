@@ -18,6 +18,44 @@ pub const NODE_SIDECAR_NAME: &str = "floway-node";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_ENV: &str = "FLOWAY_BOOTSTRAP_TOKEN";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
+const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
+
+fn has_valid_percent_encoding(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+fn canonicalize_navigation_for_authority_check(value: &str) -> Option<String> {
+    let mut current = value.to_owned();
+    for _ in 0..MAXIMUM_AUTHORITY_DECODE_PASSES {
+        if !has_valid_percent_encoding(&current) {
+            return None;
+        }
+        let decoded = percent_decode_str(&current)
+            .decode_utf8()
+            .ok()?
+            .into_owned();
+        if decoded == current {
+            return Some(decoded);
+        }
+        current = decoded;
+    }
+    None
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DashboardNavigationDecision {
@@ -64,11 +102,15 @@ impl DashboardNavigationPolicy {
     }
 
     pub fn decide(&self, candidate: &Url, new_window: bool) -> DashboardNavigationDecision {
+        let Some(decoded_candidate) =
+            canonicalize_navigation_for_authority_check(candidate.as_str())
+        else {
+            return DashboardNavigationDecision::Reject;
+        };
         let query_carries_bootstrap_authority = candidate.query_pairs().any(|(key, value)| {
             key == PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY
                 || value.contains(&self.bootstrap_token)
         });
-        let decoded_candidate = percent_decode_str(candidate.as_str()).decode_utf8_lossy();
         let carries_bootstrap_key = query_carries_bootstrap_authority
             || decoded_candidate.contains(PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY);
         let carries_bootstrap_token = decoded_candidate.contains(&self.bootstrap_token);

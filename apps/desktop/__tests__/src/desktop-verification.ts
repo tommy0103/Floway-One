@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises';
 
-import { type FailureSafeCleanup, withFailureSafeCleanup } from './failure-chain.ts';
+import { type FailureSafeCleanup, withFailureSafeCleanup } from '../../src/failure-chain.ts';
 
 export interface DisposableDesktopPath {
   readonly label: string;

@@ -102,7 +102,7 @@ Floway 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本地接
 
 ```text
 ┌──────────────────────────────────────────────┐
-│               Floway One.app                 │
+│                 Floway.app                   │
 │                                              │
 │  ┌────────────────────────────────────────┐  │
 │  │ Tauri 2 Desktop Shell                  │  │

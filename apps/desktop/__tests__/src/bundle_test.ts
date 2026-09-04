@@ -12,6 +12,10 @@ import { targetTripleForHost } from '../../src/release-contract.ts';
 
 const roots = new Set<string>();
 const desktopRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
+const fixtureMigrations: ReadonlyArray<readonly [string, string]> = [
+  ['0001_initial.sql', 'CREATE TABLE packaged_probe (value INTEGER);'],
+  ['0002_independent.sql', 'ALTER TABLE packaged_probe ADD COLUMN independent INTEGER;'],
+];
 
 const temporaryRoot = async (): Promise<string> => {
   const root = await mkdtemp(join(tmpdir(), 'floway-desktop-bundle-'));
@@ -23,6 +27,13 @@ afterEach(async () => {
   await Promise.all([...roots].map(root => rm(root, { force: true, recursive: true })));
   roots.clear();
 });
+
+const writeCanonicalMigrations = async (root: string): Promise<string> => {
+  const migrationsRoot = resolve(root, 'canonical-migrations');
+  await mkdir(migrationsRoot, { recursive: true });
+  await Promise.all(fixtureMigrations.map(async ([name, source]) => await writeFile(resolve(migrationsRoot, name), source)));
+  return migrationsRoot;
+};
 
 const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
   const files: Array<[string, string]> = [
@@ -43,14 +54,10 @@ const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
       'apps/platform-node/node_modules/@floway-dev/gateway/src/index.ts',
       'export const packagedValue: number = 42;',
     ],
-    [
-      'apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql',
-      'CREATE TABLE packaged_probe (value INTEGER);',
-    ],
-    [
-      'apps/platform-node/node_modules/@floway-dev/gateway/migrations/0002_independent.sql',
-      'ALTER TABLE packaged_probe ADD COLUMN independent INTEGER;',
-    ],
+    ...fixtureMigrations.map(([name, source]) => [
+      `apps/platform-node/node_modules/@floway-dev/gateway/migrations/${name}`,
+      source,
+    ] as [string, string]),
     ['apps/web/dist/client/index.html', '<!doctype html>'],
     ['apps/web/dist/client/dashboard-routes.json', '["/"]'],
     ['apps/web/dist/client/assets/lazy-dashboard.js', 'export const lazyDashboard = true;'],
@@ -68,7 +75,9 @@ describe('desktop bundle preparation', () => {
       await readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
     ) as {
       bundle: { externalBin: string[]; resources: Record<string, string> };
+      productName: string;
     };
+    expect(config.productName).toBe('Floway');
     expect(config.bundle.externalBin).toEqual(['bundle-inputs/binaries/floway-node']);
     expect(config.bundle.resources).toEqual({
       'bundle-inputs/desktop-bundle-contract.json': 'desktop-bundle-contract.json',
@@ -104,6 +113,7 @@ describe('desktop bundle preparation', () => {
     });
 
     const prepared = await prepareDesktopBundle({
+      canonicalMigrationsRoot: await writeCanonicalMigrations(root),
       desktopRoot: root,
       generateRuntime,
       nodeArchitecture: process.arch,
@@ -146,11 +156,61 @@ describe('desktop bundle preparation', () => {
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
   });
 
+  test('rejects an assembly omission against canonical migrations before publishing a contract', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const canonicalMigrationsRoot = await writeCanonicalMigrations(root);
+    await expect(prepareDesktopBundle({
+      canonicalMigrationsRoot,
+      desktopRoot: root,
+      generateRuntime: async runtimeRoot => {
+        await generateFixtureRuntime(runtimeRoot);
+        await rm(resolve(runtimeRoot, 'apps/platform-node/node_modules/@floway-dev/gateway/migrations/0002_independent.sql'));
+      },
+      nodeArchitecture: process.arch,
+      nodeExecutable: process.execPath,
+      nodePlatform: process.platform,
+      nodeVersion: process.versions.node,
+      targetTriple: targetTripleForHost(process.platform, process.arch),
+      executeNode: false,
+      validateSidecar: async () => undefined,
+    })).rejects.toThrow('differs from canonical source');
+    await expect(stat(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('rejects assembly migration tampering against canonical digests before publishing', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const canonicalMigrationsRoot = await writeCanonicalMigrations(root);
+    await expect(prepareDesktopBundle({
+      canonicalMigrationsRoot,
+      desktopRoot: root,
+      generateRuntime: async runtimeRoot => {
+        await generateFixtureRuntime(runtimeRoot);
+        await writeFile(
+          resolve(runtimeRoot, 'apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql'),
+          'tampered before contract generation',
+        );
+      },
+      nodeArchitecture: process.arch,
+      nodeExecutable: process.execPath,
+      nodePlatform: process.platform,
+      nodeVersion: process.versions.node,
+      targetTriple: targetTripleForHost(process.platform, process.arch),
+      executeNode: false,
+      validateSidecar: async () => undefined,
+    })).rejects.toThrow('differs from canonical source');
+    await expect(stat(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   test('keeps the previous complete inputs when staged sidecar validation fails', async () => {
     const root = await temporaryRoot();
     await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
     const targetTriple = targetTripleForHost(process.platform, process.arch);
     const options = {
+      canonicalMigrationsRoot: await writeCanonicalMigrations(root),
       desktopRoot: root,
       generateRuntime: generateFixtureRuntime,
       nodeArchitecture: process.arch,
@@ -189,6 +249,7 @@ describe('desktop bundle preparation', () => {
       await writeFile(resolve(runtimeRoot, 'apps/platform-node/src/runtime.ts'), `export const generation = ${++generation};`);
     };
     const options = {
+      canonicalMigrationsRoot: await writeCanonicalMigrations(root),
       desktopRoot: root,
       generateRuntime,
       nodeArchitecture: process.arch,
@@ -213,6 +274,7 @@ describe('desktop bundle preparation', () => {
     await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
     const targetTriple = targetTripleForHost(process.platform, process.arch);
     const options = {
+      canonicalMigrationsRoot: await writeCanonicalMigrations(root),
       desktopRoot: root,
       generateRuntime: generateFixtureRuntime,
       nodeArchitecture: process.arch,
@@ -249,6 +311,7 @@ describe('desktop bundle preparation', () => {
     let error: AggregateError | undefined;
     try {
       await prepareDesktopBundle({
+        canonicalMigrationsRoot: await writeCanonicalMigrations(root),
         desktopRoot: root,
         generateRuntime: async () => { throw assemblyFailure; },
         nodeArchitecture: process.arch,
@@ -274,6 +337,7 @@ describe('desktop bundle preparation', () => {
     const generateRuntime = vi.fn(generateFixtureRuntime);
 
     await expect(prepareDesktopBundle({
+      canonicalMigrationsRoot: resolve(root, 'canonical-migrations'),
       desktopRoot: root,
       generateRuntime,
       nodeArchitecture: 'arm64',
@@ -291,6 +355,7 @@ describe('desktop bundle preparation', () => {
     const generateRuntime = vi.fn(generateFixtureRuntime);
 
     await expect(prepareDesktopBundle({
+      canonicalMigrationsRoot: resolve(root, 'canonical-migrations'),
       desktopRoot: root,
       generateRuntime,
       nodeArchitecture: 'arm64',

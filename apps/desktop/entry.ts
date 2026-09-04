@@ -40,6 +40,7 @@ const generateRuntime = async (outputRoot: string): Promise<void> => {
 };
 
 await prepareDesktopBundle({
+  canonicalMigrationsRoot: resolve(repositoryRoot, 'packages/gateway/migrations'),
   desktopRoot,
   generateRuntime,
   nodeArchitecture,

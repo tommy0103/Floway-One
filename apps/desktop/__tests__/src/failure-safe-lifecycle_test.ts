@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { deferDisposableDesktopPaths } from '../../src/desktop-verification.ts';
+import { deferDisposableDesktopPaths } from './desktop-verification.ts';
 import { withFailureSafeCleanup } from '../../src/failure-chain.ts';
 
 const phases = ['app', 'sidecar', 'listener', 'credential', 'data'] as const;

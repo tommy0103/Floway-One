@@ -4,14 +4,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { deferDisposableDesktopPaths, removeDisposableDesktopPaths } from './desktop-verification.ts';
 import { withFailureSafeCleanup } from './failure-chain.ts';
-import { acquireNodeDistribution } from './node-distribution.ts';
 import {
   architectureForTargetTriple,
   MACOS_TARGET_TRIPLES,
   readPackagedNodeVersion,
 } from './release-contract.ts';
+import {
+  deferDisposableDesktopPaths,
+  removeDisposableDesktopPaths,
+} from '../__tests__/src/desktop-verification.ts';
+import { acquireNodeDistribution } from '../__tests__/src/node-distribution.ts';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');

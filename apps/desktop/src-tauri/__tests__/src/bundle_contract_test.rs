@@ -325,6 +325,18 @@ fn navigation_policy_routes_safe_https_without_webview_or_bootstrap_authority() 
 fn navigation_policy_rejects_cross_origin_schemes_popups_and_token_leaks() {
     let token = "ef".repeat(32);
     let policy = DashboardNavigationPolicy::new("http://127.0.0.1:49202", &token).unwrap();
+    let percent_encode = |value: &str| {
+        value
+            .bytes()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect::<String>()
+    };
+    let encoded_once = percent_encode(&token);
+    let encoded_twice = percent_encode(&encoded_once);
+    let encoded_thrice = percent_encode(&encoded_twice);
+    let encoded_key_twice = percent_encode(&percent_encode(
+        floway_desktop::PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
+    ));
     let candidates = [
         "http://127.0.0.1:49203/dashboard".to_owned(),
         "http://example.test/dashboard".to_owned(),
@@ -332,13 +344,15 @@ fn navigation_policy_rejects_cross_origin_schemes_popups_and_token_leaks() {
         "javascript:alert(1)".to_owned(),
         format!("https://example.test/?floway-bootstrap={token}"),
         format!("https://example.test/#{token}"),
-        format!(
-            "https://example.test/?secret={}",
-            token
-                .bytes()
-                .map(|byte| format!("%{byte:02X}"))
-                .collect::<String>()
-        ),
+        format!("https://example.test/?secret={encoded_once}"),
+        format!("https://example.test/redirect/{encoded_twice}"),
+        format!("https://example.test/?redirect={encoded_thrice}"),
+        format!("https://example.test/?redirect={encoded_key_twice}"),
+        format!("https://example.test/#{encoded_twice}"),
+        format!("https://{encoded_thrice}@example.test/"),
+        "https://example.test/path%ZZ".to_owned(),
+        "https://example.test/?redirect=%".to_owned(),
+        "https://example.test/#%GG".to_owned(),
     ];
     for candidate in candidates {
         let candidate = url::Url::parse(&candidate).unwrap();

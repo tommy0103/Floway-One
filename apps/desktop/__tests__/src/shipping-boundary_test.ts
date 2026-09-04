@@ -69,8 +69,6 @@ test('the legacy product identifier remains only in established bundle, app-data
   }
 
   const allowed = occurrences.filter(({ line, path }) => {
-    if (path === 'apps/desktop/src-tauri/tauri.conf.json') return line.includes('productName');
-    if (path === 'apps/desktop/__tests__/src/packaged-desktop-verifier.ts') return line.includes('.app');
     if (path === 'apps/platform-node/src/device-master-key-credential-identity.ts') return line.includes('service:');
     if (path === 'apps/platform-node/src/personal-runtime.ts') {
       return line.includes('Application Support') || line.includes('win32.join');
@@ -82,8 +80,7 @@ test('the legacy product identifier remains only in established bundle, app-data
         || line.includes('runtimePaths(join');
     }
     if (path === 'docs/floway-one-spec.zh-CN.md') {
-      return line.includes('.app')
-        || line.includes('Application Support')
+      return line.includes('Application Support')
         || line.includes('%APPDATA%')
         || line.trim() === `${productIdentifier}/`;
     }

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 
-import { exactPackageVersion, parseDependencyAssociations } from '../../src/lockfile.ts';
+import { exactPackageVersion, parseDependencyAssociations } from './lockfile.ts';
 
 test('associates each exact version with its owning importer dependency', () => {
   const associations = parseDependencyAssociations(`
