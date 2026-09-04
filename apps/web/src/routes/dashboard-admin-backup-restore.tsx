@@ -47,11 +47,12 @@ type ImportArchiveState =
   | { kind: 'ready'; error: ImportArchiveError | null; file: File; selection: ImportSelection; token: number };
 
 interface ActiveFileRead {
+  readonly file: File;
   readonly reader: FileReader;
   readonly token: number;
 }
 
-export const importReadFailureState = (message: string, cause: unknown): ImportArchiveState => ({
+const importReadFailureState = (message: string, cause: unknown): ImportArchiveState => ({
   kind: 'empty',
   error: { message, cause },
 });
@@ -62,6 +63,17 @@ export const consumeFileReadCompletion = (
   outcome: () => ImportArchiveState,
 ): { active: null; archive: ImportArchiveState } | null =>
   active === completion ? { active: null, archive: outcome() } : null;
+
+export const startImportArchiveRead = (
+  read: ActiveFileRead,
+  complete: (completion: ActiveFileRead, outcome: () => ImportArchiveState) => void,
+  parse: (raw: string) => ImportArchiveState,
+  readErrorMessage: string,
+): void => {
+  read.reader.onload = () => complete(read, () => parse(read.reader.result as string));
+  read.reader.onerror = () => complete(read, () => importReadFailureState(readErrorMessage, read.reader.error));
+  read.reader.readAsText(read.file);
+};
 
 const transitionCurrentImport = (
   current: ImportArchiveState,
@@ -177,10 +189,9 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
       setImportArchive({ kind: 'reading', file, token: readSequence });
 
       const reader = new FileReader();
-      const activeRead = { reader, token: readSequence };
+      const activeRead = { file, reader, token: readSequence };
       activeReadRef.current = activeRead;
-      reader.onload = () => completeFileRead(activeRead, () => {
-        const raw = reader.result as string;
+      startImportArchiveRead(activeRead, completeFileRead, raw => {
         if (personal) {
           const result = parseEncryptedBackupFile(raw);
           return result.ok
@@ -191,10 +202,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
         return result.ok
           ? { kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence }
           : { kind: 'empty', error: { message: t(result.error.clientMessageKey), cause: result.error } };
-      });
-      reader.onerror = () => completeFileRead(activeRead, () =>
-        importReadFailureState(t('dashboard.backupRestore.import.errorReadFile'), reader.error));
-      reader.readAsText(file);
+      }, t('dashboard.backupRestore.import.errorReadFile'));
     },
     [completeFileRead, personal, t],
   );

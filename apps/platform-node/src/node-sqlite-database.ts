@@ -83,7 +83,7 @@ class NodeSqliteDatabase implements SqlDatabase {
 
   private recoverTransaction(cause: unknown, state: TransactionLifecycleState): never {
     const failures = [cause];
-    const recovery = recoveryStateFor(state);
+    const recovery = advanceTransactionLifecycle(state, { kind: LIFECYCLE_STATES[state.kind].recovery });
     this.observeTransactionPhase(transactionPhase(recovery));
     if (recovery.kind === 'recover-active') {
       try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
@@ -181,66 +181,50 @@ interface CreateNodeSqliteDatabaseOptions {
 
 type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
 type TransactionLifecycleKind = 'batch' | 'interactive';
-type TransactionLifecycleState =
-  | { readonly kind: 'not-begun' }
-  | { readonly kind: 'begun' }
-  | { readonly kind: 'body' }
-  | { readonly kind: 'precommit-finalize' }
-  | { readonly kind: 'commit' }
-  | { readonly kind: 'committed' }
-  | { readonly kind: 'postcommit-finalize' }
-  | { readonly kind: 'recover-active' }
-  | { readonly kind: 'recover-closed' }
-  | { readonly kind: 'done' };
+type TransactionLifecycleStateKind =
+  | 'not-begun'
+  | 'begun'
+  | 'body'
+  | 'precommit-finalize'
+  | 'commit'
+  | 'committed'
+  | 'postcommit-finalize'
+  | 'recover-active'
+  | 'recover-closed'
+  | 'done';
+type TransactionLifecycleState = { readonly kind: TransactionLifecycleStateKind };
+type RecoveryStateKind = 'recover-active' | 'recover-closed';
 
-const LIFECYCLE_TRANSITIONS = {
-  'not-begun': ['begun'],
-  begun: ['body'],
-  body: ['commit', 'precommit-finalize'],
-  'precommit-finalize': ['commit'],
-  commit: ['committed'],
-  committed: ['done', 'postcommit-finalize'],
-  'postcommit-finalize': ['done'],
-  'recover-active': [],
-  'recover-closed': [],
-  done: [],
-} as const satisfies Record<TransactionLifecycleState['kind'], readonly TransactionLifecycleState['kind'][]>;
+const LIFECYCLE_STATES = {
+  'not-begun': { phase: 'not-begun', recovery: 'recover-closed', next: ['begun', 'recover-closed'] },
+  begun: { phase: 'begun', recovery: 'recover-active', next: ['body', 'recover-active'] },
+  body: { phase: 'body', recovery: 'recover-active', next: ['commit', 'precommit-finalize', 'recover-active'] },
+  'precommit-finalize': { phase: 'finalize', recovery: 'recover-active', next: ['commit', 'recover-active'] },
+  commit: { phase: 'commit', recovery: 'recover-active', next: ['committed', 'recover-active'] },
+  committed: { phase: 'committed', recovery: 'recover-closed', next: ['done', 'postcommit-finalize', 'recover-closed'] },
+  'postcommit-finalize': { phase: 'finalize', recovery: 'recover-closed', next: ['done', 'recover-closed'] },
+  'recover-active': { phase: 'recovery', recovery: 'recover-active', next: [] },
+  'recover-closed': { phase: 'recovery', recovery: 'recover-closed', next: [] },
+  done: { phase: 'done', recovery: 'recover-closed', next: ['recover-closed'] },
+} as const satisfies Record<TransactionLifecycleStateKind, {
+  readonly phase: TransactionLifecyclePhase;
+  readonly recovery: RecoveryStateKind;
+  readonly next: readonly TransactionLifecycleStateKind[];
+}>;
 
 const advanceTransactionLifecycle = (
   current: TransactionLifecycleState,
   next: TransactionLifecycleState,
 ): TransactionLifecycleState => {
-  const allowed = LIFECYCLE_TRANSITIONS[current.kind] as readonly TransactionLifecycleState['kind'][];
+  const allowed = LIFECYCLE_STATES[current.kind].next as readonly TransactionLifecycleStateKind[];
   if (!allowed.includes(next.kind)) {
     throw new Error(`Invalid Floway transaction lifecycle transition: ${current.kind} -> ${next.kind}`);
   }
   return next;
 };
 
-const recoveryStateFor = (state: TransactionLifecycleState): TransactionLifecycleState => {
-  switch (state.kind) {
-  case 'begun':
-  case 'body':
-  case 'precommit-finalize':
-  case 'commit':
-    return { kind: 'recover-active' };
-  default:
-    return { kind: 'recover-closed' };
-  }
-};
-
-const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase => {
-  switch (state.kind) {
-  case 'precommit-finalize':
-  case 'postcommit-finalize':
-    return 'finalize';
-  case 'recover-active':
-  case 'recover-closed':
-    return 'recovery';
-  default:
-    return state.kind;
-  }
-};
+const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase =>
+  LIFECYCLE_STATES[state.kind].phase;
 
 export const createNodeSqliteDatabase = (
   path: string,

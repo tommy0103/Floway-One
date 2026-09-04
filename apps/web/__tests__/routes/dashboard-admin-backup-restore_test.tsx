@@ -10,7 +10,7 @@ vi.mock('../../src/api/client', () => ({
 }));
 
 import { OutcomeToastProvider } from '../../src/components/ui/outcome-toast';
-import DashboardAdminBackupRestore, { consumeFileReadCompletion, importReadFailureState } from '../../src/routes/dashboard-admin-backup-restore';
+import DashboardAdminBackupRestore, { consumeFileReadCompletion, startImportArchiveRead } from '../../src/routes/dashboard-admin-backup-restore';
 import { renderInApp } from '../render';
 
 const backup = (marker: string) => JSON.stringify({
@@ -105,15 +105,24 @@ describe('backup import file races', () => {
     expect(submitted).not.toContain('A');
   });
 
-  it('consumes one completion token and retains the exact read error only in diagnostic state', () => {
+  it('production read wiring consumes one completion token and retains the exact read error only in diagnostic state', () => {
     const reader = new ControlledFileReader();
-    const token = { reader: reader as unknown as FileReader, token: 7 };
+    const token = { file: file('diagnostic.json'), reader: reader as unknown as FileReader, token: 7 };
     const original = new DOMException('FLOWAY_PRIVATE_READER_DIAGNOSTIC', 'NotReadableError');
-    const completed = consumeFileReadCompletion(token, token, () => importReadFailureState('safe message', original));
+    let active = token as typeof token | null;
+    let archive: unknown;
+    startImportArchiveRead(token, (completion, outcome) => {
+      const transition = consumeFileReadCompletion(active, completion, outcome);
+      if (transition === null) return;
+      active = transition.active;
+      archive = transition.archive;
+    }, () => {
+      throw new Error('the read-error path must not parse a result');
+    }, 'safe message');
+    reader.fail(original);
 
-    expect(completed?.archive).toEqual({ kind: 'empty', error: { message: 'safe message', cause: original } });
-    expect(consumeFileReadCompletion(completed!.active, token, () => {
-      throw new Error('a consumed token must not evaluate another outcome');
-    })).toBeNull();
+    expect(archive!).toEqual({ kind: 'empty', error: { message: 'safe message', cause: original } });
+    reader.succeed(backup('A'));
+    expect(archive!).toEqual({ kind: 'empty', error: { message: 'safe message', cause: original } });
   });
 });

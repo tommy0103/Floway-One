@@ -489,10 +489,11 @@ class MemoryUsageRepo implements UsageRepo {
   set(record: UsageRecord): Promise<void> {
     const pricingSelector = canonicalizePricingSelector(record.pricingSelector);
     const k = this.key({ ...record, pricingSelector });
+    const upstream = normalizeUsageUpstream(record.upstream);
     const state: UsageBucketState = {
       keyId: record.keyId,
       model: record.model,
-      upstream: record.upstream ?? null,
+      upstream,
       modelKey: record.modelKey,
       hour: record.hour,
       pricingSelector,
