@@ -16,7 +16,7 @@ vi.mock('../../../src/control-plane/shared/warm-models-cache.ts', async () => ({
 }));
 
 import { BackupArchiveAuthenticationError, createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
-import { createFullBackup, exportData, importData } from '../../../src/control-plane/data-transfer/routes.ts';
+import { createFullBackup, exportData, importData, ImportIdentityError } from '../../../src/control-plane/data-transfer/routes.ts';
 import { exportQuery, fullBackupBody, importBody } from '../../../src/control-plane/schemas.ts';
 import { upstreamRecordToFullJson } from '../../../src/control-plane/upstreams/serialize.ts';
 import { DEFAULT_WEB_SEARCH_CONFIG } from '../../../src/data-plane/tools/web-search/config.ts';
@@ -1686,6 +1686,59 @@ test('import rejects duplicate outer collection identities before mutating any s
   const after = await (await app.request('/export')).json() as { data: unknown };
   assertEquals(after.data, before.data);
   log.mockRestore();
+});
+
+test('import rejects SQLite-NOCASE active username conflicts before mutating full state', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  const existingAlice = { ...USER_BOB, id: 3, username: 'Alice' };
+  await repo.users.save(SEED_ADMIN);
+  await repo.users.save(existingAlice);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+  await repo.webSearchConfig.save(DEFAULT_WEB_SEARCH_CONFIG);
+  const before = (await doExport(app, true)).data;
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  const replace = await doImport(app, 'replace', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'Admin' }],
+  }));
+  const merge = await doImport(app, 'merge', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'ALICE' }],
+  }));
+
+  assertEquals(replace.status, 400);
+  assertEquals(replace.body.error, 'invalid users: duplicate active users username "admin" at indexes 0 and 1');
+  assertEquals(merge.status, 400);
+  assertEquals(merge.body.error, 'invalid users: active users username "alice" for user 2 conflicts with existing user 3');
+  assertEquals(logged.length, 2);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toBeInstanceOf(ImportIdentityError);
+    expect(((reported as ClientSafeBadRequestError).cause as Error).stack).toBeTruthy();
+  }
+  assertEquals((await doExport(app, true)).data, before);
+  log.mockRestore();
+});
+
+test('merge import allows an active username to reuse a deleted destination username', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.users.save(SEED_ADMIN);
+  await repo.users.save({ ...USER_BOB, id: 3, username: 'Alice', deletedAt: '2026-01-02T00:00:00.000Z' });
+
+  const result = await doImport(app, 'merge', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'ALICE' }],
+  }));
+
+  assertEquals(result.status, 200);
+  assertEquals((await repo.users.findByUsername('alice'))?.id, USER_BOB.id);
+  assertEquals((await repo.users.listIncludingDeleted()).find(user => user.id === 3)?.deletedAt, '2026-01-02T00:00:00.000Z');
 });
 
 test('import requires an exact lowercase hexadecimal serverSecret on every api key', async () => {

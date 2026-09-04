@@ -19,6 +19,7 @@ import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
 import { InvalidMetricIdentityError, performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../repo/record-identities.ts';
 import { upstreamStoredSecretsForSafeExport, webSearchStoredSecretsForSafeExport } from '../../repo/stored-secret-fields.ts';
 import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
+import { sqliteNoCaseUsernameIdentity } from '../../repo/user-identities.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
 import { type exportQuery, type fullBackupBody, type importBody } from '../schemas.ts';
 import { reportModelsCacheWarmFailure, warmModelsCache } from '../shared/warm-models-cache.ts';
@@ -164,7 +165,7 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
   };
 };
 
-class ImportIdentityError extends Error {
+export class ImportIdentityError extends Error {
   readonly name = 'ImportIdentityError';
 
   constructor(message: string, options?: ErrorOptions) {
@@ -232,6 +233,28 @@ const validateApiKeyIdentities = (records: readonly ApiKey[], existing: readonly
       mergeConflict: ({ existing, record }) => existing.id === record.id ? null : new ImportIdentityError(`apiKeys server secret for ${record.id} conflicts with existing api key ${existing.id}`),
     },
   ]);
+
+// SQLite's partial unique index covers only active rows. Deleted users retain
+// their serialized username but do not participate in payload or destination
+// conflicts; an active import can likewise reuse a deleted destination name.
+const userUsernameIdentity = (user: User): string => user.deletedAt === null
+  ? JSON.stringify(['active', sqliteNoCaseUsernameIdentity(user.username)])
+  : JSON.stringify(['deleted', user.id]);
+
+const validateUserUsernameIdentities = (
+  records: readonly User[],
+  existingActive: readonly User[],
+  mode: 'merge' | 'replace',
+): ImportIdentityError | null => validateIndexedIdentities(records, existingActive, mode, [{
+  value: userUsernameIdentity,
+  duplicate: ({ record, priorIndex, index }) => new ImportIdentityError(
+    `duplicate active users username ${JSON.stringify(sqliteNoCaseUsernameIdentity(record.username))} at indexes ${priorIndex} and ${index}`,
+  ),
+  mergeConflict: ({ existing, record }) => {
+    if (existing.id === record.id) return null;
+    return new ImportIdentityError(`active users username ${JSON.stringify(sqliteNoCaseUsernameIdentity(record.username))} for user ${record.id} conflicts with existing user ${existing.id}`);
+  },
+}]);
 
 // Every fallback must resolve in the post-import catalog. Merge mode may refer
 // to an existing local proxy; replace mode may only refer to imported proxies
@@ -339,6 +362,13 @@ export const importData = async (c: CtxWithJson<typeof importBody>) => {
   const preservePersonalOwner = mode === 'replace' && isPersonalRuntimeProfile();
 
   const repo = getRepo();
+  const existingActiveUsers = mode === 'merge' ? await repo.users.list() : [];
+  const userIdentityError = validateUserUsernameIdentities(users, existingActiveUsers, mode);
+  if (userIdentityError) throw new ClientSafeBadRequestError(
+    'Floway backup contains conflicting active usernames',
+    `invalid users: ${userIdentityError.message}`,
+    userIdentityError,
+  );
   // Merge mode needs each key's prior dump policy to identify transitions that
   // must disconnect live subscribers after the replacement row is stored.
   const preImportKeys = await repo.apiKeys.listIncludingDeleted();

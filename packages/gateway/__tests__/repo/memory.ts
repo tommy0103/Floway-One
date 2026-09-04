@@ -66,6 +66,7 @@ import type {
 } from '../../src/repo/types.ts';
 import { serializeStoredConfig, serializeStoredState } from '../../src/repo/upstream-json.ts';
 import { usageMetricRows } from '../../src/repo/usage-metrics.ts';
+import { sqliteNoCaseUsernameIdentity } from '../../src/repo/user-identities.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../../src/shared/performance-histogram.ts';
 import { assertWebSearchProviderName, type WebSearchConfig } from '../../src/shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
@@ -82,11 +83,8 @@ const SEED_ADMIN_USER: User = {
   deletedAt: null,
 };
 
-// Mirror the SQL `username TEXT COLLATE NOCASE` collation: usernames match
-// case-insensitively for both lookup and uniqueness. `USERNAME_PATTERN`
-// restricts usernames to ASCII, so a plain `toLowerCase()` fold is exactly
-// SQLite's NOCASE.
-const usernamesMatch = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+const usernamesMatch = (a: string, b: string): boolean =>
+  sqliteNoCaseUsernameIdentity(a) === sqliteNoCaseUsernameIdentity(b);
 
 class MemoryUsersRepo implements UsersRepo {
   private users: User[] = [{ ...SEED_ADMIN_USER }];
