@@ -3,10 +3,11 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from '../i18n/translation';
 import type { Route } from './+types/dashboard-admin-users';
 import { useDashboardOutletContext } from './dashboard';
-import { requireDashboardAdmin } from './guards';
+import { requireDashboardAdmin, requireDashboardPage } from './guards';
 import { api, callApi } from '../api/client';
 import { mapResult, mergeResults } from '../api/partial-results';
 import type { ControlPlaneModel, ControlPlaneUser, UpstreamOption } from '../api/types';
+import { usersPage } from '../components/sidebar/pages';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyStateLine } from '../components/ui/empty-state';
@@ -50,6 +51,7 @@ const unloadedPageData: Pick<LoaderData, 'users' | 'upstreams' | 'models'> = { u
 
 export async function clientLoader(): Promise<LoaderData> {
   await requireDashboardAdmin();
+  await requireDashboardPage(usersPage);
   return await loadPageData(unloadedPageData);
 }
 

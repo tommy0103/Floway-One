@@ -4,6 +4,7 @@ import { getRepo } from '../../repo/index.ts';
 import { SEED_ADMIN_USER_ID } from '../../repo/seed-admin.ts';
 import type { User } from '../../repo/types.ts';
 import { isProductionRequest } from '../../runtime/is-production-request.ts';
+import { isPersonalRuntimeProfile } from '../../runtime/profile-policy.ts';
 import { dummyPasswordHash, verifyPassword } from '../../shared/passwords.ts';
 import type { authLoginBody } from '../schemas.ts';
 import { loadKnownUpstreamIds } from '../shared/upstream-ids.ts';
@@ -15,6 +16,10 @@ const resolveLoginUser = async (c: CtxWithJson<typeof authLoginBody>): Promise<U
   const repo = getRepo();
 
   if (username === '') {
+    // A personal production runtime accepts only the desktop-owned one-time
+    // bootstrap authority. Neither the reusable ADMIN_KEY nor the development
+    // passwordless shortcut can mint an owner session there.
+    if (isPersonalRuntimeProfile() && isProductionRequest(c)) return null;
     const adminKey = getEnvOptional('ADMIN_KEY', '');
     if (adminKey) {
       const utf8 = new TextEncoder();

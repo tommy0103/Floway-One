@@ -1,4 +1,8 @@
 export { app } from './app.ts';
+export {
+  initPersonalDashboardBootstrap,
+  type PersonalDashboardBootstrapConfiguration,
+} from './control-plane/auth/personal-bootstrap.ts';
 export { initRepo } from './repo/index.ts';
 export { FileDumpStore } from './repo/dump-store.ts';
 export {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPerformanceQuery, normalizePerformanceDimensionsForRuntime, parsePerformanceUrlState, performanceLabels, performanceValue, serializePerformanceUrlState, type PerformanceDisplayRecord, type PerformanceOverviewResponse } from '../../../src/components/performance/overview';
+import { buildPerformanceQuery, normalizePerformanceDimensionsForCapabilities, normalizePerformanceDimensionsForRuntime, parsePerformanceUrlState, performanceLabels, performanceValue, serializePerformanceUrlState, type PerformanceDisplayRecord, type PerformanceOverviewResponse } from '../../../src/components/performance/overview';
 import { buildPerformanceChart } from '../../../src/components/performance/plot';
 
 const emptyOverview = (): PerformanceOverviewResponse => ({
@@ -94,6 +94,23 @@ describe('performance overview query', () => {
       },
     });
     expect(normalizePerformanceDimensionsForRuntime(state, true)).toEqual({ changed: false, state });
+  });
+
+  it('removes unavailable user dimensions and their hidden series', () => {
+    const state = parsePerformanceUrlState(new URLSearchParams('g=userId&fusr=2&hide=2'));
+
+    expect(normalizePerformanceDimensionsForCapabilities(state, {
+      currentUserId: '1',
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    })).toMatchObject({
+      changed: true,
+      state: {
+        groupBy: 'model',
+        filters: { userId: [] },
+        hidden: [],
+      },
+    });
   });
 });
 

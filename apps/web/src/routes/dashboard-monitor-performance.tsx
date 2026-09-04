@@ -1,4 +1,3 @@
-import { InfoRegular } from '@fluentui/react-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -7,10 +6,11 @@ import type { Route } from './+types/dashboard-monitor-performance';
 import { requireDashboardUser } from './guards';
 import { revalidateOnPathnameChange } from './revalidation';
 import { api, callApi, type GlobalError } from '../api/client';
+import type { DashboardRuntimeInfo } from '../api/runtime-info';
 import { PerformanceChartSection } from '../components/performance/chart';
 import {
   buildPerformanceQuery,
-  normalizePerformanceDimensionsForRuntime,
+  normalizePerformanceDimensionsForCapabilities,
   parsePerformanceUrlState,
   performanceLabels,
   serializePerformanceUrlState,
@@ -21,16 +21,16 @@ import {
   type PerformancePercentile,
   type PerformanceRange,
   type PerformanceUrlState,
-  type PerformanceView,
 } from '../components/performance/overview';
 import { buildPerformanceChart, performanceBuckets } from '../components/performance/plot';
 import { PerformanceTable } from '../components/performance/table';
+import { ApiKeyScopeTooltip } from '../components/telemetry/api-key-scope-tooltip';
 import { TelemetryDimensionControls, type TelemetryDimension } from '../components/telemetry/dimension-controls';
-import { changeTelemetryFilter, changeTelemetryGroupBy, scopeTelemetryIdentity } from '../components/telemetry/filter-state';
+import { changeTelemetryFilter, changeTelemetryGroupBy } from '../components/telemetry/filter-state';
 import { ChoiceGroup } from '../components/ui/choice-group';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyStateLine } from '../components/ui/empty-state';
-import { CONTROL_ROW_CLASS, PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { Panel } from '../components/ui/panel';
 import { ResourceListActions } from '../components/ui/resource-list';
@@ -43,63 +43,83 @@ import { formatCount, formatTokenRateFromTpot } from '../lib/format-number';
 import { useEntryRewrite } from '../lib/page-navigation';
 import { useLocale } from '../lib/use-locale';
 
-const { Button, Tab, TabList, Text, Tooltip } = fluentComponents;
+const { Tab, TabList, Text } = fluentComponents;
 
 interface UpstreamMetadata { id: string; name: string; hue: number }
+
+interface RuntimeFacts {
+  personalProfile: boolean;
+  regionAvailable: boolean;
+  userDimensionAvailable: boolean;
+}
+
+const runtimeFactsFrom = (runtime: DashboardRuntimeInfo, isAdmin: boolean): RuntimeFacts => ({
+  personalProfile: runtime.profile.mode === 'personal',
+  regionAvailable: runtime.kind === 'cloudflare',
+  userDimensionAvailable: isAdmin && runtime.profile.capabilities.userManagement,
+});
 
 interface LoaderData {
   currentUserId: string;
   error: GlobalError | null;
+  isAdmin: boolean;
   loadedAt: number;
   // `null` is a failed fetch, not a quiet gateway: an empty overview would
   // render zeroes the page does not know to be true.
   overview: PerformanceOverviewResponse | null;
+  runtimeFacts: RuntimeFacts | null;
   state: PerformanceUrlState;
   // Null on the same terms: upstream metadata owns both the visible name and
   // the series hue, so a partial response cannot faithfully render the group.
   upstreams: UpstreamMetadata[] | null;
-  regionAvailable: boolean | null;
-  view: PerformanceView;
 }
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
   const user = await requireDashboardUser();
+  const currentUserId = String(user.id);
   const state = parsePerformanceUrlState(new URL(request.url).searchParams);
-  const view: PerformanceView = user.isAdmin ? 'all-by-user' : 'self-by-key';
-  const scoped = scopeTelemetryIdentity(state.groupBy, state.filters, {
-    currentUserId: String(user.id),
-    fallbackGroup: 'model',
-    userDimensionAvailable: view === 'all-by-user',
-  });
+  const runtime = await callApi(() => api.api['runtime-info'].$get());
   const loadedAt = Date.now();
-  const requestedState = { ...state, ...scoped };
-  const query = buildPerformanceQuery(requestedState.range, requestedState.groupBy, requestedState.filters, loadedAt);
+  if (runtime.error) {
+    return {
+      currentUserId,
+      error: runtime.error,
+      isAdmin: user.isAdmin,
+      loadedAt,
+      overview: null,
+      runtimeFacts: null,
+      state,
+      upstreams: null,
+    };
+  }
+  const runtimeFacts = runtimeFactsFrom(runtime.data, user.isAdmin);
+  const normalization = normalizePerformanceDimensionsForCapabilities(state, {
+    currentUserId,
+    regionAvailable: runtimeFacts.regionAvailable,
+    userDimensionAvailable: runtimeFacts.userDimensionAvailable,
+  });
+  const query = buildPerformanceQuery(
+    normalization.state.range,
+    normalization.state.groupBy,
+    normalization.state.filters,
+    loadedAt,
+  );
   // The page opens for every signed-in account, so the names come from the
   // non-admin upstream picker; /api/upstreams answers 403 to an operator and
   // would leave the whole page unavailable to them.
-  const [initialOverview, upstreams, runtime] = await Promise.all([
+  const [overview, upstreams] = await Promise.all([
     callApi(() => api.api.performance.overview.$get({ query })),
     callApi(() => api.api['upstream-options'].$get()),
-    callApi(() => api.api['runtime-info'].$get()),
   ]);
-  const regionAvailable = runtime.error ? null : runtime.data.kind === 'cloudflare';
-  const normalization = regionAvailable === null
-    ? { changed: false, state: requestedState }
-    : normalizePerformanceDimensionsForRuntime(requestedState, regionAvailable);
-  const overview = !normalization.changed
-    ? initialOverview
-    : await callApi(() => api.api.performance.overview.$get({
-        query: buildPerformanceQuery(normalization.state.range, normalization.state.groupBy, normalization.state.filters, loadedAt),
-      }));
   return {
-    currentUserId: String(user.id),
-    error: overview.error ?? upstreams.error ?? runtime.error ?? null,
+    currentUserId,
+    error: overview.error ?? upstreams.error ?? null,
+    isAdmin: user.isAdmin,
     loadedAt,
     overview: overview.data ?? null,
-    regionAvailable,
+    runtimeFacts,
     state: normalization.state,
     upstreams: upstreams.data?.map(({ id, name, hue }) => ({ id, name, hue })) ?? null,
-    view,
   };
 }
 
@@ -110,11 +130,10 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [, setSearchParams] = useSearchParams();
   const rewrite = useEntryRewrite();
   const initialState = loaderData.state;
-  const view: PerformanceView = loaderData.view;
-  const [regionAvailable, setRegionAvailable] = useState(loaderData.regionAvailable);
+  const [runtimeFacts, setRuntimeFacts] = useState(loaderData.runtimeFacts);
   const [query, setQuery] = useState(() => ({
     filters: initialState.filters,
-    groupBy: initialState.groupBy === 'userId' && view !== 'all-by-user' ? 'model' as const : initialState.groupBy,
+    groupBy: initialState.groupBy,
     range: initialState.range,
   }));
   const [metric, setMetric] = useState<PerformanceMetric>(initialState.metric);
@@ -122,21 +141,21 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
   const [breakdownGroup, setBreakdownGroup] = useState<PerformanceGroupBy>('model');
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set(initialState.hidden));
   const [overview, setOverview] = useState<PerformanceOverviewResponse | null>(loaderData.overview);
-  const [upstreams] = useState(loaderData.upstreams);
+  const [upstreams, setUpstreams] = useState(loaderData.upstreams);
   const [error, setError] = useState<GlobalError | null>(loaderData.error);
-  const pendingRegionAvailableRef = useRef<boolean | null>(null);
+  const pendingRuntimeFactsRef = useRef<RuntimeFacts | null>(null);
   const locale = useLocale();
   const identityContext = {
     currentUserId: loaderData.currentUserId,
     fallbackGroup: 'model' as const,
-    userDimensionAvailable: view === 'all-by-user',
+    userDimensionAvailable: runtimeFacts?.userDimensionAvailable ?? false,
   };
 
   // A background poll must not clear a failure the operator has not read.
   const reload = useCallback(async (signal: AbortSignal, { background, requestedAt }: { background: boolean; requestedAt: number }) => {
     if (!background) setError(null);
     const search = buildPerformanceQuery(query.range, query.groupBy, query.filters, requestedAt);
-    if (regionAvailable !== null) {
+    if (runtimeFacts !== null) {
       const result = await callApi(() => api.api.performance.overview.$get(
         { query: search },
         { init: { signal } },
@@ -150,32 +169,32 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
       return true;
     }
 
-    const discovery = pendingRegionAvailableRef.current === null
-      ? await Promise.all([
-          callApi(() => api.api.performance.overview.$get(
-            { query: search },
-            { init: { signal } },
-          )),
-          callApi(() => api.api['runtime-info'].$get({}, { init: { signal } })),
-        ]).then(([overviewResult, runtimeResult]) => ({ overviewResult, runtimeResult }))
-      : null;
-    if (signal.aborted) return false;
-    let nextRegionAvailable: boolean;
-    if (pendingRegionAvailableRef.current === null) {
-      if (discovery === null) throw new Error('Runtime capability discovery was not started');
-      if (discovery.runtimeResult.error) {
-        setError(discovery.overviewResult.error ?? discovery.runtimeResult.error);
+    let nextRuntimeFacts: NonNullable<typeof pendingRuntimeFactsRef.current>;
+    if (pendingRuntimeFactsRef.current === null) {
+      // Capability discovery is deliberately awaited before telemetry. Until
+      // the backend answers, stale user URL state has no safe request scope.
+      const runtimeResult = await callApi(() => api.api['runtime-info'].$get(
+        {},
+        { init: { signal } },
+      ));
+      if (signal.aborted) return false;
+      if (runtimeResult.error) {
+        setError(runtimeResult.error);
         return false;
       }
-      nextRegionAvailable = discovery.runtimeResult.data.kind === 'cloudflare';
-      pendingRegionAvailableRef.current = nextRegionAvailable;
+      nextRuntimeFacts = runtimeFactsFrom(runtimeResult.data, loaderData.isAdmin);
+      pendingRuntimeFactsRef.current = nextRuntimeFacts;
     } else {
-      nextRegionAvailable = pendingRegionAvailableRef.current;
+      nextRuntimeFacts = pendingRuntimeFactsRef.current;
     }
-    const normalization = normalizePerformanceDimensionsForRuntime({
+    const normalization = normalizePerformanceDimensionsForCapabilities({
       ...query,
       hidden: [] as string[],
-    }, nextRegionAvailable);
+    }, {
+      currentUserId: loaderData.currentUserId,
+      regionAvailable: nextRuntimeFacts.regionAvailable,
+      userDimensionAvailable: nextRuntimeFacts.userDimensionAvailable,
+    });
     const committedQuery = normalization.changed
       ? {
           filters: normalization.state.filters,
@@ -183,30 +202,24 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
           range: query.range,
         }
       : query;
-    let result;
-    if (normalization.changed) {
-      result = await callApi(() => api.api.performance.overview.$get(
+    const [result, upstreamsResult] = await Promise.all([
+      callApi(() => api.api.performance.overview.$get(
         { query: buildPerformanceQuery(committedQuery.range, committedQuery.groupBy, committedQuery.filters, requestedAt) },
         { init: { signal } },
-      ));
-    } else {
-      if (discovery === null) throw new Error('Overview was not loaded with runtime capability discovery');
-      result = discovery.overviewResult;
-    }
+      )),
+      callApi(() => api.api['upstream-options'].$get({}, { init: { signal } })),
+    ]);
     if (signal.aborted) return false;
-    if (result.error) {
-      if (!normalization.changed) {
-        pendingRegionAvailableRef.current = null;
-        setRegionAvailable(nextRegionAvailable);
-      }
-      setError(result.error);
+    if (result.error || upstreamsResult.error) {
+      setError(result.error ?? upstreamsResult.error ?? null);
       return false;
     }
-    pendingRegionAvailableRef.current = null;
-    setRegionAvailable(nextRegionAvailable);
+    pendingRuntimeFactsRef.current = null;
+    setRuntimeFacts(nextRuntimeFacts);
     setOverview(result.data);
+    setUpstreams(upstreamsResult.data.map(({ id, name, hue }) => ({ id, name, hue })));
     return normalization.changed ? committedQuery : true;
-  }, [query, regionAvailable]);
+  }, [loaderData.currentUserId, loaderData.isAdmin, query, runtimeFacts]);
 
   const onQueryCommit = useCallback((previous: typeof query, next: typeof query) => {
     if (previous.groupBy !== next.groupBy) setHiddenSeries(new Set());
@@ -275,7 +288,8 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}
     {(() => {
-      if (overview === null || chart === null || labels === null || regionAvailable === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
+      if (overview === null || chart === null || labels === null || runtimeFacts === null) return <Panel><EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine></Panel>;
+      const { personalProfile, regionAvailable, userDimensionAvailable } = runtimeFacts;
       const dimensions: Array<TelemetryDimension<PerformanceGroupBy>> = [
         { key: 'model', groupLabel: t('dashboard.performance.groupBy.model'), filterLabel: t('dashboard.performance.filters.model'), allLabel: t('dashboard.performance.filters.all.model'), options: overview.dimensionValues.models.map(value => ({ value, label: value })) },
         { key: 'upstream', groupLabel: t('dashboard.performance.groupBy.upstream'), filterLabel: t('dashboard.performance.filters.upstream'), allLabel: t('dashboard.performance.filters.all.upstream'), options: overview.dimensionValues.upstreams.map(value => ({ value, label: labels.upstreams.get(value) ?? value })) },
@@ -296,7 +310,7 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
       ];
       const availableDimensions = dimensions.filter(dimension => (
         (dimension.key !== 'runtimeLocation' || regionAvailable)
-        && (dimension.key !== 'userId' || view === 'all-by-user')
+        && (dimension.key !== 'userId' || userDimensionAvailable)
       ));
       const breakdowns = availableDimensions.map(({ key }) => ({ key, rows: overview.axes[key] }));
       const activeBreakdown = breakdowns.find(item => item.key === breakdownGroup) ?? breakdowns[0];
@@ -308,14 +322,8 @@ export default function DashboardMonitorPerformance({ loaderData }: Route.Compon
             dimensions={availableDimensions}
             filters={loadedQuery.filters}
             groupBy={loadedQuery.groupBy}
-            groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t('dashboard.performance.apiKeyScopeInfo')} relationship="description">
-              <Button
-                appearance="subtle"
-                aria-label={t('dashboard.performance.apiKeyScopeLabel')}
-                className={CONTROL_ROW_CLASS}
-                icon={<InfoRegular />}
-              />
-            </Tooltip>}
+            groupByAdornment={loadedQuery.groupBy === 'keyId'
+              && <ApiKeyScopeTooltip personalProfile={personalProfile} />}
             groupByLabel={t('dashboard.performance.groupBy.label')}
             onFilterChange={setFilter}
             onGroupByChange={changeGroupBy}

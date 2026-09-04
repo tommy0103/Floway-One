@@ -15,11 +15,14 @@ import {
 } from '@fluentui/react-icons';
 import type { FluentIcon } from '@fluentui/react-icons';
 
+import type { DashboardRuntimeCapabilities } from '../../api/runtime-info';
+
 export interface DashboardPage {
   to: string;
   labelKey: string;
   icon: FluentIcon;
   adminOnly?: boolean;
+  requiredCapability?: keyof DashboardRuntimeCapabilities;
 }
 
 export interface NavGroup {
@@ -27,6 +30,18 @@ export interface NavGroup {
   adminOnly?: boolean;
   items: DashboardPage[];
 }
+
+export const dashboardPageAvailable = (
+  page: DashboardPage,
+  capabilities: DashboardRuntimeCapabilities,
+): boolean => page.requiredCapability === undefined || capabilities[page.requiredCapability];
+
+export const usersPage: DashboardPage = {
+  to: '/dashboard/admin/users',
+  labelKey: 'dashboard.nav.users',
+  icon: People20Color,
+  requiredCapability: 'userManagement',
+};
 
 // The sidebar carries Fluent's multi-colour glyphs, where WinUI's
 // NavigationView draws monochrome ones and moves the icon and the label to the
@@ -71,7 +86,7 @@ export const navGroups: NavGroup[] = [
     labelKey: 'dashboard.groups.admin',
     adminOnly: true,
     items: [
-      { to: '/dashboard/admin/users', labelKey: 'dashboard.nav.users', icon: People20Color },
+      usersPage,
       { to: '/dashboard/admin/backup-restore', labelKey: 'dashboard.nav.backupRestore', icon: Database20Color },
     ],
   },

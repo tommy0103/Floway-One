@@ -86,6 +86,10 @@ type UnionToIntersection<U> = (
 type ValuesArgument<K> = UnionToIntersection<K extends unknown ? ValuesFor<K> : never>;
 type RequiresValues<K> = keyof ValuesArgument<K> extends never ? false : true;
 
+export type TranslationKeyWithoutValues = {
+  [K in TranslationKey]: RequiresValues<K> extends false ? K : never;
+}[TranslationKey];
+
 // i18next also accepts a plain string second argument as the fallback text for
 // a key with no string behind it. It is only offered where the key needs no
 // values, since the two cannot be passed together.

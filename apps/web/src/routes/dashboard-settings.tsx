@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { useTranslation } from '../i18n/translation';
 import type { Route } from './+types/dashboard-settings';
+import { useDashboardOutletContext } from './dashboard';
 import { requireDashboardSession } from './guards';
 import { changeOwnPassword } from '../api/auth';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
@@ -72,6 +73,7 @@ export async function clientAction({
 
 export default function DashboardSettings() {
   const { t } = useTranslation();
+  const { capabilities } = useDashboardOutletContext();
   const fetcher = useFetcher<SettingsActionData>();
   const toasts = useOutcomeToasts();
   const [dismissed, setDismissed] = useState<SettingsActionData | null>(null);
@@ -113,7 +115,12 @@ export default function DashboardSettings() {
 
   return (
     <section className="dashboard-page max-w-[960px]">
-      <DashboardPageHeader description={t('dashboard.settings.description')} title={t('dashboard.nav.settings')} />
+      <DashboardPageHeader
+        description={t(capabilities.userManagement
+          ? 'dashboard.settings.description'
+          : 'dashboard.settings.personalDescription')}
+        title={t('dashboard.nav.settings')}
+      />
 
       <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
         <SectionHeader level={2} title={t('dashboard.settings.changePassword')} />
