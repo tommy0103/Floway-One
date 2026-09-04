@@ -63,7 +63,7 @@ export const buildUsageOverviewQuery = (
 });
 
 export const loadUsagePageData = async (
-  isAdmin: boolean,
+  userDimensionAvailable: boolean,
   range: UsageRange,
   groupBy: UsageGroupBy,
   filters: UsageFilters,
@@ -72,7 +72,7 @@ export const loadUsagePageData = async (
 ) => {
   const overviewQuery = buildUsageOverviewQuery(range, groupBy, filters, loadedAt);
   const { start, end } = dashboardRangeQuery(range, loadedAt);
-  const searchView: SearchUsageView = isAdmin ? 'all-by-user' : 'self-by-key';
+  const searchView: SearchUsageView = userDimensionAvailable ? 'all-by-user' : 'self-by-key';
   const searchQuery = searchView === 'all-by-user'
     ? { start, end, include_user_metadata: '1', view: searchView }
     : { start, end, include_key_metadata: '1', view: searchView };

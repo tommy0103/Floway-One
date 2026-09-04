@@ -1,4 +1,3 @@
-import { InfoRegular } from '@fluentui/react-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -7,7 +6,9 @@ import type { Route } from './+types/dashboard-monitor-usage';
 import { requireDashboardUser } from './guards';
 import { revalidateOnPathnameChange } from './revalidation';
 import type { GlobalError } from '../api/client';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { SEARCH_PROVIDER_LABEL_KEYS } from '../components/search/provider';
+import { ApiKeyScopeTooltip } from '../components/telemetry/api-key-scope-tooltip';
 import {
   TelemetryFilterFields,
   TelemetryGroupByField,
@@ -17,7 +18,7 @@ import { changeTelemetryFilter, changeTelemetryGroupBy, scopeTelemetryIdentity }
 import { ChoiceGroup } from '../components/ui/choice-group';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyStateLine } from '../components/ui/empty-state';
-import { CONTROL_ROW_CLASS, PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { Panel } from '../components/ui/panel';
 import { ResourceListActions } from '../components/ui/resource-list';
@@ -30,19 +31,17 @@ import { buildSearchChart, buildTokenChart, dashboardBuckets, summarizeUsage } f
 import { SummaryMetrics } from '../components/usage/summary-metrics';
 import type { UsageGroupBy, UsageMetric, UsageRange } from '../components/usage/types';
 import { parseUsageUrlState, serializeUsageUrlState, type UsageUrlState } from '../components/usage/url-state';
-import { fluentComponents } from '../fluent';
 import { formatCount } from '../lib/format-number';
 import { useEntryRewrite } from '../lib/page-navigation';
 import { useLocale } from '../lib/use-locale';
 import { tokenUsageUnattributedUserId, usageUpstreamDimensionValue, usageUpstreamFromDimensionValue } from '@floway-dev/protocols/common';
 
-const { Button, Tooltip } = fluentComponents;
-
 type LoaderData = Awaited<ReturnType<typeof loadUsagePageData>> & {
   currentUserId: string;
-  isAdmin: boolean;
   loadedAt: number;
+  personalProfile: boolean;
   state: UsageUrlState;
+  userDimensionAvailable: boolean;
 };
 
 const requiredLabel = (labels: ReadonlyMap<string, string>, value: string, dimension: string) => {
@@ -53,19 +52,23 @@ const requiredLabel = (labels: ReadonlyMap<string, string>, value: string, dimen
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs): Promise<LoaderData> {
   const user = await requireDashboardUser();
+  const runtime = await loadRuntimeInfo();
+  const personalProfile = runtime.profile.mode === 'personal';
+  const userDimensionAvailable = user.isAdmin && runtime.profile.capabilities.userManagement;
   const parsed = parseUsageUrlState(new URL(request.url).searchParams);
   const scoped = scopeTelemetryIdentity(parsed.groupBy, parsed.filters, {
     currentUserId: String(user.id),
     fallbackGroup: 'model',
-    userDimensionAvailable: user.isAdmin,
+    userDimensionAvailable,
   });
   const loadedAt = Date.now();
   return {
-    ...await loadUsagePageData(user.isAdmin, parsed.range, scoped.groupBy, scoped.filters, loadedAt),
+    ...await loadUsagePageData(userDimensionAvailable, parsed.range, scoped.groupBy, scoped.filters, loadedAt),
     currentUserId: String(user.id),
-    isAdmin: user.isAdmin,
     loadedAt,
+    personalProfile,
     state: { ...parsed, ...scoped },
+    userDimensionAvailable,
   };
 }
 
@@ -92,12 +95,12 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   const identityContext = {
     currentUserId: loaderData.currentUserId,
     fallbackGroup: 'model' as const,
-    userDimensionAvailable: loaderData.isAdmin,
+    userDimensionAvailable: loaderData.userDimensionAvailable,
   };
 
   const reload = useCallback(async (signal: AbortSignal, { background, requestedAt }: { background: boolean; requestedAt: number }) => {
     if (!background) setError(null);
-    const next = await loadUsagePageData(loaderData.isAdmin, query.range, query.groupBy, query.filters, requestedAt, signal);
+    const next = await loadUsagePageData(loaderData.userDimensionAvailable, query.range, query.groupBy, query.filters, requestedAt, signal);
     if (signal.aborted) return false;
     if (next.usage === null) {
       setError(next.error);
@@ -108,7 +111,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
     setUpstreams(next.upstreams);
     setError(next.error);
     return true;
-  }, [loaderData.isAdmin, query]);
+  }, [loaderData.userDimensionAvailable, query]);
 
   const onQueryCommit = useCallback((previous: typeof query, next: typeof query) => {
     if (previous.groupBy !== next.groupBy) setHiddenSeries(new Set());
@@ -161,7 +164,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
       { key: 'keyId', groupLabel: t('dashboard.usage.groupBy.keyId'), filterLabel: t('dashboard.usage.filters.keyId'), allLabel: t('dashboard.usage.filters.all.keyId'), options: usage.dimensionValues.keyIds.map(value => ({ value, label: requiredLabel(keys, value, 'API key') })) },
     ];
   }, [loadedQuery.filters.userId, loaderData.currentUserId, t, upstreams, usage]);
-  const availableDimensions = dimensions?.filter(dimension => dimension.key !== 'userId' || loaderData.isAdmin) ?? null;
+  const availableDimensions = dimensions?.filter(dimension => dimension.key !== 'userId' || loaderData.userDimensionAvailable) ?? null;
   const selectedDimension = availableDimensions === null ? null : (() => {
     const dimension = availableDimensions.find(candidate => candidate.key === loadedQuery.groupBy);
     if (dimension === undefined) throw new RangeError(`Unknown Usage grouping dimension: ${loadedQuery.groupBy}`);
@@ -217,7 +220,9 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   return <section className="dashboard-page">
     <DashboardPageHeader
       actions={<ResourceListActions appearance="subtle" onRefresh={() => void refresh()} refreshLabel={t('dashboard.usage.actions.refresh')} refreshing={refreshing} />}
-      description={t('dashboard.pages.usage')}
+      description={t(loaderData.personalProfile
+        ? 'dashboard.pages.personalUsage'
+        : 'dashboard.pages.usage')}
       title={t('dashboard.nav.usage')}
     />
     {error && <OutcomeMessageBar onDismiss={() => setError(null)}>{error.message}</OutcomeMessageBar>}
@@ -228,14 +233,8 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
           disabled={refreshing}
           dimensions={availableDimensions}
           groupBy={loadedQuery.groupBy}
-          groupByAdornment={loadedQuery.groupBy === 'keyId' && <Tooltip content={t('dashboard.usage.apiKeyScopeInfo')} relationship="description">
-            <Button
-              appearance="subtle"
-              aria-label={t('dashboard.usage.apiKeyScopeLabel')}
-              className={CONTROL_ROW_CLASS}
-              icon={<InfoRegular />}
-            />
-          </Tooltip>}
+          groupByAdornment={loadedQuery.groupBy === 'keyId'
+            && <ApiKeyScopeTooltip personalProfile={loaderData.personalProfile} />}
           groupByLabel={t('dashboard.usage.groupBy.label')}
           onGroupByChange={changeGroupBy}
         />}

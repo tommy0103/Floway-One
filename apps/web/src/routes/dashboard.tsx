@@ -12,6 +12,7 @@ import { useTranslation } from '../i18n/translation';
 import type { Route } from './+types/dashboard';
 import { requireDashboardSession } from './guards';
 import type { AuthUser } from '../api/auth';
+import { loadRuntimeInfo, type DashboardRuntimeCapabilities } from '../api/runtime-info';
 import { FlowayLogo } from '../components/logo';
 import { usePageFrames } from '../components/page-frames';
 import { Sidebar } from '../components/sidebar/nav';
@@ -27,13 +28,17 @@ import { PAGE_ENTER_EASING, PAGE_ENTER_MS, PAGE_ENTER_OFFSET_PX } from '../winui
 const { Button, DrawerBody, OverlayDrawer } = fluentComponents;
 
 export interface DashboardOutletContext {
+  capabilities: DashboardRuntimeCapabilities;
   user: AuthUser;
 }
 
 export async function clientLoader() {
   requireDashboardSession();
   const user = await useAuthStore.getState().initialize();
-  if (user) return null;
+  if (user) {
+    const runtime = await loadRuntimeInfo();
+    return { capabilities: runtime.profile.capabilities };
+  }
   const error = useAuthStore.getState().error;
   if (error) throw new Error(error.message, { cause: error });
   throw redirect('/');
@@ -41,13 +46,13 @@ export async function clientLoader() {
 
 // The signed-in check is its own component so everything below takes a user
 // rather than a user-or-null: a hook cannot run behind a condition.
-export default function Dashboard({}: Route.ComponentProps) {
+export default function Dashboard({ loaderData }: Route.ComponentProps) {
   const user = useAuthStore(state => state.session?.user ?? null);
   if (!user) return <Navigate replace to="/" />;
-  return <DashboardShell user={user} />;
+  return <DashboardShell capabilities={loaderData.capabilities} user={user} />;
 }
 
-function DashboardShell({ user }: { user: AuthUser }) {
+function DashboardShell({ capabilities, user }: { capabilities: DashboardRuntimeCapabilities; user: AuthUser }) {
   const { t } = useTranslation();
   const [navigationOpen, setNavigationOpen] = useState(false);
   // The entrance is started on the element, not declared in the sheet;
@@ -76,7 +81,7 @@ function DashboardShell({ user }: { user: AuthUser }) {
   const workspace = useMatches().some(match => isDashboardWorkspaceHandle(match.handle));
   // `useOutlet` keys its element on the context object, so a new context every
   // render remounts the held page.
-  const outletContext = useMemo(() => ({ user } satisfies DashboardOutletContext), [user]);
+  const outletContext = useMemo(() => ({ capabilities, user } satisfies DashboardOutletContext), [capabilities, user]);
   const outlet = useOutlet(outletContext);
   // The scroller belongs to the page, not the shell, so a held page keeps its
   // own scroll position while it leaves. Its content box is the one box in this
@@ -101,7 +106,7 @@ function DashboardShell({ user }: { user: AuthUser }) {
       </a>
       <div className="grid grid-cols-[clamp(240px,18vw,290px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] h-[100dvh] min-h-0 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[58px_minmax(0,1fr)]">
         <div className="min-h-0 max-[900px]:hidden">
-          <Sidebar user={user} />
+          <Sidebar capabilities={capabilities} user={user} />
         </div>
         <header className="hidden max-[900px]:flex items-center gap-3 border-b border-b-solid border-fui-divider px-4">
           <Button
@@ -134,7 +139,7 @@ function DashboardShell({ user }: { user: AuthUser }) {
         position="start"
       >
         <DrawerBody className="!p-0">
-          <Sidebar onNavigate={() => setNavigationOpen(false)} user={user} />
+          <Sidebar capabilities={capabilities} onNavigate={() => setNavigationOpen(false)} user={user} />
         </DrawerBody>
       </OverlayDrawer>
     </OutcomeToastProvider>

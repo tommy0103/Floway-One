@@ -5,11 +5,12 @@ import type { MouseEventHandler, ReactNode } from 'react';
 import { useLinkClickHandler, useLocation, useNavigation } from 'react-router';
 
 import type { AuthUser } from '../../api/auth';
+import type { DashboardRuntimeCapabilities } from '../../api/runtime-info';
 import { fluentComponents } from '../../fluent';
 import { pageNavigation } from '../../lib/page-navigation';
 import { FlowayLogo } from '../logo';
 import { NavSelectionIndicator } from './nav-selection-indicator';
-import { accountPage, dashboardPages, navGroups } from './pages';
+import { accountPage, dashboardPageAvailable, dashboardPages, navGroups } from './pages';
 import { useTranslation } from '../../i18n/translation';
 import { useAuthStore } from '../../stores/auth-store';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -87,7 +88,11 @@ function SidebarLink({ children, icon, onNavigate, pending, to }: {
 
 const AccountIcon = accountPage.icon;
 
-export function Sidebar({ onNavigate, user }: { onNavigate?: () => void; user: AuthUser }) {
+export function Sidebar({ capabilities, onNavigate, user }: {
+  capabilities: DashboardRuntimeCapabilities;
+  onNavigate?: () => void;
+  user: AuthUser;
+}) {
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const navigation = useNavigation();
@@ -137,7 +142,9 @@ export function Sidebar({ onNavigate, user }: { onNavigate?: () => void; user: A
             <NavSelectionIndicator containerRef={bodyRef} inset={NAV_INDICATOR_INSET} otherListIs="below" selectedValue={selectedValue} />
             {navGroups.map((group, groupIndex) => {
               if (group.adminOnly && !user.isAdmin) return null;
-              const items = group.items.filter(item => !item.adminOnly || user.isAdmin);
+              const items = group.items.filter(item =>
+                (!item.adminOnly || user.isAdmin)
+                && dashboardPageAvailable(item, capabilities));
               if (items.length === 0) return null;
               return <div key={group.labelKey ?? groupIndex}>
                 {group.labelKey && <NavSectionHeader>{t(group.labelKey)}</NavSectionHeader>}
@@ -172,7 +179,7 @@ export function Sidebar({ onNavigate, user }: { onNavigate?: () => void; user: A
             onNavigate={onNavigate}
             pending={pendingValue === accountPage.to}
             to={accountPage.to}
-          >{user.username}</SidebarLink>
+          >{capabilities.userManagement ? user.username : t('dashboard.nav.localOwner')}</SidebarLink>
           <NavItem className={styles.item} icon={<ShareIos20Color className={styles.signOutIcon} idPrefix={iconIdPrefix} />} value="logout">{t('dashboard.logout.label')}</NavItem>
         </div>
       </NavDrawerFooter>
