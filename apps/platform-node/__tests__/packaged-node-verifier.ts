@@ -34,6 +34,7 @@ const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
 const ADMIN_KEY = 'packaged-layout-test';
+const newBootstrapToken = (): string => randomBytes(32).toString('hex');
 const PERSONAL_SECRET = `packaged-personal-secret-${randomUUID()}`;
 const REQUIRE_CREDENTIAL_STORE = process.env.FLOWAY_REQUIRE_CREDENTIAL_STORE === '1';
 const START_LINUX_SECRET_SERVICE = process.env.FLOWAY_START_TEST_SECRET_SERVICE === '1';
@@ -156,18 +157,20 @@ const startRuntime = async (
   extraEnv: NodeJS.ProcessEnv = {},
   personalPaths?: PersonalRuntimePaths,
   entryPath?: string,
-): Promise<{ boundHost: string; child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
+): Promise<{ bootstrapToken: string | null; boundHost: string; child: ChildProcessByStdio<null, Readable, Readable>; origin: string; output: () => string }> => {
   const command = profile === 'personal'
     ? [...serverCommand.slice(1, -1), packagedPersonalEntry, '--profile=personal']
     : entryPath === undefined
       ? serverCommand.slice(1)
       : [...serverCommand.slice(1, -1), entryPath, '--profile=server'];
   if (profile === 'personal' && personalPaths === undefined) fail('personal packaged runtime requires explicit verification paths');
+  const bootstrapToken = profile === 'personal' ? newBootstrapToken() : null;
   const child = spawn(serverCommand[0]!, command, {
     cwd: packageRoot,
     env: {
       ...process.env,
       ADMIN_KEY,
+      FLOWAY_BOOTSTRAP_TOKEN: bootstrapToken ?? undefined,
       FLOWAY_DB_PATH: databasePath,
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${profile}-files`),
       FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
@@ -211,6 +214,7 @@ const startRuntime = async (
     fail(`personal runtime bound ${ready.host} instead of 127.0.0.1`);
   }
   return {
+    bootstrapToken,
     boundHost: ready.host,
     child,
     origin: `http://127.0.0.1:${ready.port}`,
@@ -252,8 +256,8 @@ const assertServerSurface = async (origin: string): Promise<void> => {
   }
 };
 
-const persistPersonalSecret = async (origin: string): Promise<void> => {
-  const sessionToken = await authenticate(origin);
+const persistPersonalSecret = async (origin: string, bootstrapToken: string): Promise<void> => {
+  const sessionToken = await authenticate(origin, bootstrapToken);
 
   const response = await fetch(`${origin}/api/search-config`, {
     method: 'PUT',
@@ -363,6 +367,7 @@ const assertPersonalStartupFailure = async (
     env: {
       ...process.env,
       ADMIN_KEY,
+      FLOWAY_BOOTSTRAP_TOKEN: newBootstrapToken(),
       FLOWAY_DB_PATH: resolve(runtimeRoot, `${name}-ignored-floway.db`),
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${name}-files`),
       FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
@@ -558,20 +563,45 @@ const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> 
 
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
 
-const authenticate = async (origin: string): Promise<string> => {
-  const response = await fetch(`${origin}/auth/login`, {
+const authenticate = async (origin: string, bootstrapToken: string): Promise<string> => {
+  const foreign = await fetch(`${origin}/auth/bootstrap`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'https://foreign.example' },
+    body: JSON.stringify({ token: bootstrapToken }),
+  });
+  if (foreign.status !== 403) fail(`foreign personal Dashboard bootstrap returned ${foreign.status}`);
+
+  const response = await fetch(`${origin}/auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin },
+    body: JSON.stringify({ token: bootstrapToken }),
+  });
+  if (!response.ok) fail(`personal Dashboard bootstrap returned ${response.status}`);
+  if (response.headers.get('access-control-allow-origin') !== origin) {
+    fail('personal Dashboard bootstrap did not bind CORS to its active local origin');
+  }
+  const body = await response.json() as { token?: unknown };
+  const sessionToken = requireString(body.token, 'personal Dashboard bootstrap returned no session token');
+
+  const replay = await fetch(`${origin}/auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin },
+    body: JSON.stringify({ token: bootstrapToken }),
+  });
+  if (replay.status !== 401) fail(`replayed personal Dashboard bootstrap returned ${replay.status}`);
+
+  const reusableAdmin = await fetch(`${origin}/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin },
     body: JSON.stringify({ username: '', password: ADMIN_KEY }),
   });
-  if (!response.ok) fail(`personal admin login returned ${response.status}`);
-  const body = await response.json() as { token?: unknown };
-  return requireString(body.token, 'personal admin login returned no session token');
+  if (reusableAdmin.status !== 401) fail(`personal reusable administrator login returned ${reusableAdmin.status}`);
+  return sessionToken;
 };
 
-const assertPersistedPersonalSecret = async (origin: string): Promise<void> => {
+const assertPersistedPersonalSecret = async (origin: string, bootstrapToken: string): Promise<void> => {
   const response = await fetch(`${origin}/api/search-config`, {
-    headers: { 'x-floway-session': await authenticate(origin) },
+    headers: { 'x-floway-session': await authenticate(origin, bootstrapToken) },
   });
   if (!response.ok) fail(`personal search credential read returned ${response.status}`);
   const body = await response.json() as { tavily?: { apiKey?: unknown } };
@@ -856,6 +886,12 @@ await runNodeEntry({
 
     await assertWindowsDefaultPersonalEntry();
     await assertWindowsKnownFolderHresultFailure();
+    await assertPersonalStartupFailure(
+      'missing-personal-bootstrap',
+      resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'missing-personal-bootstrap') }),
+      { FLOWAY_BOOTSTRAP_TOKEN: undefined },
+      ['Personal production startup requires FLOWAY_BOOTSTRAP_TOKEN'],
+    );
 
     const systemStoreAvailable = await exerciseIsolatedCredentialStore();
     if (systemStoreAvailable) {
@@ -864,7 +900,7 @@ await runNodeEntry({
       try {
         const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'personal-data') });
         const personal = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await persistPersonalSecret(personal.origin);
+        await persistPersonalSecret(personal.origin, personal.bootstrapToken ?? fail('personal runtime has no bootstrap token'));
         await stopRuntime(personal.child);
         const storedMasterKey = await readCredential(productionCredential);
         const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
@@ -873,7 +909,7 @@ await runNodeEntry({
         await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
         await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
         const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await assertPersistedPersonalSecret(migrated.origin);
+        await assertPersistedPersonalSecret(migrated.origin, migrated.bootstrapToken ?? fail('migrated runtime has no bootstrap token'));
         await stopRuntime(migrated.child);
         assertCiphertextAtRest(personalPaths.databasePath);
         await assertRawSecretsAbsent(personalPaths.databasePath, [
@@ -888,7 +924,7 @@ await runNodeEntry({
         const contentPath = join(personalPaths.filesDir, 'packaged', 'body.bin');
         await fileStore.put('packaged/body.bin', new TextEncoder().encode('private-content'));
         const restarted = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await assertPersistedPersonalSecret(restarted.origin);
+        await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted runtime has no bootstrap token'));
         await stopRuntime(restarted.child);
         await assertPrivatePersonalStorage(personalPaths, contentPath, hardener);
         await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);

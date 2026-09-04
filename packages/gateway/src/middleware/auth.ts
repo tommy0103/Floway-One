@@ -2,7 +2,8 @@ import type { Context, Next } from 'hono';
 
 import { getRepo } from '../repo/index.ts';
 import type { ApiKey, User } from '../repo/types.ts';
-import { getEnvOptional, timingSafeEqual } from '@floway-dev/platform';
+import { getEnvOptional, getRuntimeProfile, timingSafeEqual } from '@floway-dev/platform';
+import { isPublicDataPlaneRequest } from '@floway-dev/protocols/common';
 
 const PUBLIC_PATHS = new Set(['/api/health', '/favicon.ico']);
 const AUTH_VALIDATE_PATHS = new Set(['/auth/login']);
@@ -61,6 +62,13 @@ export const authMiddleware = async (c: AuthedContext, next: Next) => {
     if (timingSafeEqual(utf8.encode(rawKey), utf8.encode(adminKey))) {
       return c.json({ error: 'ADMIN_KEY is only valid via POST /auth/login (leave username blank).' }, 401);
     }
+  }
+
+  // Personal API keys are client data-plane credentials, never Dashboard
+  // authority. Consult the same method/path table that registers protocols so
+  // this boundary cannot drift when a data-plane route is added or renamed.
+  if (getRuntimeProfile().mode === 'personal' && !isPublicDataPlaneRequest(c.req.method, path)) {
+    return c.json({ error: 'Unauthorized' }, 401);
   }
 
   if (!(await authenticateApiKey(c, rawKey))) return c.json({ error: 'Unauthorized' }, 401);

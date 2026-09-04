@@ -30,3 +30,24 @@ export const PUBLIC_DATA_PLANE_ROUTES = {
 
 export type PublicDataPlaneRouteId = keyof typeof PUBLIC_DATA_PLANE_ROUTES;
 export type PublicDataPlaneRoute = typeof PUBLIC_DATA_PLANE_ROUTES[PublicDataPlaneRouteId];
+
+const OPEN_TERMINAL_PARAMETER = /\/:\w+\{\.\+\}$/;
+
+const compilePublicDataPlanePath = (pattern: string): ((pathname: string) => boolean) => {
+  if (!pattern.includes(':')) return pathname => pathname === pattern;
+  const parameter = OPEN_TERMINAL_PARAMETER.exec(pattern);
+  if (parameter === null) {
+    throw new Error(`Unsupported public data-plane route pattern: ${pattern}`);
+  }
+  const prefix = pattern.slice(0, parameter.index + 1);
+  return pathname => pathname.startsWith(prefix) && pathname.length > prefix.length;
+};
+
+const publicDataPlaneRequestMatchers = Object.values(PUBLIC_DATA_PLANE_ROUTES).flatMap(route =>
+  route.paths.map(path => ({ method: route.method, matchesPath: compilePublicDataPlanePath(path) })));
+
+// Authentication and hosting layers consult the same method/path table that
+// data-plane registration consumes. A new protocol route therefore cannot
+// silently become a control-plane API-key bypass or require another path list.
+export const isPublicDataPlaneRequest = (method: string, pathname: string): boolean =>
+  publicDataPlaneRequestMatchers.some(matcher => matcher.method === method && matcher.matchesPath(pathname));

@@ -2,9 +2,9 @@ import { test, vi } from 'vitest';
 
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
-import { buildCustomUpstreamRecord, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { buildCustomUpstreamRecord, copilotModels, requestApp, setupAppTest } from '../../test-utils/app.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
-import { assertEquals, assertExists } from '@floway-dev/test-utils';
+import { assertEquals, assertExists, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
 
 const ownerPatch = (id: string, body: unknown, rawKey: string) =>
   requestApp(`/api/keys/${id}`, {
@@ -13,7 +13,7 @@ const ownerPatch = (id: string, body: unknown, rawKey: string) =>
     body: JSON.stringify(body),
   });
 
-test('GET /api/keys never exposes the server secret', async () => {
+test('server GET /api/keys accepts an API key without exposing the server secret', async () => {
   const { apiKey } = await setupAppTest();
   const response = await requestApp('/api/keys', { headers: { 'x-api-key': apiKey.key } });
   assertEquals(response.status, 200);
@@ -24,7 +24,7 @@ test('GET /api/keys never exposes the server secret', async () => {
   assertEquals(body[0]!.responses_retention_seconds, apiKey.openaiResponsesRetentionSeconds);
 });
 
-test('POST /api/keys defaults durable OpenAI Responses persistence off', async () => {
+test('server POST /api/keys accepts an API key and defaults durable OpenAI Responses persistence off', async () => {
   const { repo, apiKey } = await setupAppTest();
   const response = await requestApp('/api/keys', {
     method: 'POST',
@@ -37,18 +37,67 @@ test('POST /api/keys defaults durable OpenAI Responses persistence off', async (
   assertEquals((await repo.apiKeys.getById(body.id))?.openaiResponsesRetentionSeconds, 0);
 });
 
-test('POST /api/keys assigns every personal-profile key to the seed owner', async () => {
-  const { repo, apiKey } = await setupAppTest();
+test('personal API keys remain data-plane-only while Dashboard sessions manage owner keys', async () => {
+  const { repo, adminSession } = await setupAppTest();
   initRuntimeProfile('personal');
   try {
-    const response = await requestApp('/api/keys', {
+    const createResponse = await requestApp('/api/keys', {
       method: 'POST',
-      headers: { 'x-api-key': apiKey.key, 'content-type': 'application/json' },
+      headers: { 'x-floway-session': adminSession, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'personal-key' }),
     });
-    assertEquals(response.status, 201);
-    const body = (await response.json()) as { id: string };
-    assertEquals((await repo.apiKeys.getById(body.id))?.userId, 1);
+    assertEquals(createResponse.status, 201);
+    const created = (await createResponse.json()) as { id: string; key: string };
+    assertEquals((await repo.apiKeys.getById(created.id))?.userId, 1);
+
+    const keyCount = (await repo.apiKeys.listIncludingDeleted()).length;
+    const keyRead = await requestApp('/api/keys', {
+      headers: { 'x-api-key': created.key },
+    });
+    const adminRead = await requestApp('/api/upstreams', {
+      headers: { 'x-api-key': created.key },
+    });
+    const keyMutation = await requestApp('/api/keys', {
+      method: 'POST',
+      headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'forbidden-personal-key' }),
+    });
+    assertEquals(keyRead.status, 401);
+    assertEquals(adminRead.status, 401);
+    assertEquals(keyMutation.status, 401);
+    assertEquals((await repo.apiKeys.listIncludingDeleted()).length, keyCount);
+
+    const sessionRead = await requestApp('/api/keys', {
+      headers: { 'x-floway-session': adminSession },
+    });
+    assertEquals(sessionRead.status, 200);
+
+    await withMockedFetch(request => {
+      const url = new URL(request.url);
+      if (url.hostname === 'update.code.visualstudio.com') return jsonResponse(['1.110.1']);
+      if (url.pathname === '/copilot_internal/v2/token') {
+        return jsonResponse({
+          token: 'personal-data-plane-access-token',
+          expires_at: 4_102_444_800,
+          refresh_in: 3_600,
+          endpoints: { api: 'https://api.individual.githubcopilot.com' },
+        });
+      }
+      if (url.pathname === '/models' && url.hostname === 'api.individual.githubcopilot.com') {
+        return jsonResponse(copilotModels([{
+          id: 'personal-data-plane-model',
+          supported_endpoints: ['/v1/messages'],
+        }]));
+      }
+      throw new Error(`Unhandled personal data-plane fetch ${request.url}`);
+    }, async () => {
+      const dataPlane = await requestApp('/v1/models', {
+        headers: { 'x-api-key': created.key },
+      });
+      assertEquals(dataPlane.status, 200);
+      const body = (await dataPlane.json()) as { data: Array<{ id: string }> };
+      assertEquals(body.data.some(model => model.id === 'personal-data-plane-model'), true);
+    });
   } finally {
     initRuntimeProfile('server');
   }
