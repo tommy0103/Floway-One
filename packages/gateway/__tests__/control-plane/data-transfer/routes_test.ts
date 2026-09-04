@@ -446,6 +446,41 @@ test('import round-trips a usage record carrying a positive input-length coordin
   assertEquals(await repo.usage.listAll(), [longRow]);
 });
 
+test('SQL import rejects non-representable NUL metric identities before mutating stored state', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.apiKeys.save(KEY_A);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+  const before = (await doExport(app, true)).data;
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  const attempts = [
+    await doImport(app, 'replace', latestImportData({ usage: [{ ...USAGE_2, model: 'model\0capability' }] })),
+    await doImport(app, 'replace', latestImportData({ searchUsage: [{ ...WEB_SEARCH_USAGE_2, keyId: 'key\0capability' }] })),
+    await doImport(app, 'replace', latestImportData({ performanceIncluded: true, performance: [{ ...PERFORMANCE_2, model: 'model\0capability' }] })),
+  ];
+
+  assertEquals(attempts.map(attempt => attempt.status), [400, 400, 400]);
+  assertEquals(attempts.map(attempt => attempt.body.error), [
+    'invalid usage identity at index 0: usage.model must not contain NUL',
+    'invalid searchUsage identity at index 0: searchUsage.keyId must not contain NUL',
+    'invalid performance identity at index 0: performance.model must not contain NUL',
+  ]);
+  assertEquals(logged.length, 3);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toMatchObject({
+      name: 'ImportIdentityError',
+      cause: { name: 'InvalidMetricIdentityError' },
+    });
+  }
+  assertEquals((await doExport(app, true)).data, before);
+  log.mockRestore();
+});
+
 test('import validates generic pricing selectors', async () => {
   const { app } = setup();
   const unknown = await doImport(app, 'replace', latestImportData({ usage: [{ ...USAGE_2, pricingSelector: { unknown: 'x' } }] }));

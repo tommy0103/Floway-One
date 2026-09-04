@@ -116,6 +116,43 @@ test('batch and interactive transactions expose their complete ordered lifecycle
   assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'committed', 'done']);
 }));
 
+test('batch post-commit hardening failure preserves committed data and never attempts rollback', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'node-sqlite-committed-recovery-'));
+  const paths = resolvePersonalRuntimePaths({ dataDir: join(root, 'data'), stableUserHome: root });
+  try {
+    const permissions = initializePersonalStorage(paths);
+    const hardenOriginal = permissions.hardenSqliteFiles.bind(permissions);
+    const hardeningFailure = new Error('forced post-commit hardening failure');
+    const phases: string[] = [];
+    let failNextHardening = false;
+    const harden = vi.spyOn(permissions, 'hardenSqliteFiles').mockImplementation(path => {
+      if (failNextHardening) {
+        failNextHardening = false;
+        throw hardeningFailure;
+      }
+      hardenOriginal(path);
+    });
+    const db = createNodeSqliteDatabase(paths.databasePath, {
+      permissions,
+      observeTransactionPhase: phase => {
+        phases.push(phase);
+        if (phase === 'finalize') failNextHardening = true;
+      },
+    });
+    await db.prepare('CREATE TABLE committed (id INTEGER PRIMARY KEY)').run();
+
+    let observed: unknown;
+    try { await db.batch!([db.prepare('INSERT INTO committed (id) VALUES (1)')]); } catch (cause) { observed = cause; }
+
+    assertEquals(observed, hardeningFailure);
+    assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'committed', 'finalize', 'recovery']);
+    assertEquals((await db.prepare('SELECT id FROM committed').all<{ id: number }>()).results, [{ id: 1 }]);
+    harden.mockRestore();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('begin and commit failures preserve their phase and original precedence', () => withTempDb(async path => {
   const phases: string[] = [];
   const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });

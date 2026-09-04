@@ -10,7 +10,7 @@ vi.mock('../../src/api/client', () => ({
 }));
 
 import { OutcomeToastProvider } from '../../src/components/ui/outcome-toast';
-import DashboardAdminBackupRestore from '../../src/routes/dashboard-admin-backup-restore';
+import DashboardAdminBackupRestore, { consumeFileReadCompletion, importReadFailureState } from '../../src/routes/dashboard-admin-backup-restore';
 import { renderInApp } from '../render';
 
 const backup = (marker: string) => JSON.stringify({
@@ -26,6 +26,7 @@ const backup = (marker: string) => JSON.stringify({
 class ControlledFileReader {
   static pending: ControlledFileReader[] = [];
   result: string | ArrayBuffer | null = null;
+  error: DOMException | null = null;
   onload: FileReader['onload'] = null;
   onerror: FileReader['onerror'] = null;
   abort = vi.fn();
@@ -35,7 +36,10 @@ class ControlledFileReader {
     this.result = value;
     this.onload?.call(this as never, new ProgressEvent('load') as never);
   }
-  fail(): void { this.onerror?.call(this as never, new ProgressEvent('error') as never); }
+  fail(error = new DOMException('The file could not be read.', 'NotReadableError')): void {
+    this.error = error;
+    this.onerror?.call(this as never, new ProgressEvent('error') as never);
+  }
 }
 
 const renderPage = () => renderInApp(
@@ -70,10 +74,13 @@ describe('backup import file races', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import Data' }));
     expect(importPost).not.toHaveBeenCalled();
     expect(screen.queryByText(/A\.json/)).toBeNull();
-    await act(async () => ControlledFileReader.pending[1].fail());
+    const readFailure = new DOMException('FLOWAY_FILE_READER_SECRET', 'NotReadableError');
+    await act(async () => ControlledFileReader.pending[1].fail(readFailure));
 
     expect((screen.getByRole('button', { name: 'Import Data' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('The selected backup file could not be read.')).toBeTruthy();
+    expect(document.body.textContent).not.toContain(readFailure.message);
+    expect(importPost).not.toHaveBeenCalled();
   });
 
   it('ignores an out-of-order click A completion and makes only drop-selected B importable', async () => {
@@ -83,6 +90,7 @@ describe('backup import file races', () => {
     fireEvent.drop(picker, { dataTransfer: { files: [file('B.json')] } });
 
     await act(async () => ControlledFileReader.pending[1].succeed(backup('B')));
+    await act(async () => ControlledFileReader.pending[1].fail(new DOMException('late terminal callback', 'InvalidStateError')));
     await act(async () => ControlledFileReader.pending[0].succeed(backup('A')));
     expect(screen.getByText(/B\.json/)).toBeTruthy();
     expect(screen.queryByText(/A\.json/)).toBeNull();
@@ -95,5 +103,17 @@ describe('backup import file races', () => {
     const submitted = JSON.stringify(importPost.mock.calls[0][0]);
     expect(submitted).toContain('B');
     expect(submitted).not.toContain('A');
+  });
+
+  it('consumes one completion token and retains the exact read error only in diagnostic state', () => {
+    const reader = new ControlledFileReader();
+    const token = { reader: reader as unknown as FileReader, token: 7 };
+    const original = new DOMException('FLOWAY_PRIVATE_READER_DIAGNOSTIC', 'NotReadableError');
+    const completed = consumeFileReadCompletion(token, token, () => importReadFailureState('safe message', original));
+
+    expect(completed?.archive).toEqual({ kind: 'empty', error: { message: 'safe message', cause: original } });
+    expect(consumeFileReadCompletion(completed!.active, token, () => {
+      throw new Error('a consumed token must not evaluate another outcome');
+    })).toBeNull();
   });
 });

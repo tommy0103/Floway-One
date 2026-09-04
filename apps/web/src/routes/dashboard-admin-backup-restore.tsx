@@ -46,6 +46,23 @@ type ImportArchiveState =
   | { kind: 'reading'; file: File; token: number }
   | { kind: 'ready'; error: ImportArchiveError | null; file: File; selection: ImportSelection; token: number };
 
+interface ActiveFileRead {
+  readonly reader: FileReader;
+  readonly token: number;
+}
+
+export const importReadFailureState = (message: string, cause: unknown): ImportArchiveState => ({
+  kind: 'empty',
+  error: { message, cause },
+});
+
+export const consumeFileReadCompletion = (
+  active: ActiveFileRead | null,
+  completion: ActiveFileRead,
+  outcome: () => ImportArchiveState,
+): { active: null; archive: ImportArchiveState } | null =>
+  active === completion ? { active: null, archive: outcome() } : null;
+
 const transitionCurrentImport = (
   current: ImportArchiveState,
   token: number,
@@ -127,35 +144,42 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
   // Without aborting, a second file dropped mid-read leaves two reads racing and
   // the later-finishing one wins. `abort()` raises neither `load` nor `error`,
   // so the losing read reaches no state at all.
-  const readerRef = useRef<FileReader | null>(null);
+  const activeReadRef = useRef<ActiveFileRead | null>(null);
   const readSequenceRef = useRef(0);
   useEffect(() => () => {
     readSequenceRef.current++;
-    readerRef.current?.abort();
+    const active = activeReadRef.current;
+    activeReadRef.current = null;
+    active?.reader.abort();
   }, []);
 
   const invalidateImportArchive = useCallback((error: ImportArchiveError | null = null) => {
     readSequenceRef.current++;
-    readerRef.current?.abort();
-    readerRef.current = null;
+    const active = activeReadRef.current;
+    activeReadRef.current = null;
+    active?.reader.abort();
     setImportArchive({ kind: 'empty', error });
   }, []);
 
-  const completeFileRead = useCallback((token: number, outcome: () => ImportArchiveState) => {
-    if (token !== readSequenceRef.current) return;
-    readerRef.current = null;
-    setImportArchive(outcome());
+  const completeFileRead = useCallback((completion: ActiveFileRead, outcome: () => ImportArchiveState) => {
+    const transition = consumeFileReadCompletion(activeReadRef.current, completion, outcome);
+    if (transition === null) return;
+    activeReadRef.current = transition.active;
+    setImportArchive(transition.archive);
   }, []);
 
   const handleFile = useCallback(
     (file: File) => {
       const readSequence = ++readSequenceRef.current;
-      readerRef.current?.abort();
+      const previous = activeReadRef.current;
+      activeReadRef.current = null;
+      previous?.reader.abort();
       setImportArchive({ kind: 'reading', file, token: readSequence });
 
       const reader = new FileReader();
-      readerRef.current = reader;
-      reader.onload = () => completeFileRead(readSequence, () => {
+      const activeRead = { reader, token: readSequence };
+      activeReadRef.current = activeRead;
+      reader.onload = () => completeFileRead(activeRead, () => {
         const raw = reader.result as string;
         if (personal) {
           const result = parseEncryptedBackupFile(raw);
@@ -168,10 +192,8 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
           ? { kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence }
           : { kind: 'empty', error: { message: t(result.error.clientMessageKey), cause: result.error } };
       });
-      reader.onerror = () => completeFileRead(readSequence, () => ({
-        kind: 'empty',
-        error: { message: t('dashboard.backupRestore.import.errorReadFile'), cause: reader.error },
-      }));
+      reader.onerror = () => completeFileRead(activeRead, () =>
+        importReadFailureState(t('dashboard.backupRestore.import.errorReadFile'), reader.error));
       reader.readAsText(file);
     },
     [completeFileRead, personal, t],

@@ -16,7 +16,7 @@ import { ClientSafeBadRequestError } from '../../middleware/client-safe-error.ts
 import { type CtxWithJson, type CtxWithQuery } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { DIRECT_FALLBACK_IDS } from '../../repo/proxy-fallback-list.ts';
-import { performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../repo/record-identities.ts';
+import { InvalidMetricIdentityError, performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../repo/record-identities.ts';
 import { upstreamStoredSecretsForSafeExport, webSearchStoredSecretsForSafeExport } from '../../repo/stored-secret-fields.ts';
 import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, UsageRecord, User, WebSearchUsageRecord } from '../../repo/types.ts';
 import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataError } from '../../runtime/profile-policy.ts';
@@ -166,10 +166,15 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
 
 class ImportIdentityError extends Error {
   readonly name = 'ImportIdentityError';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
 }
 
 interface IdentityRule<T> {
   readonly value: (record: T) => string;
+  readonly invalid?: (context: { cause: unknown; record: T; index: number }) => ImportIdentityError;
   readonly duplicate: (context: { value: string; prior: T; priorIndex: number; record: T; index: number }) => ImportIdentityError;
   readonly mergeConflict?: (context: { value: string; existing: T; record: T }) => ImportIdentityError | null;
 }
@@ -184,7 +189,13 @@ const validateIndexedIdentities = <T>(
     const imported = new Map<string, { index: number; record: T }>();
     for (let index = 0; index < records.length; index++) {
       const record = records[index];
-      const value = rule.value(record);
+      let value: string;
+      try {
+        value = rule.value(record);
+      } catch (cause) {
+        if (rule.invalid !== undefined) return rule.invalid({ cause, record, index });
+        throw cause;
+      }
       const prior = imported.get(value);
       if (prior !== undefined) return rule.duplicate({ value, prior: prior.record, priorIndex: prior.index, record, index });
       imported.set(value, { index, record });
@@ -263,6 +274,9 @@ const validateCollectionIdentities = <T>(
   value: (record: T) => string,
 ): ImportIdentityError | null => validateIndexedIdentities(records, [], 'replace', [{
   value,
+  invalid: ({ cause, index }) => cause instanceof InvalidMetricIdentityError
+    ? new ImportIdentityError(`invalid ${label} identity at index ${index}: ${cause.message}`, { cause })
+    : new ImportIdentityError(`invalid ${label} identity at index ${index}`, { cause }),
   duplicate: ({ priorIndex, index }) => new ImportIdentityError(`duplicate ${label} identity at indexes ${priorIndex} and ${index}`),
 }]);
 

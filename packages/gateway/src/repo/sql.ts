@@ -5,7 +5,7 @@ import { decodeAliasTargets, decodeAnnouncedMetadata, encodeAliasTargets, encode
 import { SqlOpenAIResponsesItemsRepo, SqlOpenAIResponsesSnapshotsRepo } from './openai-responses-state-sql.ts';
 import { querySqlPerformanceOverview } from './performance-overview-sql.ts';
 import { normalizeProxyFallbackList } from './proxy-fallback-list.ts';
-import { normalizeUsageUpstream, performanceRecordIdentity, usageStorageIdentity } from './record-identities.ts';
+import { normalizeUsageUpstream, performanceRecordIdentity, usageStorageIdentity, webSearchUsageRecordIdentity } from './record-identities.ts';
 import { SqlScheduledMaintenanceRepo } from './scheduled-maintenance-sql.ts';
 import { generateSessionToken } from './session-tokens.ts';
 import { SqlSpilledFilesRepo } from './spilled-files-sql.ts';
@@ -485,6 +485,7 @@ class SqlUsageRepo implements UsageRepo {
   async record(record: UsageRecord): Promise<void> {
     const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
+    usageStorageIdentity({ ...record, upstream, pricingSelectorKey: selector });
     await this.db.prepare(
       `INSERT INTO usage_requests (key_id, model, upstream, model_key, hour, pricing_selector, requests) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO UPDATE SET requests = requests + excluded.requests`,
@@ -522,6 +523,7 @@ class SqlUsageRepo implements UsageRepo {
   async set(record: UsageRecord): Promise<void> {
     const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
+    usageStorageIdentity({ ...record, upstream, pricingSelectorKey: selector });
     const statements: SqlPreparedStatement[] = [
       this.db.prepare("DELETE FROM usage WHERE key_id = ? AND model = ? AND COALESCE(upstream, '') = COALESCE(?, '') AND model_key = ? AND hour = ? AND pricing_selector = ?")
         .bind(record.keyId, record.model, upstream, record.modelKey, record.hour, selector),
@@ -592,6 +594,7 @@ class SqlWebSearchUsageRepo implements WebSearchUsageRepo {
 
   async record(args: { provider: WebSearchUsageRecord['provider']; keyId: string; action: WebSearchUsageRecord['action']; hour: string; requests: number }): Promise<void> {
     const validProvider = assertWebSearchProviderName(args.provider);
+    webSearchUsageRecordIdentity({ ...args, provider: validProvider });
     await this.db
       .prepare(
         `INSERT INTO search_usage (provider, key_id, action, hour, requests) VALUES (?, ?, ?, ?, ?)
@@ -645,6 +648,7 @@ class SqlWebSearchUsageRepo implements WebSearchUsageRepo {
 
   async set(record: WebSearchUsageRecord): Promise<void> {
     const provider = assertWebSearchProviderName(record.provider);
+    webSearchUsageRecordIdentity({ ...record, provider });
     await this.db
       .prepare(
         `INSERT INTO search_usage (provider, key_id, action, hour, requests) VALUES (?, ?, ?, ?, ?)
@@ -678,8 +682,10 @@ const performanceDimensionsFromRow = (row: PerformanceDimensionRow): Performance
   runtimeLocation: row.runtime_location,
 });
 
-const performanceDimensionBinds = (dims: PerformanceDimensions): SqlBindValue[] =>
-  [dims.hour, dims.keyId, dims.model, dims.upstream, dims.operation, dims.runtimeLocation];
+const performanceDimensionBinds = (dims: PerformanceDimensions): SqlBindValue[] => {
+  performanceRecordIdentity(dims);
+  return [dims.hour, dims.keyId, dims.model, dims.upstream, dims.operation, dims.runtimeLocation];
+};
 
 const PERFORMANCE_SUMMARY_COUNT_COLUMNS = ['requests', 'ttft_samples_ok', 'errors_with_output', 'errors_no_output', 'neutral', 'tpot_samples', 'ttft_ms_sum', 'tpot_us_sum'] as const;
 type PerformanceSummaryCountColumn = typeof PERFORMANCE_SUMMARY_COUNT_COLUMNS[number];

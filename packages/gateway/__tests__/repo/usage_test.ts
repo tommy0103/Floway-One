@@ -155,6 +155,17 @@ for (const backend of backends) {
     assertEquals(rows[0].requests, 2);
   });
 
+  test(`${backend.name} usage repo stores null and empty upstream as one normalized bucket`, async () => {
+    const repo = await backend.make();
+    await repo.usage.record(record({ upstream: '', requests: 1, metrics: [] }));
+    await repo.usage.record(record({ upstream: null, requests: 2, metrics: [] }));
+
+    const rows = await query(repo);
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].upstream, null);
+    assertEquals(rows[0].requests, 3);
+  });
+
   test(`${backend.name} usage repo stores requests from models without pricing as unpriced`, async () => {
     const repo = await backend.make();
     await repo.usage.record(record({ metrics: tokenUsageMetrics({ input: 300_000, input_cache_read: 20_000, output: 100_000 }, null), pricingSelector: {} }));

@@ -12,7 +12,7 @@ import {
 } from '../../src/repo/openai-responses-clone.ts';
 import { quantizeOpenAIResponsesRefreshedAt, OPENAI_RESPONSES_REFRESH_GRANULARITY_MS, openaiResponsesStateCutoff } from '../../src/repo/openai-responses-retention.ts';
 import { normalizeProxyFallbackList } from '../../src/repo/proxy-fallback-list.ts';
-import { performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../src/repo/record-identities.ts';
+import { normalizeUsageUpstream, performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../src/repo/record-identities.ts';
 import { SEED_ADMIN_USER_ID } from '../../src/repo/seed-admin.ts';
 import { generateSessionToken } from '../../src/repo/session-tokens.ts';
 import type {
@@ -404,7 +404,7 @@ class MemoryUsageRepo implements UsageRepo {
     const k = this.key({ ...record, pricingSelector });
     let state = this.store.get(k);
     if (!state) {
-      state = { keyId: record.keyId, model: record.model, upstream: record.upstream ?? null, modelKey: record.modelKey, hour: record.hour, pricingSelector, metrics: new Map(), requests: 0 };
+      state = { keyId: record.keyId, model: record.model, upstream: normalizeUsageUpstream(record.upstream), modelKey: record.modelKey, hour: record.hour, pricingSelector, metrics: new Map(), requests: 0 };
       this.store.set(k, state);
     }
     return state;

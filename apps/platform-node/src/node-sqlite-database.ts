@@ -81,10 +81,11 @@ class NodeSqliteDatabase implements SqlDatabase {
     private readonly observeTransactionPhase: (phase: TransactionLifecyclePhase) => void = () => undefined,
   ) {}
 
-  private recoverTransaction(cause: unknown, authority: TransactionAuthority): never {
+  private recoverTransaction(cause: unknown, state: TransactionLifecycleState): never {
     const failures = [cause];
-    this.observeTransactionPhase('recovery');
-    if (authority === 'active') {
+    const recovery = recoveryStateFor(state);
+    this.observeTransactionPhase(transactionPhase(recovery));
+    if (recovery.kind === 'recover-active') {
       try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
     }
     try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
@@ -93,35 +94,35 @@ class NodeSqliteDatabase implements SqlDatabase {
   }
 
   private async runTransactionLifecycle<T>(
-    plan: TransactionLifecyclePlan,
+    kind: TransactionLifecycleKind,
     body: () => T | Promise<T>,
   ): Promise<T> {
-    let phase: TransactionLifecyclePhase = 'not-begun';
-    let authority: TransactionAuthority = 'not-begun';
-    this.observeTransactionPhase(phase);
+    let state: TransactionLifecycleState = { kind: 'not-begun' };
+    this.observeTransactionPhase(transactionPhase(state));
+    const transition = (next: TransactionLifecycleState): void => {
+      state = advanceTransactionLifecycle(state, next);
+      this.observeTransactionPhase(transactionPhase(state));
+    };
     try {
-      this.db.exec(plan.begin === 'deferred' ? 'BEGIN' : 'BEGIN IMMEDIATE');
-      authority = 'active';
-      phase = 'begun';
-      this.observeTransactionPhase(phase);
-      phase = 'body';
-      this.observeTransactionPhase(phase);
+      this.db.exec(kind === 'batch' ? 'BEGIN' : 'BEGIN IMMEDIATE');
+      transition({ kind: 'begun' });
+      transition({ kind: 'body' });
       const result = await body();
-      for (const finalization of plan.finalization) {
-        phase = finalization;
-        this.observeTransactionPhase(phase);
-        if (finalization === 'commit') {
-          this.db.exec('COMMIT');
-          authority = 'committed';
-          phase = 'committed';
-          this.observeTransactionPhase(phase);
-        } else this.hardenFiles();
+      if (kind === 'interactive') {
+        transition({ kind: 'precommit-finalize' });
+        this.hardenFiles();
       }
-      phase = 'done';
-      this.observeTransactionPhase(phase);
+      transition({ kind: 'commit' });
+      this.db.exec('COMMIT');
+      transition({ kind: 'committed' });
+      if (kind === 'batch') {
+        transition({ kind: 'postcommit-finalize' });
+        this.hardenFiles();
+      }
+      transition({ kind: 'done' });
       return result;
     } catch (cause) {
-      this.recoverTransaction(cause, authority);
+      this.recoverTransaction(cause, state);
     }
   }
 
@@ -158,13 +159,13 @@ class NodeSqliteDatabase implements SqlDatabase {
     // A repository-level batch inside a broader restore transaction is
     // already protected by that transaction and must not open a nested BEGIN.
     if (this.transactionContext.getStore()) return this.schedule(runStatements);
-    return this.schedule(() => this.runTransactionLifecycle(BATCH_TRANSACTION, runStatements));
+    return this.schedule(() => this.runTransactionLifecycle('batch', runStatements));
   }
 
   transaction<T>(operation: () => Promise<T>): Promise<T> {
     return this.schedule(() => this.transactionContext.run(
       true,
-      async () => await this.runTransactionLifecycle(INTERACTIVE_TRANSACTION, operation),
+      async () => await this.runTransactionLifecycle('interactive', operation),
     ));
   }
 
@@ -178,14 +179,68 @@ interface CreateNodeSqliteDatabaseOptions {
   readonly observeTransactionPhase?: (phase: TransactionLifecyclePhase) => void;
 }
 
-type TransactionAuthority = 'not-begun' | 'active' | 'committed';
 type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
-interface TransactionLifecyclePlan {
-  readonly begin: 'deferred' | 'immediate';
-  readonly finalization: readonly ('commit' | 'finalize')[];
-}
-const BATCH_TRANSACTION: TransactionLifecyclePlan = { begin: 'deferred', finalization: ['commit', 'finalize'] };
-const INTERACTIVE_TRANSACTION: TransactionLifecyclePlan = { begin: 'immediate', finalization: ['finalize', 'commit'] };
+type TransactionLifecycleKind = 'batch' | 'interactive';
+type TransactionLifecycleState =
+  | { readonly kind: 'not-begun' }
+  | { readonly kind: 'begun' }
+  | { readonly kind: 'body' }
+  | { readonly kind: 'precommit-finalize' }
+  | { readonly kind: 'commit' }
+  | { readonly kind: 'committed' }
+  | { readonly kind: 'postcommit-finalize' }
+  | { readonly kind: 'recover-active' }
+  | { readonly kind: 'recover-closed' }
+  | { readonly kind: 'done' };
+
+const LIFECYCLE_TRANSITIONS = {
+  'not-begun': ['begun'],
+  begun: ['body'],
+  body: ['commit', 'precommit-finalize'],
+  'precommit-finalize': ['commit'],
+  commit: ['committed'],
+  committed: ['done', 'postcommit-finalize'],
+  'postcommit-finalize': ['done'],
+  'recover-active': [],
+  'recover-closed': [],
+  done: [],
+} as const satisfies Record<TransactionLifecycleState['kind'], readonly TransactionLifecycleState['kind'][]>;
+
+const advanceTransactionLifecycle = (
+  current: TransactionLifecycleState,
+  next: TransactionLifecycleState,
+): TransactionLifecycleState => {
+  const allowed = LIFECYCLE_TRANSITIONS[current.kind] as readonly TransactionLifecycleState['kind'][];
+  if (!allowed.includes(next.kind)) {
+    throw new Error(`Invalid Floway transaction lifecycle transition: ${current.kind} -> ${next.kind}`);
+  }
+  return next;
+};
+
+const recoveryStateFor = (state: TransactionLifecycleState): TransactionLifecycleState => {
+  switch (state.kind) {
+  case 'begun':
+  case 'body':
+  case 'precommit-finalize':
+  case 'commit':
+    return { kind: 'recover-active' };
+  default:
+    return { kind: 'recover-closed' };
+  }
+};
+
+const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase => {
+  switch (state.kind) {
+  case 'precommit-finalize':
+  case 'postcommit-finalize':
+    return 'finalize';
+  case 'recover-active':
+  case 'recover-closed':
+    return 'recovery';
+  default:
+    return state.kind;
+  }
+};
 
 export const createNodeSqliteDatabase = (
   path: string,
