@@ -197,9 +197,9 @@ if (launchSupported) {
     const blockingFailure = new Error('forced verifier failure with live packaged sidecar');
     try {
       await withFailureSafeCleanup(async blockingCleanup => {
-        const { child } = captureApp(context.executable, process.env);
+        const { child, output } = captureApp(context.executable, process.env);
         blockingCleanup.defer('blocking application process group', async () => await terminateProcessGroup(child));
-        const sidecarPid = await waitForDirectChild(child);
+        const sidecarPid = await waitForDirectChild(child, output);
         if (!processIsRunning(sidecarPid)) throw new Error('Packaged blocking sidecar did not reach a live state');
         throw blockingFailure;
       });

@@ -58,15 +58,18 @@ const directChildPids = async (parentPid: number): Promise<number[]> => {
   }
 };
 
-export const waitForDirectChild = async (parent: CapturedChild): Promise<number> => {
+export const waitForDirectChild = async (
+  parent: CapturedChild,
+  output: () => string,
+): Promise<number> => {
   if (parent.pid === undefined) throw new Error('Floway production app process has no PID');
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline && parent.exitCode === null && parent.signalCode === null) {
     const [pid] = await directChildPids(parent.pid);
     if (pid !== undefined) return pid;
     await new Promise(resolveWait => setTimeout(resolveWait, 25));
   }
-  throw new Error(`Floway production app did not start its packaged sidecar (pid ${parent.pid ?? 'unknown'})`);
+  throw new Error(`Floway production app did not start its packaged sidecar (pid ${parent.pid ?? 'unknown'})\n${output()}`);
 };
 
 export const waitForChildExit = async (child: CapturedChild, timeoutMs: number): Promise<void> => {

@@ -218,7 +218,7 @@ export const assertPersonalRuntime = async (
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
-    const sidecarPid = await waitForDirectChild(child);
+    const sidecarPid = await waitForDirectChild(child, output);
     forcePersonalFailure(forcedFailure, 'sidecar');
     await waitForHealthyRuntime(child, output, origin);
     if (!output().includes(`Floway listening on ${origin}`)) {
@@ -298,7 +298,7 @@ export const assertUnexpectedSidecarExitClosesShell = async (
     ));
     const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
-    const sidecarPid = await waitForDirectChild(child);
+    const sidecarPid = await waitForDirectChild(child, output);
     await waitForHealthyRuntime(child, output, origin);
     await waitForChildExit(child, 10_000);
     if (child.exitCode !== 1) {
