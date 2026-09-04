@@ -34,7 +34,7 @@ export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 // unless overridden — the lookup table is the key itself. Kept
 // package-internal because outside callers reach the upstream through
 // the typed `customFetchXxx` transports, not by naming an endpoint key.
-const CUSTOM_PATH_OVERRIDE_KEYS = [
+export const CUSTOM_PATH_OVERRIDE_KEYS = [
   '/completions',
   '/chat/completions',
   '/responses',
@@ -240,17 +240,7 @@ export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unkno
   const safePathOverrides: Partial<Record<CustomPathOverrideKey, string>> = {};
   const pathOverrides = config.pathOverrides;
   if (pathOverrides) {
-    for (const key of [
-      '/completions',
-      '/chat/completions',
-      '/responses',
-      '/messages',
-      '/embeddings',
-      '/alpha/search',
-      '/images/generations',
-      '/images/edits',
-      '/audio/transcriptions',
-    ] as const satisfies readonly CustomPathOverrideKey[]) {
+    for (const key of CUSTOM_PATH_OVERRIDE_KEYS) {
       const path = pathOverrides[key];
       if (path !== undefined) safePathOverrides[key] = routingPathForSafeExport(path);
     }

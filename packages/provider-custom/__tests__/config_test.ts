@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 
-import { assertCustomUpstreamRecord } from '../src/index.ts';
+import { assertCustomUpstreamRecord, CUSTOM_PATH_OVERRIDE_KEYS, customUpstreamConfigForSafeExport, type CustomPathOverrideKey } from '../src/config.ts';
 import type { UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, assertThrows } from '@floway-dev/test-utils';
 
@@ -214,6 +214,24 @@ test('assertCustomUpstreamRecord accepts the standard audio transcription path o
     },
   });
   assertEquals(config.pathOverrides, { '/audio/transcriptions': '/speech/to-text' });
+});
+
+test('safe export sanitizes every path override declared by the owning key inventory', () => {
+  const pathOverrides = Object.fromEntries(CUSTOM_PATH_OVERRIDE_KEYS.map(key => [
+    key,
+    `${key}?api_key=${encodeURIComponent(`secret-for-${key}`)}#fragment-secret`,
+  ])) as Record<CustomPathOverrideKey, string>;
+  const safe = customUpstreamConfigForSafeExport({
+    ...baseRecord,
+    config: {
+      ...(baseRecord.config as Record<string, unknown>),
+      pathOverrides,
+    },
+  }) as { pathOverrides: Partial<Record<CustomPathOverrideKey, string>> };
+
+  assertEquals(Object.keys(safe.pathOverrides).toSorted(), [...CUSTOM_PATH_OVERRIDE_KEYS].toSorted());
+  for (const key of CUSTOM_PATH_OVERRIDE_KEYS) assertEquals(safe.pathOverrides[key], key);
+  assertEquals(JSON.stringify(safe.pathOverrides).includes('secret'), false);
 });
 
 test('assertCustomUpstreamRecord treats a null modelsFetch.endpoint as no override', () => {
