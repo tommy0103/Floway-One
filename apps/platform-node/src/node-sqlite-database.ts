@@ -81,10 +81,10 @@ class NodeSqliteDatabase implements SqlDatabase {
     private readonly observeTransactionPhase: (phase: TransactionLifecyclePhase) => void = () => undefined,
   ) {}
 
-  private recoverTransaction(cause: unknown, phase: TransactionLifecyclePhase): never {
+  private recoverTransaction(cause: unknown, authority: TransactionAuthority): never {
     const failures = [cause];
     this.observeTransactionPhase('recovery');
-    if (phase !== 'not-begun') {
+    if (authority === 'active') {
       try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
     }
     try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
@@ -97,9 +97,11 @@ class NodeSqliteDatabase implements SqlDatabase {
     body: () => T | Promise<T>,
   ): Promise<T> {
     let phase: TransactionLifecyclePhase = 'not-begun';
+    let authority: TransactionAuthority = 'not-begun';
     this.observeTransactionPhase(phase);
     try {
       this.db.exec(plan.begin === 'deferred' ? 'BEGIN' : 'BEGIN IMMEDIATE');
+      authority = 'active';
       phase = 'begun';
       this.observeTransactionPhase(phase);
       phase = 'body';
@@ -108,14 +110,18 @@ class NodeSqliteDatabase implements SqlDatabase {
       for (const finalization of plan.finalization) {
         phase = finalization;
         this.observeTransactionPhase(phase);
-        if (finalization === 'commit') this.db.exec('COMMIT');
-        else this.hardenFiles();
+        if (finalization === 'commit') {
+          this.db.exec('COMMIT');
+          authority = 'committed';
+          phase = 'committed';
+          this.observeTransactionPhase(phase);
+        } else this.hardenFiles();
       }
       phase = 'done';
       this.observeTransactionPhase(phase);
       return result;
     } catch (cause) {
-      this.recoverTransaction(cause, phase);
+      this.recoverTransaction(cause, authority);
     }
   }
 
@@ -172,7 +178,8 @@ interface CreateNodeSqliteDatabaseOptions {
   readonly observeTransactionPhase?: (phase: TransactionLifecyclePhase) => void;
 }
 
-type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'finalize' | 'recovery' | 'done';
+type TransactionAuthority = 'not-begun' | 'active' | 'committed';
+type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
 interface TransactionLifecyclePlan {
   readonly begin: 'deferred' | 'immediate';
   readonly finalization: readonly ('commit' | 'finalize')[];

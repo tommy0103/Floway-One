@@ -12,7 +12,7 @@ import {
 } from '../../src/repo/openai-responses-clone.ts';
 import { quantizeOpenAIResponsesRefreshedAt, OPENAI_RESPONSES_REFRESH_GRANULARITY_MS, openaiResponsesStateCutoff } from '../../src/repo/openai-responses-retention.ts';
 import { normalizeProxyFallbackList } from '../../src/repo/proxy-fallback-list.ts';
-import { usageRecordIdentity, webSearchUsageRecordIdentity } from '../../src/repo/record-identities.ts';
+import { performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../src/repo/record-identities.ts';
 import { SEED_ADMIN_USER_ID } from '../../src/repo/seed-admin.ts';
 import { generateSessionToken } from '../../src/repo/session-tokens.ts';
 import type {
@@ -685,7 +685,7 @@ class MemoryPerformanceRepo implements PerformanceRepo {
   }
 
   private rowKey(dims: PerformanceDimensions): string {
-    return `${dims.hour}\0${dims.keyId}\0${dims.model}\0${dims.upstream}\0${dims.operation}\0${dims.runtimeLocation}`;
+    return performanceRecordIdentity(dims);
   }
 
   private upsertRow(dims: PerformanceDimensions): StoredPerformanceRow {

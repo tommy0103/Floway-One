@@ -110,10 +110,10 @@ test('batch and interactive transactions expose their complete ordered lifecycle
   const db = createNodeSqliteDatabase(path, { observeTransactionPhase: phase => phases.push(phase) });
   await db.prepare('CREATE TABLE t (id INTEGER PRIMARY KEY)').run();
   await db.batch!([db.prepare('INSERT INTO t (id) VALUES (1)')]);
-  assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'finalize', 'done']);
+  assertEquals(phases, ['not-begun', 'begun', 'body', 'commit', 'committed', 'finalize', 'done']);
   phases.length = 0;
   await db.transaction!(async () => { await db.prepare('INSERT INTO t (id) VALUES (2)').run(); });
-  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'done']);
+  assertEquals(phases, ['not-begun', 'begun', 'body', 'finalize', 'commit', 'committed', 'done']);
 }));
 
 test('begin and commit failures preserve their phase and original precedence', () => withTempDb(async path => {

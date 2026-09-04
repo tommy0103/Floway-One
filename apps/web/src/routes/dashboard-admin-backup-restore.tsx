@@ -39,11 +39,12 @@ export async function clientLoader() {
 type ImportSelection =
   | { kind: 'encrypted'; archive: EncryptedBackupFile }
   | { kind: 'legacy'; payload: BackupFile };
+type ImportArchiveError = { message: string; cause: unknown };
 
 type ImportArchiveState =
-  | { kind: 'empty'; error: string | null }
+  | { kind: 'empty'; error: ImportArchiveError | null }
   | { kind: 'reading'; file: File; token: number }
-  | { kind: 'ready'; error: string | null; file: File; selection: ImportSelection; token: number };
+  | { kind: 'ready'; error: ImportArchiveError | null; file: File; selection: ImportSelection; token: number };
 
 const transitionCurrentImport = (
   current: ImportArchiveState,
@@ -133,7 +134,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
     readerRef.current?.abort();
   }, []);
 
-  const invalidateImportArchive = useCallback((error: string | null = null) => {
+  const invalidateImportArchive = useCallback((error: ImportArchiveError | null = null) => {
     readSequenceRef.current++;
     readerRef.current?.abort();
     readerRef.current = null;
@@ -160,16 +161,16 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
           const result = parseEncryptedBackupFile(raw);
           return result.ok
             ? { kind: 'ready', error: null, file, selection: { kind: 'encrypted', archive: result.archive }, token: readSequence }
-            : { kind: 'empty', error: t(result.error.clientMessageKey) };
+            : { kind: 'empty', error: { message: t(result.error.clientMessageKey), cause: result.error } };
         }
         const result = parseBackupFile(raw);
         return result.ok
           ? { kind: 'ready', error: null, file, selection: { kind: 'legacy', payload: result.payload }, token: readSequence }
-          : { kind: 'empty', error: t(result.error.clientMessageKey) };
+          : { kind: 'empty', error: { message: t(result.error.clientMessageKey), cause: result.error } };
       });
       reader.onerror = () => completeFileRead(readSequence, () => ({
         kind: 'empty',
-        error: t('dashboard.backupRestore.import.errorReadFile'),
+        error: { message: t('dashboard.backupRestore.import.errorReadFile'), cause: reader.error },
       }));
       reader.readAsText(file);
     },
@@ -234,7 +235,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
 
     if (result.error) {
       handle.settle();
-      setImportArchive(current => transitionCurrentImport(current, token, ready => ({ ...ready, error: result.error.message })));
+      setImportArchive(current => transitionCurrentImport(current, token, ready => ({ ...ready, error: { message: result.error.message, cause: result.error } })));
       setImporting(false);
       return;
     }
@@ -412,7 +413,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
               onDismiss={() => setImportArchive(current => current.kind === 'reading' ? current : { ...current, error: null })}
               title={t('dashboard.backupRestore.import.error')}
             >
-              {importArchive.error}
+              {importArchive.error.message}
             </OutcomeMessageBar>
           )}
 

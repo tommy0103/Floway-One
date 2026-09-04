@@ -5,7 +5,7 @@ import { decodeAliasTargets, decodeAnnouncedMetadata, encodeAliasTargets, encode
 import { SqlOpenAIResponsesItemsRepo, SqlOpenAIResponsesSnapshotsRepo } from './openai-responses-state-sql.ts';
 import { querySqlPerformanceOverview } from './performance-overview-sql.ts';
 import { normalizeProxyFallbackList } from './proxy-fallback-list.ts';
-import { performanceRecordIdentity } from './record-identities.ts';
+import { normalizeUsageUpstream, performanceRecordIdentity, usageStorageIdentity } from './record-identities.ts';
 import { SqlScheduledMaintenanceRepo } from './scheduled-maintenance-sql.ts';
 import { generateSessionToken } from './session-tokens.ts';
 import { SqlSpilledFilesRepo } from './spilled-files-sql.ts';
@@ -483,7 +483,7 @@ class SqlUsageRepo implements UsageRepo {
   }
 
   async record(record: UsageRecord): Promise<void> {
-    const upstream = record.upstream ?? null;
+    const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
     await this.db.prepare(
       `INSERT INTO usage_requests (key_id, model, upstream, model_key, hour, pricing_selector, requests) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -520,7 +520,7 @@ class SqlUsageRepo implements UsageRepo {
   }
 
   async set(record: UsageRecord): Promise<void> {
-    const upstream = record.upstream ?? null;
+    const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
     const statements: SqlPreparedStatement[] = [
       this.db.prepare("DELETE FROM usage WHERE key_id = ? AND model = ? AND COALESCE(upstream, '') = COALESCE(?, '') AND model_key = ? AND hour = ? AND pricing_selector = ?")
@@ -552,7 +552,14 @@ interface UsageRequestRow {
 
 type UsageIdentityRow = Pick<UsageMetricRow, 'key_id' | 'model' | 'upstream' | 'model_key' | 'hour' | 'pricing_selector'>;
 const usageBucketKey = (row: UsageIdentityRow): string =>
-  [row.key_id, row.model, row.upstream ?? '', row.model_key, row.hour, row.pricing_selector].join('\0');
+  usageStorageIdentity({
+    keyId: row.key_id,
+    model: row.model,
+    upstream: row.upstream,
+    modelKey: row.model_key,
+    hour: row.hour,
+    pricingSelectorKey: row.pricing_selector,
+  });
 
 const assembleUsageRecords = (metrics: readonly UsageMetricRow[], requests: readonly UsageRequestRow[]): UsageRecord[] => {
   const byBucket = new Map<string, UsageRecord>();
