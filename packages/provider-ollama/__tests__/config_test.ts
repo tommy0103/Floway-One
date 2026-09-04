@@ -105,3 +105,11 @@ test('safe export retains Ollama origin and path presence without a usable capab
   assertEquals('apiKey' in safe, false);
   assertEquals(JSON.stringify(safe).includes('secret'), false);
 });
+
+test('safe export removes a configured Ollama API key from an authenticated source', () => {
+  const safe = ollamaUpstreamConfigForSafeExport(baseRecord) as Record<string, unknown>;
+
+  assertEquals('apiKey' in (baseRecord.config as object), true);
+  assertEquals('apiKey' in safe, false);
+  assertEquals(JSON.stringify(safe).includes('ollama_test'), false);
+});

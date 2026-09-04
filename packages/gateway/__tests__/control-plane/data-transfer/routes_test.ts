@@ -639,6 +639,12 @@ test('safe export structurally omits every authentication-bearing field', async 
     },
   };
   assertEquals(hasOwn(ollamaWithUrlSecrets.config as object, 'apiKey'), false);
+  const authenticatedOllama: UpstreamRecord = {
+    ...OLLAMA_UPSTREAM,
+    id: 'up_ollama_authenticated',
+    name: 'Authenticated Ollama',
+  };
+  assertEquals(hasOwn(authenticatedOllama.config as object, 'apiKey'), true);
   await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
   await repo.apiKeys.save(KEY_A);
   await repo.upstreams.save(customWithUrlSecrets);
@@ -646,6 +652,7 @@ test('safe export structurally omits every authentication-bearing field', async 
   await repo.upstreams.save(azureWithUrlSecrets);
   await repo.upstreams.save(CODEX_UPSTREAM);
   await repo.upstreams.save(ollamaWithUrlSecrets);
+  await repo.upstreams.save(authenticatedOllama);
   await repo.upstreams.save(CLAUDE_CODE_UPSTREAM);
   await repo.proxies.save({
     id: 'proxy-safe-export',
@@ -718,6 +725,8 @@ test('safe export structurally omits every authentication-bearing field', async 
   assertEquals(Object.keys(ollama.config).toSorted(), ['basePathConfigured', 'baseUrl', 'cloudUsage', 'models']);
   assertEquals(ollama.config.cloudUsage, true);
   assertEquals(hasOwn(ollama.config, 'apiKey'), false);
+  const authenticatedOllamaExport = exported.data.upstreams.find((upstream: any) => upstream.id === authenticatedOllama.id);
+  assertEquals(hasOwn(authenticatedOllamaExport.config, 'apiKey'), false);
   const claude = exported.data.upstreams.find((upstream: any) => upstream.id === CLAUDE_CODE_UPSTREAM.id);
   assertEquals(claude.config.accounts[0].subscriptionType, 'pro');
   assertEquals(claude.state.accounts[0].state, 'active');
