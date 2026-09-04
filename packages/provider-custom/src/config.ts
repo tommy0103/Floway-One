@@ -22,7 +22,7 @@
 import { customIngressHeaderNameIssue, isCustomIngressHeaderValue } from './ingress-header-rules.ts';
 import type { ModelEndpoints } from '@floway-dev/protocols/common';
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { endpointsField, modelsField, validateUpstreamPath } from '@floway-dev/provider';
+import { endpointsField, modelEndpointsForSafeExport, modelsField, routingUrlForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
 
 export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 
@@ -237,11 +237,36 @@ export const assertCustomUpstreamRecord = (record: UpstreamRecord): CustomUpstre
 
 export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
   const config = assertCustomUpstreamRecord(record).config;
-  const safeConfig: Record<string, unknown> = { ...config };
-  delete safeConfig.apiKey;
-  safeConfig.ingressHeadersRules = config.ingressHeadersRules.map(rule => ({
-    key: rule.key,
-    source: rule.value === null ? 'client' : 'configured',
-  }));
-  return safeConfig;
+  const safePathOverrides: Partial<Record<CustomPathOverrideKey, string>> = {};
+  const pathOverrides = config.pathOverrides;
+  if (pathOverrides) {
+    for (const key of [
+      '/completions',
+      '/chat/completions',
+      '/responses',
+      '/messages',
+      '/embeddings',
+      '/alpha/search',
+      '/images/generations',
+      '/images/edits',
+      '/audio/transcriptions',
+    ] as const satisfies readonly CustomPathOverrideKey[]) {
+      const path = pathOverrides[key];
+      if (path !== undefined) safePathOverrides[key] = path;
+    }
+  }
+  return {
+    baseUrl: routingUrlForSafeExport(config.baseUrl),
+    endpoints: modelEndpointsForSafeExport(config.endpoints),
+    ...(pathOverrides === undefined ? {} : { pathOverrides: safePathOverrides }),
+    ingressHeadersRules: config.ingressHeadersRules.map(rule => ({
+      key: rule.key,
+      source: rule.value === null ? 'client' : 'configured',
+    })),
+    modelsFetch: config.modelsFetch.endpoint === undefined
+      ? { enabled: config.modelsFetch.enabled }
+      : { enabled: config.modelsFetch.enabled, endpoint: config.modelsFetch.endpoint },
+    models: upstreamModelsForSafeExport(config.models),
+    authStyle: config.authStyle,
+  };
 };

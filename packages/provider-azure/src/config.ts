@@ -1,5 +1,5 @@
 import { azureEndpointField } from './endpoint.ts';
-import { type UpstreamModelConfig, type UpstreamRecord, isRecord, modelsField, nonEmptyStringField } from '@floway-dev/provider';
+import { type UpstreamModelConfig, type UpstreamRecord, isRecord, modelsField, nonEmptyStringField, routingUrlForSafeExport, upstreamModelsForSafeExport } from '@floway-dev/provider';
 
 export interface AzureUpstreamConfig {
   endpoint: string;
@@ -36,6 +36,9 @@ export const assertAzureUpstreamRecord = (record: UpstreamRecord): AzureUpstream
 };
 
 export const azureUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
-  const { apiKey: _apiKey, ...config } = assertAzureUpstreamRecord(record).config;
-  return config;
+  const config = assertAzureUpstreamRecord(record).config;
+  return {
+    endpoint: routingUrlForSafeExport(config.endpoint),
+    models: upstreamModelsForSafeExport(config.models),
+  };
 };

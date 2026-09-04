@@ -82,13 +82,59 @@ const collectExportPayload = async (includePerformance: boolean): Promise<Collec
 };
 
 const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) => {
-  const users = payload.data.users.map(({ passwordHash: _passwordHash, ...user }) => user);
-  const apiKeys = payload.data.apiKeys.map(({ key: _key, serverSecret: _serverSecret, ...apiKey }) => apiKey);
-  const upstreams = payload.data.upstreams.map((upstream, index) => ({
-    ...upstream,
-    ...upstreamStoredSecretsForSafeExport(sourceUpstreams[index]),
+  const users = payload.data.users.map(user => ({
+    id: user.id,
+    username: user.username,
+    isAdmin: user.isAdmin,
+    upstreamIds: user.upstreamIds === null ? null : [...user.upstreamIds],
+    createdAt: user.createdAt,
+    deletedAt: user.deletedAt,
   }));
-  const proxies = payload.data.proxies.map(({ url: _url, ...proxy }) => proxy);
+  const apiKeys = payload.data.apiKeys.map(apiKey => ({
+    id: apiKey.id,
+    userId: apiKey.userId,
+    name: apiKey.name,
+    createdAt: apiKey.createdAt,
+    ...(apiKey.lastUsedAt === undefined ? {} : { lastUsedAt: apiKey.lastUsedAt }),
+    upstreamIds: apiKey.upstreamIds === null ? null : [...apiKey.upstreamIds],
+    deletedAt: apiKey.deletedAt,
+    dumpRetentionSeconds: apiKey.dumpRetentionSeconds,
+    openaiResponsesRetentionSeconds: apiKey.openaiResponsesRetentionSeconds,
+  }));
+  const upstreams = sourceUpstreams.map((source, index) => {
+    const serialized = payload.data.upstreams[index];
+    const storedSecrets = upstreamStoredSecretsForSafeExport(source);
+    return {
+      id: source.id,
+      name: source.name,
+      enabled: source.enabled,
+      sort_order: source.sortOrder,
+      created_at: source.createdAt,
+      updated_at: source.updatedAt,
+      flag_overrides: Object.fromEntries(Object.entries(source.flagOverrides)),
+      flag_defaults: Object.fromEntries(Object.entries(serialized.flag_defaults)),
+      disabled_public_model_ids: [...source.disabledPublicModelIds],
+      proxy_fallback_list: source.proxyFallbackList.map(entry => entry.colos === undefined
+        ? { id: entry.id }
+        : { id: entry.id, colos: [...entry.colos] }),
+      model_prefix: source.modelPrefix === null
+        ? null
+        : {
+            prefix: source.modelPrefix.prefix,
+            addressable: [...source.modelPrefix.addressable],
+            listed: [...source.modelPrefix.listed],
+          },
+      hue: source.hue,
+      kind: source.kind,
+      config: storedSecrets.config,
+      state: storedSecrets.state,
+    };
+  });
+  const proxies = payload.data.proxies.map(proxy => ({
+    id: proxy.id,
+    name: proxy.name,
+    dial_timeout_seconds: proxy.dial_timeout_seconds,
+  }));
   const { provider, passthroughOpenAiSearch } = payload.data.searchConfig;
   return {
     format: 'floway-safe-export' as const,
@@ -107,7 +153,11 @@ const safeExport = ({ payload, upstreams: sourceUpstreams }: CollectedExport) =>
       searchConfig: {
         provider,
         credentials: webSearchStoredSecretsForSafeExport(payload.data.searchConfig),
-        passthroughOpenAiSearch,
+        passthroughOpenAiSearch: {
+          enabled: passthroughOpenAiSearch.enabled,
+          upstreamId: passthroughOpenAiSearch.upstreamId,
+          model: passthroughOpenAiSearch.model,
+        },
       },
     },
   };

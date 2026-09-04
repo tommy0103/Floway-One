@@ -19,7 +19,7 @@
 //   expires the operator must re-import. `refreshToken` is null. The
 //   cache short-circuits the refresh path for this kind.
 
-import { assertClaudeCodeQuotaSnapshot, type ClaudeCodeQuotaSnapshot } from './quota.ts';
+import { assertClaudeCodeQuotaSnapshot, type ClaudeCodeQuotaSnapshot, type ClaudeCodeQuotaWindow } from './quota.ts';
 
 // Short-lived OAuth access token minted by exchanging the stored refreshToken
 // against /v1/oauth/token. The refreshToken itself stays on
@@ -232,10 +232,53 @@ export const readClaudeCodeUpstreamState = (raw: unknown): ClaudeCodeUpstreamSta
   return raw;
 };
 
+const quotaWindowForSafeExport = (window: ClaudeCodeQuotaWindow): ClaudeCodeQuotaWindow => ({
+  status: window.status,
+  reset: window.reset,
+  utilization: window.utilization,
+});
+
+const claudeCodeQuotaForSafeExport = (snapshot: ClaudeCodeQuotaSnapshot): unknown => ({
+  status: snapshot.status,
+  reset: snapshot.reset,
+  fallbackAvailable: snapshot.fallbackAvailable,
+  fallbackPercentage: snapshot.fallbackPercentage,
+  representativeClaim: snapshot.representativeClaim,
+  overage: snapshot.overage === null
+    ? null
+    : {
+        status: snapshot.overage.status,
+        reset: snapshot.overage.reset,
+        utilization: snapshot.overage.utilization,
+        disabledReason: snapshot.overage.disabledReason,
+      },
+  fiveHour: snapshot.fiveHour === null ? null : quotaWindowForSafeExport(snapshot.fiveHour),
+  sevenDay: snapshot.sevenDay === null
+    ? null
+    : {
+        status: snapshot.sevenDay.status,
+        reset: snapshot.sevenDay.reset,
+        utilization: snapshot.sevenDay.utilization,
+        surpassedThreshold: snapshot.sevenDay.surpassedThreshold,
+      },
+});
+
 export const claudeCodeUpstreamStateForSafeExport = (raw: unknown): unknown => {
   const state = readClaudeCodeUpstreamState(raw);
   return {
-    accounts: state.accounts.map(({ refreshToken: _refreshToken, accessToken: _accessToken, ...account }) => account),
+    accounts: state.accounts.map(account => ({
+      accountUuid: account.accountUuid,
+      tokenKind: account.tokenKind,
+      state: account.state,
+      stateUpdatedAt: account.stateUpdatedAt,
+      quotaSnapshot: account.quotaSnapshot === null
+        ? null
+        : {
+            fetchedAt: account.quotaSnapshot.fetchedAt,
+            data: claudeCodeQuotaForSafeExport(account.quotaSnapshot.data),
+          },
+      usageProbeSnapshot: account.usageProbeSnapshot === null ? null : { fetchedAt: account.usageProbeSnapshot.fetchedAt },
+    })),
   };
 };
 

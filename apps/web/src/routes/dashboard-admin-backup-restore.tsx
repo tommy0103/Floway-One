@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Route } from './+types/dashboard-admin-backup-restore';
 import { requireDashboardAdmin } from './guards';
 import { api, callApi } from '../api/client';
-import { BACKUP_FILE_VERSION, parseBackupFile, parseEncryptedBackupFile, type BackupFile, type EncryptedBackupFile } from '../components/backup-restore/file';
+import { legacyImportRequest, parseBackupFile, parseEncryptedBackupFile, type BackupFile, type EncryptedBackupFile } from '../components/backup-restore/file';
 import { BackupFilePicker, BackupFileStats, BackupFileSummary } from '../components/backup-restore/file-picker';
 import { resolveBackupRestoreRuntime } from '../components/backup-restore/runtime';
 import { countRecords, PREVIEW_LABEL_KEYS, recordSummary } from '../components/backup-restore/summary';
+import { ActionRow } from '../components/ui/action-row';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { PANEL_STACK_CLASS } from '../components/ui/layout';
@@ -213,7 +214,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
           json: { mode, archive: importSelection.archive, password: restorePassword },
         }))
       : await callApi(() => api.api.import.$post({
-          json: { version: BACKUP_FILE_VERSION, mode, data: importSelection.payload.data },
+          json: legacyImportRequest(importSelection.payload, mode),
         }));
 
     if (result.error) {
@@ -294,9 +295,8 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
         )}
 
         <div className="pt-1">
-          <div
+          <ActionRow
             aria-label={t('dashboard.backupRestore.export.actionsLabel')}
-            className="flex flex-wrap gap-[var(--spacingHorizontalS)]"
             role="group"
           >
             <Button
@@ -315,7 +315,7 @@ export default function DashboardAdminBackupRestore({ loaderData }: Route.Compon
             >
               {t('dashboard.backupRestore.export.safeButton')}
             </Button>}
-          </div>
+          </ActionRow>
         </div>
       </Panel>
 

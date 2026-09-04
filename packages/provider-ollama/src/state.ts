@@ -155,5 +155,25 @@ export const readOllamaUpstreamState = (raw: unknown): OllamaUpstreamState => {
   };
 };
 
-export const ollamaUpstreamStateForSafeExport = (raw: unknown): OllamaUpstreamState =>
-  readOllamaUpstreamState(raw);
+export const ollamaUpstreamStateForSafeExport = (raw: unknown): unknown => {
+  const state = readOllamaUpstreamState(raw);
+  return {
+    usageProbe: state.usageProbe === null
+      ? null
+      : {
+          attemptedAt: state.usageProbe.attemptedAt,
+          observation: state.usageProbe.observation === null
+            ? null
+            : { fetchedAt: state.usageProbe.observation.fetchedAt },
+          hasError: state.usageProbe.error !== null,
+        },
+    account: state.account === null
+      ? null
+      : {
+          fetchedAt: state.account.fetchedAt,
+          plan: state.account.plan,
+          name: state.account.name,
+          email: state.account.email,
+        },
+  };
+};

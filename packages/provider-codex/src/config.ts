@@ -74,5 +74,13 @@ export function assertCodexUpstreamRecord(record: UpstreamRecord): asserts recor
 
 export const codexUpstreamConfigForSafeExport = (record: UpstreamRecord): CodexUpstreamConfig => {
   assertCodexUpstreamRecord(record);
-  return record.config;
+  const account = record.config.accounts[0];
+  return {
+    accounts: [{
+      email: account.email,
+      chatgptAccountId: account.chatgptAccountId,
+      chatgptUserId: account.chatgptUserId,
+      planType: account.planType,
+    }],
+  };
 };

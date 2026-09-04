@@ -92,6 +92,13 @@ export const assertCopilotUpstreamRecord = (record: UpstreamRecord): CopilotUpst
 };
 
 export const copilotUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
-  const { githubToken: _githubToken, ...config } = assertCopilotUpstreamRecord(record).config;
-  return config;
+  const config = assertCopilotUpstreamRecord(record).config;
+  return {
+    githubHost: config.githubHost,
+    user: {
+      login: config.user.login,
+      name: config.user.name,
+      id: config.user.id,
+    },
+  };
 };

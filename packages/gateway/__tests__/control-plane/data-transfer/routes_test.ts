@@ -566,13 +566,34 @@ test('personal full backup encrypts every recovery secret under the supplied pas
 
 test('safe export structurally omits every authentication-bearing field', async () => {
   const { app, repo } = setup();
+  const customWithUrlSecrets: UpstreamRecord = {
+    ...CUSTOM_UPSTREAM,
+    config: {
+      ...(CUSTOM_UPSTREAM.config as Record<string, unknown>),
+      baseUrl: 'https://custom-user:custom-password@custom.example.com/gateway?api_key=custom-query-secret#custom-fragment-secret',
+    },
+  };
+  const azureWithUrlSecrets: UpstreamRecord = {
+    ...AZURE_UPSTREAM,
+    config: {
+      ...(AZURE_UPSTREAM.config as Record<string, unknown>),
+      endpoint: 'https://azure-user:azure-password@example.openai.azure.com/openai/v1',
+    },
+  };
+  const ollamaWithUrlSecrets: UpstreamRecord = {
+    ...OLLAMA_UPSTREAM,
+    config: {
+      ...(OLLAMA_UPSTREAM.config as Record<string, unknown>),
+      baseUrl: 'https://ollama-user:ollama-password@ollama.example.com/v1?token=ollama-query-secret#ollama-fragment-secret',
+    },
+  };
   await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
   await repo.apiKeys.save(KEY_A);
-  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.upstreams.save(customWithUrlSecrets);
   await repo.upstreams.save(COPILOT_UPSTREAM);
-  await repo.upstreams.save(AZURE_UPSTREAM);
+  await repo.upstreams.save(azureWithUrlSecrets);
   await repo.upstreams.save(CODEX_UPSTREAM);
-  await repo.upstreams.save(OLLAMA_UPSTREAM);
+  await repo.upstreams.save(ollamaWithUrlSecrets);
   await repo.upstreams.save(CLAUDE_CODE_UPSTREAM);
   await repo.proxies.save({
     id: 'proxy-safe-export',
@@ -605,7 +626,10 @@ test('safe export structurally omits every authentication-bearing field', async 
   assertEquals(hasOwn(exported.data.apiKeys[0], 'key'), false);
   assertEquals(hasOwn(exported.data.apiKeys[0], 'serverSecret'), false);
   const custom = exported.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id);
-  assertEquals(custom.config.baseUrl, 'https://custom.example.com');
+  assertEquals(custom.config.baseUrl, 'https://custom.example.com/gateway');
+  assertEquals(Object.keys(custom.config).toSorted(), [
+    'authStyle', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch',
+  ]);
   assertEquals(custom.config.endpoints, CUSTOM_UPSTREAM.config && (CUSTOM_UPSTREAM.config as any).endpoints);
   assertEquals(custom.config.ingressHeadersRules, [
     { key: 'x-request-id', source: 'client' },
@@ -616,24 +640,34 @@ test('safe export structurally omits every authentication-bearing field', async 
   const copilot = exported.data.upstreams.find((upstream: any) => upstream.id === COPILOT_UPSTREAM.id);
   assertEquals(copilot.config.githubHost, 'github.com');
   assertEquals(copilot.config.user.login, 'alice');
+  assertEquals(Object.keys(copilot.config).toSorted(), ['githubHost', 'user']);
+  assertEquals(Object.keys(copilot.config.user).toSorted(), ['id', 'login', 'name']);
   assertEquals(hasOwn(copilot.config, 'githubToken'), false);
   const azure = exported.data.upstreams.find((upstream: any) => upstream.id === AZURE_UPSTREAM.id);
-  assertEquals(azure.config.endpoint, 'https://example.openai.azure.com');
+  assertEquals(azure.config.endpoint, 'https://example.openai.azure.com/openai/v1');
+  assertEquals(Object.keys(azure.config).toSorted(), ['endpoint', 'models']);
   assertEquals(azure.config.models.length, 2);
   assertEquals(hasOwn(azure.config, 'apiKey'), false);
   const codex = exported.data.upstreams.find((upstream: any) => upstream.id === CODEX_UPSTREAM.id);
   assertEquals(codex.config.accounts[0].email, 'alice@example.com');
   assertEquals(codex.state.accounts[0].state, 'active');
   assertEquals(codex.state.accounts[0].openaiDeviceId, '11111111-2222-4333-8444-555555555555');
+  assertEquals(Object.keys(codex.state.accounts[0]).toSorted(), [
+    'chatgptAccountId', 'openaiDeviceId', 'quotaSnapshot', 'state', 'state_updated_at',
+  ]);
   assertEquals(hasOwn(codex.state.accounts[0], 'refresh_token'), false);
   assertEquals(hasOwn(codex.state.accounts[0], 'accessToken'), false);
   const ollama = exported.data.upstreams.find((upstream: any) => upstream.id === OLLAMA_UPSTREAM.id);
-  assertEquals(ollama.config.baseUrl, 'https://ollama.com');
+  assertEquals(ollama.config.baseUrl, 'https://ollama.example.com/v1');
+  assertEquals(Object.keys(ollama.config).toSorted(), ['baseUrl', 'cloudUsage', 'models']);
   assertEquals(ollama.config.cloudUsage, true);
   assertEquals(hasOwn(ollama.config, 'apiKey'), false);
   const claude = exported.data.upstreams.find((upstream: any) => upstream.id === CLAUDE_CODE_UPSTREAM.id);
   assertEquals(claude.config.accounts[0].subscriptionType, 'pro');
   assertEquals(claude.state.accounts[0].state, 'active');
+  assertEquals(Object.keys(claude.state.accounts[0]).toSorted(), [
+    'accountUuid', 'quotaSnapshot', 'state', 'stateUpdatedAt', 'tokenKind', 'usageProbeSnapshot',
+  ]);
   assertEquals(hasOwn(claude.state.accounts[0], 'refreshToken'), false);
   assertEquals(hasOwn(claude.state.accounts[0], 'accessToken'), false);
   assertEquals(exported.data.proxies[0], { id: 'proxy-safe-export', name: 'Authenticated proxy', dial_timeout_seconds: 9 });
@@ -658,6 +692,16 @@ test('safe export structurally omits every authentication-bearing field', async 
     'ollama-key',
     'claude-refresh-secret',
     'claude-access-secret',
+    'custom-user',
+    'custom-password',
+    'custom-query-secret',
+    'custom-fragment-secret',
+    'azure-user',
+    'azure-password',
+    'ollama-user',
+    'ollama-password',
+    'ollama-query-secret',
+    'ollama-fragment-secret',
     'proxy-user',
     'proxy-password',
     'tavily-safe-export-secret',

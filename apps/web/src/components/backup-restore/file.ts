@@ -21,7 +21,7 @@ const backupFileSchema = z.object({
     users: z.array(z.unknown()),
     apiKeys: z.array(z.unknown()),
     upstreams: z.array(z.unknown()),
-    modelAliases: z.array(z.unknown()).optional().default([]),
+    modelAliases: z.array(z.unknown()).optional(),
     proxies: z.array(z.unknown()),
     usage: z.array(z.unknown()),
     searchUsage: z.array(z.unknown()),
@@ -45,6 +45,12 @@ export type BackupFileData = BackupFile['data'];
 export type ParsedBackupFile =
   | { ok: true; payload: BackupFile }
   | { ok: false; message: string };
+
+export const legacyImportRequest = (payload: BackupFile, mode: 'merge' | 'replace') => ({
+  version: BACKUP_FILE_VERSION,
+  mode,
+  data: payload.data,
+} as const);
 
 // A rejected file is nearly always an export from another version or product,
 // so every issue is reported by path rather than collapsed into one message.

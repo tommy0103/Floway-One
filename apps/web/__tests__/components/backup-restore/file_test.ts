@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BACKUP_FILE_VERSION, parseBackupFile, parseEncryptedBackupFile } from '../../../src/components/backup-restore/file';
+import { BACKUP_FILE_VERSION, legacyImportRequest, parseBackupFile, parseEncryptedBackupFile } from '../../../src/components/backup-restore/file';
 
 const data = {
   users: [],
@@ -38,6 +38,22 @@ describe('backup file validation', () => {
     expect(parseBackupFile(backup({ data: { ...data, performance: [] } })).ok).toBe(false);
     expect(parseBackupFile(backup({ data: { ...data, performanceIncluded: true } })).ok).toBe(false);
     expect(parseBackupFile(backup({ data: { ...data, performanceIncluded: true, performance: [] } })).ok).toBe(true);
+  });
+
+  it('preserves omitted and explicit-empty model aliases from parsing through the import request', () => {
+    const omitted = parseBackupFile(backup());
+    expect(omitted.ok).toBe(true);
+    if (!omitted.ok) return;
+    const omittedRequest = legacyImportRequest(omitted.payload, 'replace');
+    expect(Object.hasOwn(omitted.payload.data, 'modelAliases')).toBe(false);
+    expect(Object.hasOwn(omittedRequest.data, 'modelAliases')).toBe(false);
+
+    const explicit = parseBackupFile(backup({ data: { ...data, modelAliases: [] } }));
+    expect(explicit.ok).toBe(true);
+    if (!explicit.ok) return;
+    const explicitRequest = legacyImportRequest(explicit.payload, 'replace');
+    expect(Object.hasOwn(explicit.payload.data, 'modelAliases')).toBe(true);
+    expect(explicitRequest.data.modelAliases).toEqual([]);
   });
 });
 

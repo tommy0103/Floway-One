@@ -1,7 +1,7 @@
 import { decodeUpstreamConfig, decodeUpstreamState } from './upstream-codecs.ts';
 import { WEB_SEARCH_PROVIDER_NAMES, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
 import type { StoredSecretContext } from '@floway-dev/platform';
-import type { UpstreamRecord } from '@floway-dev/provider';
+import type { UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
 import { azureUpstreamConfigForSafeExport } from '@floway-dev/provider-azure';
 import { claudeCodeUpstreamConfigForSafeExport, claudeCodeUpstreamStateForSafeExport } from '@floway-dev/provider-claude-code';
 import { codexUpstreamConfigForSafeExport, codexUpstreamStateForSafeExport } from '@floway-dev/provider-codex';
@@ -30,27 +30,32 @@ const requireUpstreamOwner = (owner: UpstreamRecord | undefined): UpstreamRecord
   return owner;
 };
 
-const upstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
-  switch (record.kind) {
-  case 'azure': return azureUpstreamConfigForSafeExport(record);
-  case 'claude-code': return claudeCodeUpstreamConfigForSafeExport(record);
-  case 'codex': return codexUpstreamConfigForSafeExport(record);
-  case 'copilot': return copilotUpstreamConfigForSafeExport(record);
-  case 'custom': return customUpstreamConfigForSafeExport(record);
-  case 'ollama': return ollamaUpstreamConfigForSafeExport(record);
-  }
-};
+type UpstreamSafeExportProjection = { config: unknown; state: unknown };
+type UpstreamSafeExportProjector = (record: UpstreamRecord) => UpstreamSafeExportProjection;
 
-const upstreamStateForSafeExport = (record: UpstreamRecord): unknown => {
-  switch (record.kind) {
-  case 'claude-code': return claudeCodeUpstreamStateForSafeExport(record.state);
-  case 'codex': return codexUpstreamStateForSafeExport(record.state);
-  case 'copilot': return copilotUpstreamStateForSafeExport(record.state);
-  case 'ollama': return ollamaUpstreamStateForSafeExport(record.state);
-  case 'azure':
-  case 'custom': return null;
-  }
-};
+const UPSTREAM_SAFE_EXPORT_PROJECTORS = Object.freeze({
+  azure: record => ({ config: azureUpstreamConfigForSafeExport(record), state: null }),
+  'claude-code': record => ({
+    config: claudeCodeUpstreamConfigForSafeExport(record),
+    state: claudeCodeUpstreamStateForSafeExport(record.state),
+  }),
+  codex: record => ({
+    config: codexUpstreamConfigForSafeExport(record),
+    state: codexUpstreamStateForSafeExport(record.state),
+  }),
+  copilot: record => ({
+    config: copilotUpstreamConfigForSafeExport(record),
+    state: copilotUpstreamStateForSafeExport(record.state),
+  }),
+  custom: record => ({ config: customUpstreamConfigForSafeExport(record), state: null }),
+  ollama: record => ({
+    config: ollamaUpstreamConfigForSafeExport(record),
+    state: ollamaUpstreamStateForSafeExport(record.state),
+  }),
+} satisfies Record<UpstreamProviderKind, UpstreamSafeExportProjector>);
+
+const upstreamSafeExportProjection = (record: UpstreamRecord): UpstreamSafeExportProjection =>
+  UPSTREAM_SAFE_EXPORT_PROJECTORS[record.kind](record);
 
 export const upstreamConfigSecretContext = (id: string): StoredSecretContext =>
   `upstream:${id}:config` as StoredSecretContext;
@@ -64,7 +69,7 @@ export const UPSTREAM_CONFIG_STORED_SECRET_FIELD = Object.freeze({
   nullable: false,
   plaintextEmpty: false,
   contextFor: (identity: string | number) => upstreamConfigSecretContext(String(identity)),
-  safeExportValue: (_value: unknown, owner?: UpstreamRecord) => upstreamConfigForSafeExport(requireUpstreamOwner(owner)),
+  safeExportValue: (_value: unknown, owner?: UpstreamRecord) => upstreamSafeExportProjection(requireUpstreamOwner(owner)).config,
   validatePlaintext: (plaintext: string, identity: string | number) => {
     decodeUpstreamConfig(plaintext, String(identity));
   },
@@ -76,7 +81,7 @@ export const UPSTREAM_STATE_STORED_SECRET_FIELD = Object.freeze({
   nullable: true,
   plaintextEmpty: false,
   contextFor: (identity: string | number) => upstreamStateSecretContext(String(identity)),
-  safeExportValue: (_value: unknown, owner?: UpstreamRecord) => upstreamStateForSafeExport(requireUpstreamOwner(owner)),
+  safeExportValue: (_value: unknown, owner?: UpstreamRecord) => upstreamSafeExportProjection(requireUpstreamOwner(owner)).state,
   validatePlaintext: (plaintext: string, identity: string | number) => {
     decodeUpstreamState(plaintext, String(identity));
   },
@@ -130,10 +135,8 @@ export const PROTECTED_STORED_SECRET_FIELDS: readonly ProtectedStoredSecretField
   ...WEB_SEARCH_STORED_SECRET_FIELDS,
 ]);
 
-export const upstreamStoredSecretsForSafeExport = (record: UpstreamRecord): { config: unknown; state: unknown } => ({
-  config: UPSTREAM_CONFIG_STORED_SECRET_FIELD.safeExportValue(record.config, record),
-  state: UPSTREAM_STATE_STORED_SECRET_FIELD.safeExportValue(record.state, record),
-});
+export const upstreamStoredSecretsForSafeExport = (record: UpstreamRecord): UpstreamSafeExportProjection =>
+  upstreamSafeExportProjection(record);
 
 export const webSearchStoredSecretsForSafeExport = (config: WebSearchConfig): Record<WebSearchProviderName, unknown> =>
   Object.fromEntries(WEB_SEARCH_STORED_SECRET_FIELDS.map(field => [
