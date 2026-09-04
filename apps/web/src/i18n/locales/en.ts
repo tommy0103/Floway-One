@@ -32,6 +32,7 @@ const en = {
         unexpectedTitle: 'Something went wrong',
         unexpectedDescription: 'An unexpected error occurred',
         notFound: 'The requested page could not be found',
+        runtimeCapabilitiesUnavailable: 'Runtime capabilities could not be loaded. Refresh after the gateway is available.',
         sourceMapLoading: 'Loading source maps…',
         sourceMapFailed: 'Source maps could not be loaded',
       },
@@ -83,6 +84,7 @@ const en = {
         users: 'Users',
         backupRestore: 'Backup / Restore',
         settings: 'Settings',
+        localOwner: 'Local owner',
       },
       logout: {
         label: 'Sign out',
@@ -103,6 +105,8 @@ const en = {
             'Inspect request records, status, routing results, and error details',
         usage:
             'Track token usage and traffic volume across users, keys, models, and upstreams',
+        personalUsage:
+            'Track this local owner\'s token usage and traffic across API keys, models, and upstreams',
         performance:
             'Monitor latency, throughput, and upstream performance signals',
         users:
@@ -173,6 +177,7 @@ const en = {
       },
       settings: {
         description: 'Manage your Floway account security',
+        personalDescription: 'Manage security for this local owner',
         changePassword: 'Change password',
         currentPassword: 'Current password',
         newPassword: 'New password',
@@ -983,12 +988,22 @@ const en = {
           toggleHint: 'Click to toggle. Shift-click or double-click to isolate.',
         },
       },
-      telemetry: { currentUserOnly: 'Only me' },
+      telemetry: {
+        currentUserOnly: 'Only me',
+        apiKeyScope: {
+          server: {
+            info: 'API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.',
+            label: 'About API key telemetry scope',
+          },
+          personal: {
+            info: 'API key grouping and filters include keys owned by this local owner. Choosing By API Key keeps telemetry scoped to the local owner.',
+            label: 'About local-owner API key telemetry scope',
+          },
+        },
+      },
       usage: {
         empty: 'No usage records in this range',
         callout: { requests: 'Req', cost: 'Cost', total: 'Total', cached: 'Cached', cachedRate: 'Cached%', prefill: 'Prefill', output: 'Output' },
-        apiKeyScopeInfo: 'API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.',
-        apiKeyScopeLabel: 'About API key telemetry scope',
         groupBy: { label: 'Group by', model: 'By Model', upstream: 'By Upstream', userId: 'By User', keyId: 'By API Key' },
         filters: {
           model: 'Model',
@@ -1027,8 +1042,6 @@ const en = {
       performance: {
         empty: 'No performance records in this range',
         actions: { refresh: 'Refresh performance' },
-        apiKeyScopeInfo: 'API key grouping and filters include only keys owned by your account. Choosing By API Key sets User to Only me; choosing another user clears API key filters and returns to By Model.',
-        apiKeyScopeLabel: 'About API key telemetry scope',
         breakdown: 'Performance breakdown dimension',
         metric: { label: 'Performance metric', ttft: 'TTFT', outputSpeed: 'Output speed' },
         groupBy: { label: 'Group by', model: 'By Model', upstream: 'By Upstream', operation: 'By Operation', runtimeLocation: 'By Region', userId: 'By User', keyId: 'By API Key' },

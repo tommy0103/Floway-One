@@ -1,8 +1,10 @@
 import { redirect } from 'react-router';
 
 import type { AuthUser } from '../api/auth';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { requireAdmin } from '../auth/require-admin';
 import { getSessionToken } from '../auth/session';
+import { dashboardPageAvailable, type DashboardPage } from '../components/sidebar/pages';
 import { useAuthStore } from '../stores/auth-store';
 
 // The one dashboard page every signed-in account can open.
@@ -28,4 +30,10 @@ export const requireDashboardUser = async (): Promise<AuthUser> => {
 export const requireDashboardAdmin = async (): Promise<void> => {
   requireDashboardSession();
   if (!(await requireAdmin())) throw redirect(OPERATOR_LANDING);
+};
+
+export const requireDashboardPage = async (page: DashboardPage): Promise<void> => {
+  requireDashboardSession();
+  const runtime = await loadRuntimeInfo();
+  if (!dashboardPageAvailable(page, runtime.profile.capabilities)) throw redirect(OPERATOR_LANDING);
 };

@@ -17,7 +17,11 @@ const gatewayForOperator = (input: RequestInfo | URL) => {
   const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
   if (path === '/api/upstreams') return Promise.resolve(Response.json({ error: 'Admin privileges required' }, { status: 403 }));
   if (path === '/api/upstream-options') return Promise.resolve(Response.json([{ id: 'up-1', name: 'Copilot seat', kind: 'copilot', enabled: true, hue: 210, cachedModelCount: 3 }]));
-  if (path === '/api/runtime-info') return Promise.resolve(Response.json({ kind: 'node', runtimeLocation: 'LOCAL' }));
+  if (path === '/api/runtime-info') return Promise.resolve(Response.json({
+    kind: 'node',
+    profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+    runtimeLocation: 'LOCAL',
+  }));
   return Promise.resolve(Response.json({
     series: [], axes: { none: [], model: [], upstream: [], operation: [], runtimeLocation: [], keyId: [], userId: [] },
     dimensionValues: { models: [], upstreams: [], operations: [], runtimeLocations: [], userIds: [], keyIds: [] },
@@ -34,6 +38,14 @@ describe('where the performance page reads upstream names from', () => {
 
     expect(data.upstreams).toEqual([{ id: 'up-1', name: 'Copilot seat', hue: 210 }]);
     expect(data.error).toBeNull();
+    expect(data.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    });
+    expect(data).not.toHaveProperty('personalProfile');
+    expect(data).not.toHaveProperty('regionAvailable');
+    expect(data).not.toHaveProperty('userDimensionAvailable');
   });
 
   it('makes API key grouping explicitly current-user scoped for an administrator', async () => {
@@ -59,10 +71,10 @@ describe('where the performance page reads upstream names from', () => {
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBe(false);
+    expect(data.runtimeFacts?.regionAvailable).toBe(false);
     expect(data.state.groupBy).toBe('model');
     expect(data.state.filters.runtimeLocation).toEqual([]);
-    expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(2);
+    expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
   });
 
   it('keeps Region state on Cloudflare', async () => {
@@ -70,20 +82,28 @@ describe('where the performance page reads upstream names from', () => {
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
       return path === '/api/runtime-info'
-        ? Promise.resolve(Response.json({ kind: 'cloudflare', runtimeLocation: 'SIN' }))
+        ? Promise.resolve(Response.json({
+            kind: 'cloudflare',
+            profile: { mode: 'server', capabilities: { userManagement: true, remoteAccess: true, desktopIntegration: false } },
+            runtimeLocation: 'SIN',
+          }))
         : gatewayForOperator(input);
     });
     vi.stubGlobal('fetch', fetch);
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBe(true);
+    expect(data.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: true,
+      userDimensionAvailable: false,
+    });
     expect(data.state.groupBy).toBe('runtimeLocation');
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
   });
 
-  it('preserves Region state when runtime capability cannot be determined', async () => {
+  it('loads no telemetry while runtime capabilities are unknown', async () => {
     useAuthStore.getState().primeFromLogin({ token: 'operator-session', user: { id: 2, username: 'operator', isAdmin: false, upstreamIds: null } });
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost').pathname;
@@ -95,10 +115,65 @@ describe('where the performance page reads upstream names from', () => {
 
     const data = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=runtimeLocation&fr=SJC') } as never);
 
-    expect(data.regionAvailable).toBeNull();
+    expect(data.runtimeFacts).toBeNull();
     expect(data.state.groupBy).toBe('runtimeLocation');
     expect(data.state.filters.runtimeLocation).toEqual([]);
     expect(data.error?.message).toBe('Unavailable');
-    expect(fetch.mock.calls.filter(([input]) => new URL(String(input), 'http://localhost').pathname === '/api/performance/overview')).toHaveLength(1);
+    expect(data.overview).toBeNull();
+    expect(data.upstreams).toBeNull();
+    expect(fetch.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname)).toEqual(['/api/runtime-info']);
+  });
+
+  it('retains server user grouping and filters in recorded requests', async () => {
+    useAuthStore.getState().primeFromLogin({ token: 'admin-session', user: { id: 1, username: 'admin', isAdmin: true, upstreamIds: null } });
+    const performanceQueries: URL[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
+      if (url.pathname === '/api/performance/overview') performanceQueries.push(url);
+      return gatewayForOperator(input);
+    }));
+
+    const grouped = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=userId') } as never);
+    const filtered = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?fusr=2') } as never);
+
+    expect(grouped.runtimeFacts).toEqual({
+      personalProfile: false,
+      regionAvailable: false,
+      userDimensionAvailable: true,
+    });
+    expect(grouped.state.groupBy).toBe('userId');
+    expect(filtered.state.filters.userId).toEqual(['2']);
+    expect(performanceQueries).toHaveLength(2);
+    expect(performanceQueries[0].searchParams.get('group_by')).toBe('userId');
+    expect(performanceQueries[1].searchParams.getAll('filter_user_id')).toEqual(['2']);
+  });
+
+  it('removes personal user state before requesting performance', async () => {
+    useAuthStore.getState().primeFromLogin({ token: 'owner-session', user: { id: 1, username: 'admin', isAdmin: true, upstreamIds: null } });
+    const performanceQueries: URL[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
+      if (url.pathname === '/api/runtime-info') return Promise.resolve(Response.json({
+        kind: 'node',
+        profile: { mode: 'personal', capabilities: { userManagement: false, remoteAccess: false, desktopIntegration: true } },
+        runtimeLocation: 'LOCAL',
+      }));
+      if (url.pathname === '/api/performance/overview') performanceQueries.push(url);
+      return gatewayForOperator(input);
+    }));
+
+    const grouped = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?g=userId') } as never);
+    const filtered = await clientLoader({ request: new Request('http://localhost/dashboard/monitor/performance?fusr=2') } as never);
+
+    expect(grouped.runtimeFacts).toEqual({
+      personalProfile: true,
+      regionAvailable: false,
+      userDimensionAvailable: false,
+    });
+    expect(grouped.state.groupBy).toBe('model');
+    expect(filtered.state.filters.userId).toEqual([]);
+    expect(performanceQueries).toHaveLength(2);
+    expect(performanceQueries[0].searchParams.get('group_by')).toBe('model');
+    expect(performanceQueries[1].searchParams.getAll('filter_user_id')).toEqual([]);
   });
 });

@@ -1,14 +1,22 @@
 import { redirect } from 'react-router';
 
 import type { Route } from './+types/home';
-import { login as loginWithPassword } from '../api/auth';
-import { getSessionToken } from '../auth/session';
+import { exchangePersonalDashboardBootstrap, login as loginWithPassword } from '../api/auth';
+import { getSessionToken, takePersonalDashboardBootstrapToken } from '../auth/session';
 import { LoginForm, type LoginActionData } from '../components/login-form';
 import { SCROLLPORT_FILL_CLASS } from '../components/ui/layout';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { useAuthStore } from '../stores/auth-store';
 
 export async function clientLoader() {
+  const bootstrapToken = takePersonalDashboardBootstrapToken();
+  if (bootstrapToken !== null) {
+    const result = await exchangePersonalDashboardBootstrap({ token: bootstrapToken });
+    if (result.data) {
+      useAuthStore.getState().primeFromLogin(result.data);
+      throw redirect('/dashboard/playground');
+    }
+  }
   if (getSessionToken()) throw redirect('/dashboard/playground');
   return null;
 }

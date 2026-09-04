@@ -231,6 +231,10 @@ export const authLoginBody = z.object({
   password: z.string().max(1024),
 });
 
+export const personalDashboardBootstrapBody = z.object({
+  token: z.string().regex(/^[0-9a-f]{64}$/, 'bootstrap token must be 64 lowercase hexadecimal characters'),
+});
+
 // --- users ---
 
 export const USERNAME_PATTERN = /^[a-zA-Z0-9_.\-]{1,64}$/;

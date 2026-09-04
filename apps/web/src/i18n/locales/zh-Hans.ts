@@ -30,6 +30,7 @@ const zhHansCN = {
         unexpectedTitle: '出现错误',
         unexpectedDescription: '发生了意外错误',
         notFound: '找不到请求的页面',
+        runtimeCapabilitiesUnavailable: '无法加载运行时能力。请在网关可用后刷新。',
         sourceMapLoading: '正在加载源代码映射…',
         sourceMapFailed: '源代码映射加载失败',
       },
@@ -81,6 +82,7 @@ const zhHansCN = {
         users: '用户',
         backupRestore: '备份 / 恢复',
         settings: '设置',
+        localOwner: '本机 Owner',
       },
       logout: {
         label: '退出登录',
@@ -96,6 +98,7 @@ const zhHansCN = {
         apiDocs: '阅读 Floway 网关的 API 参考和接入说明',
         requests: '查看请求记录、状态、路由结果和错误详情',
         usage: '按用户、API 密钥、模型和上游查看 token 用量与流量',
+        personalUsage: '查看本机 Owner 按 API 密钥、模型和上游统计的 token 用量与流量',
         performance: '观察延迟、吞吐和上游性能信号',
         users: '管理控制台用户、权限、观测访问和上游范围',
         backupRestore: '下载此网关全部数据的完整副本，或从此前的导出中恢复',
@@ -162,6 +165,7 @@ const zhHansCN = {
       },
       settings: {
         description: '管理你的 Floway 账户安全设置',
+        personalDescription: '管理本机 Owner 的安全设置',
         changePassword: '修改密码',
         currentPassword: '当前密码',
         newPassword: '新密码',
@@ -936,12 +940,22 @@ const zhHansCN = {
           toggleHint: '点击切换。Shift 点击或双击可单独显示。',
         },
       },
-      telemetry: { currentUserOnly: '仅自己' },
+      telemetry: {
+        currentUserOnly: '仅自己',
+        apiKeyScope: {
+          server: {
+            info: 'API 密钥分组和筛选仅包含当前账号拥有的密钥。选择“按 API 密钥”会将用户设为“仅自己”；选择其他用户会清空 API 密钥筛选并回到“按模型”。',
+            label: '关于 API 密钥遥测范围',
+          },
+          personal: {
+            info: 'API 密钥分组和筛选仅包含本机 Owner 拥有的密钥。选择“按 API 密钥”会保持本机 Owner 的遥测范围。',
+            label: '关于本机 Owner 的 API 密钥遥测范围',
+          },
+        },
+      },
       usage: {
         empty: '此时间范围内没有使用记录',
         callout: { requests: '请求', cost: '费用', total: '总量', cached: '缓存', cachedRate: '缓存率', prefill: '预填充', output: '输出' },
-        apiKeyScopeInfo: 'API 密钥分组和筛选仅包含当前账号拥有的密钥。选择“按 API 密钥”会将用户设为“仅自己”；选择其他用户会清空 API 密钥筛选并回到“按模型”。',
-        apiKeyScopeLabel: '关于 API 密钥遥测范围',
         groupBy: { label: '分组依据', model: '按模型', upstream: '按上游', userId: '按用户', keyId: '按 API 密钥' },
         filters: {
           model: '模型',
@@ -979,8 +993,6 @@ const zhHansCN = {
       performance: {
         empty: '此时间范围内没有性能记录',
         actions: { refresh: '刷新性能数据' },
-        apiKeyScopeInfo: 'API 密钥分组和筛选仅包含当前账号拥有的密钥。选择“按 API 密钥”会将用户设为“仅自己”；选择其他用户会清空 API 密钥筛选并回到“按模型”。',
-        apiKeyScopeLabel: '关于 API 密钥遥测范围',
         breakdown: '性能细分维度',
         metric: { label: '性能指标', ttft: '首 Token 时间', outputSpeed: '输出速度' },
         groupBy: { label: '分组依据', model: '按模型', upstream: '按上游', operation: '按操作', runtimeLocation: '按区域', userId: '按用户', keyId: '按 API 密钥' },
