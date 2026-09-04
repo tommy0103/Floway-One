@@ -25,6 +25,21 @@ test('shipping desktop and Node sources contain no verification modes or environ
   expect(sources[0]).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
   expect(sources[0]).toContain('WebviewUrl::External(url)');
   expect(sources[0]).toContain('ready_dashboard_origin(&runtime_stdout)');
+  const ownerSetup = sources[0].indexOf('let owner = SidecarOwner::new();');
+  const signalSetup = sources[0].indexOf('install_termination_signal(app_handle, owner_for_signal)?;');
+  const registeredSpawn = sources[0].indexOf('let events = owner.spawn_registered(||');
+  expect(ownerSetup).toBeGreaterThan(-1);
+  expect(signalSetup).toBeGreaterThan(ownerSetup);
+  expect(registeredSpawn).toBeGreaterThan(signalSetup);
+});
+
+test('root desktop verification delegates every acquired output to failure-chain aggregation', async () => {
+  const source = await readFile(resolve(repositoryRoot, 'apps/desktop/src/test-desktop.ts'), 'utf8');
+  expect(source).not.toContain('finally {');
+  expect(source).toContain('withFailureSafeCleanup(async cleanup =>');
+  expect(source).toContain('withFailureSafeCleanup(async targetCleanup =>');
+  expect(source).toContain('deferDisposableDesktopPaths(cleanup, generatedDesktopOutputs)');
+  expect(source).toContain('deferDisposableDesktopPaths(targetCleanup, [');
 });
 
 test('the legacy product identifier remains only in established bundle, app-data, credential, and path identifiers', async () => {

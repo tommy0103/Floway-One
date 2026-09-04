@@ -3,7 +3,9 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+use sha2::{Digest, Sha256};
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
@@ -25,8 +27,18 @@ pub fn ready_dashboard_origin(output: &str) -> Option<&str> {
         .find_map(|line| line.strip_prefix(PERSONAL_RUNTIME_READY_PREFIX))
 }
 
+pub fn spawn_after_lifecycle_setup<T, E>(
+    establish_lifecycle: impl FnOnce() -> Result<(), E>,
+    spawn_and_register: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    establish_lifecycle()?;
+    spawn_and_register()
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeBundle {
+    pub contract: PathBuf,
+    pub dashboard_assets: Vec<PathBuf>,
     pub dashboard_index: PathBuf,
     pub dashboard_routes: PathBuf,
     pub entry: PathBuf,
@@ -109,10 +121,155 @@ fn require_migrations(path: PathBuf) -> Result<PathBuf, BundleResourceError> {
     ))
 }
 
+fn invalid_bundle_contract(path: &Path, message: impl Into<String>) -> BundleResourceError {
+    BundleResourceError::new(
+        path.to_path_buf(),
+        io::Error::new(io::ErrorKind::InvalidData, message.into()),
+    )
+}
+
+fn expected_node_contract() -> Option<(&'static str, &'static str)> {
+    match std::env::consts::ARCH {
+        "aarch64" => Some(("arm64", "aarch64-apple-darwin")),
+        "x86_64" => Some(("x64", "x86_64-apple-darwin")),
+        _ => None,
+    }
+}
+
+fn validate_bundle_contract(
+    contract_path: &Path,
+    runtime_root: &Path,
+) -> Result<Vec<PathBuf>, BundleResourceError> {
+    let source = fs::read_to_string(contract_path)
+        .map_err(|source| BundleResourceError::new(contract_path.to_path_buf(), source))?;
+    let contract: serde_json::Value = serde_json::from_str(&source).map_err(|source| {
+        BundleResourceError::new(
+            contract_path.to_path_buf(),
+            io::Error::new(io::ErrorKind::InvalidData, source),
+        )
+    })?;
+    if contract
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err(invalid_bundle_contract(
+            contract_path,
+            "the desktop bundle schema version is not supported",
+        ));
+    }
+    let node = contract
+        .get("node")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| invalid_bundle_contract(contract_path, "the Node contract is missing"))?;
+    let (expected_architecture, expected_target) = expected_node_contract().ok_or_else(|| {
+        invalid_bundle_contract(
+            contract_path,
+            format!(
+                "the desktop host architecture {} is unsupported",
+                std::env::consts::ARCH
+            ),
+        )
+    })?;
+    let version = node.get("version").and_then(serde_json::Value::as_str);
+    let version_is_exact = version.is_some_and(|value| {
+        let segments = value.split('.').collect::<Vec<_>>();
+        segments.len() == 3
+            && segments.iter().all(|segment| {
+                !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    });
+    if node.get("architecture").and_then(serde_json::Value::as_str) != Some(expected_architecture)
+        || node.get("platform").and_then(serde_json::Value::as_str) != Some("darwin")
+        || node.get("targetTriple").and_then(serde_json::Value::as_str) != Some(expected_target)
+        || !version_is_exact
+    {
+        return Err(invalid_bundle_contract(
+            contract_path,
+            "the Node contract does not match this installed desktop artifact",
+        ));
+    }
+
+    let assets = contract
+        .get("dashboard")
+        .and_then(|dashboard| dashboard.get("assets"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            invalid_bundle_contract(contract_path, "the Dashboard asset contract is missing")
+        })?;
+    if assets.is_empty() {
+        return Err(invalid_bundle_contract(
+            contract_path,
+            "the Dashboard asset contract is empty",
+        ));
+    }
+
+    let dashboard_root = runtime_root.join("apps/web/dist/client");
+    let mut previous = None;
+    let mut resolved = Vec::with_capacity(assets.len());
+    for asset in assets {
+        let relative = asset
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                invalid_bundle_contract(contract_path, "a Dashboard asset path is missing")
+            })?;
+        if relative.is_empty()
+            || Path::new(relative)
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            || previous.is_some_and(|prior: &str| prior >= relative)
+        {
+            return Err(invalid_bundle_contract(
+                contract_path,
+                format!("the Dashboard asset path is unsafe, duplicated, or unsorted: {relative}"),
+            ));
+        }
+        previous = Some(relative);
+        let expected_hash = asset
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                invalid_bundle_contract(
+                    contract_path,
+                    format!("the Dashboard asset digest is invalid for {relative}"),
+                )
+            })?;
+        let path = require_file(dashboard_root.join(relative))?;
+        let contents =
+            fs::read(&path).map_err(|source| BundleResourceError::new(path.clone(), source))?;
+        let actual_hash = format!("{:x}", Sha256::digest(contents));
+        if actual_hash != expected_hash.to_ascii_lowercase() {
+            return Err(invalid_bundle_contract(
+                contract_path,
+                format!("the Dashboard asset digest is stale for {relative}"),
+            ));
+        }
+        resolved.push(path);
+    }
+    for required in ["index.html", "dashboard-routes.json"] {
+        if !resolved
+            .iter()
+            .any(|path| path == &dashboard_root.join(required))
+        {
+            return Err(invalid_bundle_contract(
+                contract_path,
+                format!("the Dashboard asset contract omits {required}"),
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
 pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, BundleResourceError> {
     let root = resource_dir.join("runtime");
     let platform_node = root.join("apps/platform-node");
+    let contract = require_file(resource_dir.join("desktop-bundle-contract.json"))?;
+    let dashboard_assets = validate_bundle_contract(&contract, &root)?;
     Ok(RuntimeBundle {
+        contract,
+        dashboard_assets,
         dashboard_index: require_file(root.join("apps/web/dist/client/index.html"))?,
         dashboard_routes: require_file(root.join("apps/web/dist/client/dashboard-routes.json"))?,
         entry: require_file(platform_node.join("entry.js"))?,
@@ -140,7 +297,7 @@ mod desktop {
 
     use super::{
         NODE_SIDECAR_NAME, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, dashboard_bootstrap_url,
-        ready_dashboard_origin, resolve_runtime_bundle,
+        ready_dashboard_origin, resolve_runtime_bundle, spawn_after_lifecycle_setup,
     };
 
     #[derive(Debug)]
@@ -205,21 +362,61 @@ mod desktop {
         terminated: bool,
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    enum SidecarShutdownOutcome {
+        AlreadyStopped,
+        Graceful,
+        HardKillFallback,
+    }
+
+    const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+    const HARD_KILL_TIMEOUT: Duration = Duration::from_secs(3);
+    const HARD_KILL_SIGNAL_NAME: &str = "SIGKILL";
+
     struct SidecarOwner {
         changed: Condvar,
         state: Mutex<SidecarState>,
     }
 
     impl SidecarOwner {
-        fn new(child: CommandChild) -> Arc<Self> {
+        fn new() -> Arc<Self> {
             Arc::new(Self {
                 changed: Condvar::new(),
                 state: Mutex::new(SidecarState {
-                    child: Some(child),
+                    child: None,
                     shutdown_requested: false,
                     terminated: false,
                 }),
             })
+        }
+
+        fn request_shutdown(&self) {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.shutdown_requested = true;
+            self.changed.notify_all();
+        }
+
+        fn spawn_registered<T, E>(
+            &self,
+            spawn: impl FnOnce() -> Result<(T, CommandChild), E>,
+        ) -> Result<Option<T>, E> {
+            // Holding the ownership lock across spawn and registration makes
+            // an immediate termination request choose exactly one state: it
+            // either prevents spawning or observes a registered child.
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.shutdown_requested {
+                return Ok(None);
+            }
+            let (events, child) = spawn()?;
+            state.child = Some(child);
+            self.changed.notify_all();
+            Ok(Some(events))
         }
 
         fn record_termination(&self) -> bool {
@@ -234,29 +431,66 @@ mod desktop {
             unexpected
         }
 
-        fn shutdown(&self) -> Result<bool, SidecarShutdownError> {
-            let child = {
-                let mut state = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                state.shutdown_requested = true;
-                if state.terminated {
-                    return Ok(false);
-                }
-                state.child.take()
-            };
-
+        fn shutdown(&self) -> Result<SidecarShutdownOutcome, SidecarShutdownError> {
             let mut failures: Vec<Box<dyn Error + Send + Sync>> = Vec::new();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.shutdown_requested = true;
+            if state.terminated || state.child.is_none() {
+                return Ok(SidecarShutdownOutcome::AlreadyStopped);
+            }
+            let pid = state
+                .child
+                .as_ref()
+                .expect("registered child must exist")
+                .pid();
+
+            // XNU defines SIGTERM as the catchable graceful termination signal
+            // and SIGKILL as the uncatchable hard-stop fallback.
+            // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/signal.h#L101-L104
+            let graceful_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            if graceful_result != 0 {
+                let source = io::Error::last_os_error();
+                if source.raw_os_error() != Some(libc::ESRCH) {
+                    failures.push(Box::new(source));
+                }
+            }
+
+            let (next_state, graceful_timeout) = self
+                .changed
+                .wait_timeout_while(state, GRACEFUL_SHUTDOWN_TIMEOUT, |state| !state.terminated)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if state.terminated {
+                return if failures.is_empty() {
+                    Ok(SidecarShutdownOutcome::Graceful)
+                } else {
+                    Err(SidecarShutdownError { failures })
+                };
+            }
+
+            if !graceful_timeout.timed_out() {
+                failures.push(Box::new(io::Error::other(
+                    "Floway personal runtime remained live after its graceful shutdown state changed",
+                )));
+            }
+            let child = state.child.take();
+            drop(state);
             match child {
                 Some(child) => {
+                    // Tauri's sidecar handle delegates to shared_child, whose
+                    // Unix hard-kill contract is explicitly SIGKILL.
+                    // https://github.com/tauri-apps/plugins-workspace/blob/shell-v2.3.6/plugins/shell/src/process/mod.rs#L70-L86
+                    // https://github.com/oconnor663/shared_child.rs/blob/v1.1.1/src/lib.rs#L305-L322
                     if let Err(source) = child.kill() {
                         failures.push(Box::new(source));
                     }
                 }
                 None => failures.push(Box::new(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "Floway personal runtime handle disappeared before termination",
+                    "Floway personal runtime handle disappeared before the hard-kill fallback",
                 ))),
             }
 
@@ -264,19 +498,21 @@ mod desktop {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let (state, timeout) = self
+            let (state, hard_timeout) = self
                 .changed
-                .wait_timeout_while(state, Duration::from_secs(10), |state| !state.terminated)
+                .wait_timeout_while(state, HARD_KILL_TIMEOUT, |state| !state.terminated)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if timeout.timed_out() && !state.terminated {
+            if hard_timeout.timed_out() && !state.terminated {
                 failures.push(Box::new(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "Floway personal runtime did not report termination within 10 seconds",
+                    format!(
+                        "Floway personal runtime did not report termination after {HARD_KILL_SIGNAL_NAME}"
+                    ),
                 )));
             }
 
             if failures.is_empty() {
-                Ok(true)
+                Ok(SidecarShutdownOutcome::HardKillFallback)
             } else {
                 Err(SidecarShutdownError { failures })
             }
@@ -337,7 +573,10 @@ mod desktop {
         Ok(dashboard_bootstrap_url(origin, bootstrap_token).parse()?)
     }
 
-    fn install_termination_signal(app_handle: AppHandle) -> Result<(), io::Error> {
+    fn install_termination_signal(
+        app_handle: AppHandle,
+        owner: Arc<SidecarOwner>,
+    ) -> Result<(), io::Error> {
         // XNU owns SIGTERM's process-termination semantics. Turning it into a
         // Tauri exit request lets the shipping shell run its sidecar teardown.
         // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/signal.h#L101-L104
@@ -346,6 +585,7 @@ mod desktop {
             .name("floway-desktop-signals".to_owned())
             .spawn(move || {
                 if signals.forever().next().is_some() {
+                    owner.request_shutdown();
                     app_handle.exit(0);
                 }
             })?;
@@ -355,8 +595,17 @@ mod desktop {
     fn shutdown_sidecar(app_handle: &AppHandle) {
         let owner = app_handle.state::<Arc<SidecarOwner>>();
         match owner.shutdown() {
-            Ok(true) => eprintln!("Floway desktop terminated and waited for its personal runtime"),
-            Ok(false) => {}
+            Ok(SidecarShutdownOutcome::Graceful) => {
+                eprintln!(
+                    "Floway desktop gracefully terminated and waited for its personal runtime"
+                );
+            }
+            Ok(SidecarShutdownOutcome::HardKillFallback) => {
+                eprintln!(
+                    "Floway desktop used {HARD_KILL_SIGNAL_NAME} after its personal runtime exceeded the graceful shutdown deadline"
+                );
+            }
+            Ok(SidecarShutdownOutcome::AlreadyStopped) => {}
             Err(error) => {
                 print_error_chain(&error);
                 std::process::exit(1);
@@ -368,23 +617,36 @@ mod desktop {
         tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
             .setup(|app| {
-                let resource_dir = app.path().resource_dir()?;
-                let runtime = resolve_runtime_bundle(&resource_dir)?;
-                let bootstrap_token = ephemeral_bootstrap_token()?;
-                let (mut events, child) = app
-                    .shell()
-                    .sidecar(NODE_SIDECAR_NAME)?
-                    .args(runtime.sidecar_arguments())
-                    .current_dir(&runtime.root)
-                    .env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())
-                    .env("FLOWAY_PROFILE", "personal")
-                    .env("NODE_ENV", "production")
-                    .spawn()?;
-                let owner = SidecarOwner::new(child);
+                let owner = SidecarOwner::new();
                 app.manage(Arc::clone(&owner));
-
                 let app_handle = app.handle().clone();
-                install_termination_signal(app_handle.clone())?;
+                let owner_for_signal = Arc::clone(&owner);
+                let Some((mut events, bootstrap_token)) = spawn_after_lifecycle_setup(
+                    || -> Result<(), Box<dyn Error>> {
+                        install_termination_signal(app_handle, owner_for_signal)?;
+                        Ok(())
+                    },
+                    || -> Result<_, Box<dyn Error>> {
+                        let resource_dir = app.path().resource_dir()?;
+                        let runtime = resolve_runtime_bundle(&resource_dir)?;
+                        let bootstrap_token = ephemeral_bootstrap_token()?;
+                        let events = owner.spawn_registered(|| {
+                            app.shell()
+                                .sidecar(NODE_SIDECAR_NAME)?
+                                .args(runtime.sidecar_arguments())
+                                .current_dir(&runtime.root)
+                                .env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())
+                                .env("FLOWAY_PROFILE", "personal")
+                                .env("NODE_ENV", "production")
+                                .spawn()
+                        })?;
+                        Ok(events.map(|events| (events, bootstrap_token)))
+                    },
+                )?
+                else {
+                    return Ok(());
+                };
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let mut pending_bootstrap_token = Some(bootstrap_token);
                     let mut runtime_stdout = String::new();

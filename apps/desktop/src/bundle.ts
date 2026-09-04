@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { chmod, copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 import { exchangeDirectoriesAtomically, type AtomicDirectoryExchange } from './atomic-directory.ts';
 import { settleWithCleanup } from './failure-chain.ts';
@@ -34,12 +35,20 @@ export interface PreparedDesktopBundle {
 
 interface DesktopBundleContract {
   readonly schemaVersion: 1;
+  readonly dashboard: {
+    readonly assets: readonly DashboardAssetContract[];
+  };
   readonly node: {
     readonly architecture: NodeJS.Architecture;
     readonly platform: NodeJS.Platform;
     readonly targetTriple: string;
     readonly version: string;
   };
+}
+
+interface DashboardAssetContract {
+  readonly path: string;
+  readonly sha256: string;
 }
 
 const requireFile = async (path: string): Promise<void> => {
@@ -66,6 +75,26 @@ const requireMigrations = async (runtimeRoot: string): Promise<void> => {
       cause: new Error('the directory contains no SQL migrations'),
     });
   }
+};
+
+const dashboardAssetContract = async (runtimeRoot: string): Promise<readonly DashboardAssetContract[]> => {
+  const dashboardRoot = resolve(runtimeRoot, 'apps/web/dist/client');
+  const assets: DashboardAssetContract[] = [];
+  await visitFileTree(dashboardRoot, async ({ dirent, path }) => {
+    if (!dirent.isFile()) return;
+    assets.push({
+      path: relative(dashboardRoot, path).split(sep).join('/'),
+      sha256: createHash('sha256').update(await readFile(path)).digest('hex'),
+    });
+  });
+  assets.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  if (!assets.some(asset => asset.path === 'index.html')) {
+    throw new Error(`Desktop bundle Dashboard manifest has no index.html beneath ${dashboardRoot}`);
+  }
+  if (!assets.some(asset => asset.path === 'dashboard-routes.json')) {
+    throw new Error(`Desktop bundle Dashboard manifest has no dashboard-routes.json beneath ${dashboardRoot}`);
+  }
+  return assets;
 };
 
 const requirePhysicalProductionDependencies = async (runtimeRoot: string): Promise<void> => {
@@ -199,15 +228,6 @@ export const prepareDesktopBundle = async ({
   const extension = nodePlatform === 'win32' ? '.exe' : '';
   const sidecarName = `floway-node-${targetTriple}${extension}`;
   const stagedNodeSidecar = resolve(stagedBinariesRoot, sidecarName);
-  const contract: DesktopBundleContract = {
-    schemaVersion: 1,
-    node: {
-      architecture: nodeArchitecture,
-      platform: nodePlatform,
-      targetTriple,
-      version: nodeVersion,
-    },
-  };
   await rm(stagingContainer, { force: true, recursive: true });
   await mkdir(stagedBinariesRoot, { recursive: true });
   await settleWithCleanup(async () => {
@@ -225,6 +245,16 @@ export const prepareDesktopBundle = async ({
       await makeNativeModulesTargetSpecific(stagedRuntimeRoot, architectureForTargetTriple(targetTriple));
     }
     await assertPackagedRuntime(stagedRuntimeRoot);
+    const contract: DesktopBundleContract = {
+      schemaVersion: 1,
+      dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
+      node: {
+        architecture: nodeArchitecture,
+        platform: nodePlatform,
+        targetTriple,
+        version: nodeVersion,
+      },
+    };
     try {
       await copyFile(nodeExecutable, stagedNodeSidecar);
       if (nodePlatform !== 'win32') await chmod(stagedNodeSidecar, 0o755);

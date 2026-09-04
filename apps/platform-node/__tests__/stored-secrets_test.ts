@@ -173,7 +173,10 @@ test('personal profile reports a lost OS-held key for existing upstream or web s
 
 test('personal startup rejects a successful Linux keyutils fallback mutation with the Secret Service verification chain', async () => {
   let fallbackMutationSucceeded = false;
-  const credential = await createOperatingSystemCredential('Floway test', 'fallback-startup', 'linux', {
+  const credential = await createOperatingSystemCredential({
+    service: 'Floway test',
+    account: 'fallback-startup',
+  }, 'linux', {
     Entry: class {
       getSecret = () => null;
       setSecret = () => undefined;

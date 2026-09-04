@@ -49,6 +49,7 @@ const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
     ],
     ['apps/web/dist/client/index.html', '<!doctype html>'],
     ['apps/web/dist/client/dashboard-routes.json', '["/"]'],
+    ['apps/web/dist/client/assets/lazy-dashboard.js', 'export const lazyDashboard = true;'],
   ];
   await Promise.all(files.map(async ([file, content]) => {
     const path = resolve(runtimeRoot, file);
@@ -113,6 +114,15 @@ describe('desktop bundle preparation', () => {
       `src-tauri/bundle-inputs/binaries/floway-node-${targetTriple}${process.platform === 'win32' ? '.exe' : ''}`,
     ));
     expect(prepared.contractPath).toBe(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json'));
+    const contract = JSON.parse(await readFile(prepared.contractPath, 'utf8')) as {
+      dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
+    };
+    expect(contract.dashboard?.assets?.map(asset => asset.path)).toEqual([
+      'assets/lazy-dashboard.js',
+      'dashboard-routes.json',
+      'index.html',
+    ]);
+    expect(contract.dashboard?.assets?.every(asset => /^[\da-f]{64}$/.test(String(asset.sha256)))).toBe(true);
     expect((await stat(prepared.nodeSidecar)).size).toBe((await stat(nodeExecutable)).size);
     if (process.platform !== 'win32') {
       expect((await stat(prepared.nodeSidecar)).mode & 0o777).toBe(0o755);

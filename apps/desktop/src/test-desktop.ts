@@ -1,9 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { deferDisposableDesktopPaths, removeDisposableDesktopPaths } from './desktop-verification.ts';
+import { withFailureSafeCleanup } from './failure-chain.ts';
 import { acquireNodeDistribution } from './node-distribution.ts';
 import {
   architectureForTargetTriple,
@@ -64,6 +66,10 @@ const generatedPaths = [
   resolve(desktopRoot, 'src-tauri/.desktop-verification'),
   resolve(desktopRoot, 'src-tauri/gen'),
 ];
+const generatedDesktopOutputs = generatedPaths.map(path => ({
+  label: `generated desktop output ${path}`,
+  path,
+}));
 
 const canExecuteNode = async (path: string): Promise<boolean> => {
   try {
@@ -73,15 +79,23 @@ const canExecuteNode = async (path: string): Promise<boolean> => {
   }
 };
 
-try {
-  await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
+await withFailureSafeCleanup(async cleanup => {
+  deferDisposableDesktopPaths(cleanup, generatedDesktopOutputs);
+  await removeDisposableDesktopPaths(generatedDesktopOutputs);
   await runPnpm(['--filter', '@floway-dev/desktop', 'run', 'test:rust']);
-  await rm(resolve(desktopRoot, 'src-tauri/target'), { force: true, recursive: true });
+  await removeDisposableDesktopPaths([{
+    label: 'no-default-feature Rust target output',
+    path: resolve(desktopRoot, 'src-tauri/target'),
+  }]);
   await runPnpm(['run', 'build:web']);
   for (const targetTriple of MACOS_TARGET_TRIPLES) {
     const distributionRoot = resolve(desktopRoot, 'src-tauri/.desktop-verification', targetTriple);
     const targetOutput = resolve(desktopRoot, 'src-tauri/target', targetTriple);
-    try {
+    await withFailureSafeCleanup(async targetCleanup => {
+      deferDisposableDesktopPaths(targetCleanup, [
+        { label: `target output ${targetTriple}`, path: targetOutput },
+        { label: `Node distribution ${targetTriple}`, path: distributionRoot },
+      ]);
       const nodeExecutable = await acquireNodeDistribution(packagedNodeVersion, targetTriple, distributionRoot);
       const targetArchitecture = architectureForTargetTriple(targetTriple);
       const launch = process.arch === targetArchitecture;
@@ -122,13 +136,6 @@ try {
         `--target=${targetTriple}`,
         `--launch=${launch ? 'yes' : 'no'}`,
       ], environment);
-    } finally {
-      await Promise.all([
-        rm(targetOutput, { force: true, recursive: true }),
-        rm(distributionRoot, { force: true, recursive: true }),
-      ]);
-    }
+    }, `Floway ${targetTriple} desktop verification failed and target cleanup also failed`);
   }
-} finally {
-  await Promise.all(generatedPaths.map(path => rm(path, { force: true, recursive: true })));
-}
+}, 'Floway desktop verification failed and generated-output cleanup also failed');
