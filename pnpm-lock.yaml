@@ -161,6 +161,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@floway-dev/platform':
+        specifier: workspace:*
+        version: link:../../packages/platform
       '@floway-dev/protocols':
         specifier: workspace:*
         version: link:../../packages/protocols
@@ -391,6 +394,9 @@ importers:
       '@hono/zod-validator':
         specifier: ^0.8.0
         version: 0.8.0(hono@4.12.22)(zod@4.4.3)
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       es-toolkit:
         specifier: ^1.49.0
         version: 1.49.0

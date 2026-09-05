@@ -1,5 +1,7 @@
 import type { Context } from 'hono';
 
+import { ClientSafeBadRequestError } from './client-safe-error.ts';
+
 const serializeErrorCause = (cause: unknown): unknown => {
   if (cause instanceof Error) {
     return {
@@ -22,6 +24,10 @@ const serializeErrorCause = (cause: unknown): unknown => {
 
 export const internalErrorResponse = (error: Error, c: Context): Response => {
   console.error(error);
+
+  if (error instanceof ClientSafeBadRequestError) {
+    return c.json({ error: error.clientMessage }, 400);
+  }
 
   return c.json(
     {

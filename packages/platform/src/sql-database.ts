@@ -34,6 +34,10 @@ export interface SqlPreparedStatement {
 export interface SqlDatabase {
   prepare(query: string): SqlPreparedStatement;
   batch?(statements: SqlPreparedStatement[]): Promise<SqlResult[]>;
+  // Interactive transactions are optional because D1 only exposes atomic
+  // prepared-statement batches. The local SQLite adapter provides this for
+  // personal restore, whose already-validated writes must commit as one unit.
+  transaction?<T>(operation: () => Promise<T>): Promise<T>;
   // Execute a SQL string that may contain multiple statements. Used by
   // migration runners that need to apply hand-authored DDL files where a
   // single statement contains a `;` (e.g. CREATE TRIGGER ... BEGIN ... END;)

@@ -94,3 +94,17 @@ export function assertClaudeCodeUpstreamRecord(record: UpstreamRecord): asserts 
   }
   assertClaudeCodeUpstreamConfig(record.config);
 }
+
+export const claudeCodeUpstreamConfigForSafeExport = (record: UpstreamRecord): ClaudeCodeUpstreamConfig => {
+  assertClaudeCodeUpstreamRecord(record);
+  const account = record.config.accounts[0];
+  return {
+    accounts: [{
+      email: account.email,
+      accountUuid: account.accountUuid,
+      organizationUuid: account.organizationUuid,
+      subscriptionType: account.subscriptionType,
+      rateLimitTier: account.rateLimitTier,
+    }],
+  };
+};

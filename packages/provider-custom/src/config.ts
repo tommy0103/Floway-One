@@ -22,7 +22,7 @@
 import { customIngressHeaderNameIssue, isCustomIngressHeaderValue } from './ingress-header-rules.ts';
 import type { ModelEndpoints } from '@floway-dev/protocols/common';
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { endpointsField, modelsField, validateUpstreamPath } from '@floway-dev/provider';
+import { endpointsField, modelEndpointsForSafeExport, modelsField, routingBaseForSafeExport, upstreamModelsForSafeExport, validateUpstreamPath } from '@floway-dev/provider';
 
 export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 
@@ -34,7 +34,7 @@ export type CustomAuthStyle = 'bearer' | 'anthropic' | 'none';
 // unless overridden — the lookup table is the key itself. Kept
 // package-internal because outside callers reach the upstream through
 // the typed `customFetchXxx` transports, not by naming an endpoint key.
-const CUSTOM_PATH_OVERRIDE_KEYS = [
+export const CUSTOM_PATH_OVERRIDE_KEYS = [
   '/completions',
   '/chat/completions',
   '/responses',
@@ -233,4 +233,26 @@ export const assertCustomUpstreamRecord = (record: UpstreamRecord): CustomUpstre
 
   const apiKey = nonEmptyStringField(raw.apiKey, 'apiKey');
   return { ...record, kind: 'custom', config: { ...base, authStyle, apiKey } };
+};
+
+export const customUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
+  const config = assertCustomUpstreamRecord(record).config;
+  const pathOverrides = config.pathOverrides;
+  const pathOverrideKinds = pathOverrides === undefined
+    ? undefined
+    : CUSTOM_PATH_OVERRIDE_KEYS.filter(key => pathOverrides[key] !== undefined);
+  return {
+    ...routingBaseForSafeExport(config.baseUrl),
+    endpoints: modelEndpointsForSafeExport(config.endpoints),
+    ...(pathOverrideKinds === undefined ? {} : { pathOverrideKinds }),
+    ingressHeadersRules: config.ingressHeadersRules.map(rule => ({
+      key: rule.key,
+      source: rule.value === null ? 'client' : 'configured',
+    })),
+    modelsFetch: config.modelsFetch.endpoint === undefined
+      ? { enabled: config.modelsFetch.enabled }
+      : { enabled: config.modelsFetch.enabled, endpointConfigured: true },
+    models: upstreamModelsForSafeExport(config.models),
+    authStyle: config.authStyle,
+  };
 };

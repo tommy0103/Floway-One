@@ -20,7 +20,7 @@
 // upstream id.
 
 import type { UpstreamModelConfig, UpstreamRecord } from '@floway-dev/provider';
-import { modelsField } from '@floway-dev/provider';
+import { modelsField, routingBaseForSafeExport, upstreamModelsForSafeExport } from '@floway-dev/provider';
 
 export interface OllamaUpstreamConfig {
   baseUrl: string;
@@ -104,4 +104,13 @@ const cloudUsageField = (value: unknown): boolean => {
 export const assertOllamaUpstreamRecord = (record: UpstreamRecord): OllamaUpstreamRecord => {
   if (record.kind !== 'ollama') throw new Error(`Expected ollama upstream record, got ${record.kind}`);
   return { ...record, kind: 'ollama', config: parseOllamaUpstreamConfig(record.config) };
+};
+
+export const ollamaUpstreamConfigForSafeExport = (record: UpstreamRecord): unknown => {
+  const config = assertOllamaUpstreamRecord(record).config;
+  return {
+    ...routingBaseForSafeExport(config.baseUrl),
+    cloudUsage: config.cloudUsage,
+    models: upstreamModelsForSafeExport(config.models),
+  };
 };

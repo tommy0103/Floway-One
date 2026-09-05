@@ -27,12 +27,14 @@ export {
 } from './quota.ts';
 export {
   assertCopilotUpstreamRecord,
+  copilotUpstreamConfigForSafeExport,
   parseCopilotUpstreamConfig,
   type CopilotUpstreamConfig,
   type CopilotUpstreamUser,
 } from './config.ts';
 export {
   assertCopilotUpstreamState,
+  copilotUpstreamStateForSafeExport,
   emptyCopilotUpstreamState,
   readCopilotUpstreamState,
   type CopilotQuotaSnapshotEntry,

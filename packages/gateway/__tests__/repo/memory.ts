@@ -12,6 +12,7 @@ import {
 } from '../../src/repo/openai-responses-clone.ts';
 import { quantizeOpenAIResponsesRefreshedAt, OPENAI_RESPONSES_REFRESH_GRANULARITY_MS, openaiResponsesStateCutoff } from '../../src/repo/openai-responses-retention.ts';
 import { normalizeProxyFallbackList } from '../../src/repo/proxy-fallback-list.ts';
+import { normalizeUsageUpstream, performanceRecordIdentity, usageRecordIdentity, webSearchUsageRecordIdentity } from '../../src/repo/record-identities.ts';
 import { SEED_ADMIN_USER_ID } from '../../src/repo/seed-admin.ts';
 import { generateSessionToken } from '../../src/repo/session-tokens.ts';
 import type {
@@ -65,10 +66,11 @@ import type {
 } from '../../src/repo/types.ts';
 import { serializeStoredConfig, serializeStoredState } from '../../src/repo/upstream-json.ts';
 import { usageMetricRows } from '../../src/repo/usage-metrics.ts';
+import { sqliteNoCaseUsernameIdentity } from '../../src/repo/user-identities.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../../src/shared/performance-histogram.ts';
 import { assertWebSearchProviderName, type WebSearchConfig } from '../../src/shared/web-search-providers.ts';
 import { AgentSetupTokenCollisionError } from '@floway-dev/agent-setup';
-import { addDecimalStrings, canonicalPricingSelectorKey, canonicalizePricingSelector, multiplyDecimalStrings, tokenUsageUnattributedUserId, usageUpstreamDimensionValue, type BillingMetric, type DecimalString, type PricingSelector } from '@floway-dev/protocols/common';
+import { addDecimalStrings, canonicalizePricingSelector, multiplyDecimalStrings, tokenUsageUnattributedUserId, usageUpstreamDimensionValue, type BillingMetric, type DecimalString, type PricingSelector } from '@floway-dev/protocols/common';
 import { UpstreamGoneError, type UpstreamModelsCache, type UpstreamRecord } from '@floway-dev/provider';
 
 const SEED_ADMIN_USER: User = {
@@ -81,11 +83,8 @@ const SEED_ADMIN_USER: User = {
   deletedAt: null,
 };
 
-// Mirror the SQL `username TEXT COLLATE NOCASE` collation: usernames match
-// case-insensitively for both lookup and uniqueness. `USERNAME_PATTERN`
-// restricts usernames to ASCII, so a plain `toLowerCase()` fold is exactly
-// SQLite's NOCASE.
-const usernamesMatch = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+const usernamesMatch = (a: string, b: string): boolean =>
+  sqliteNoCaseUsernameIdentity(a) === sqliteNoCaseUsernameIdentity(b);
 
 class MemoryUsersRepo implements UsersRepo {
   private users: User[] = [{ ...SEED_ADMIN_USER }];
@@ -391,7 +390,7 @@ class MemoryUsageRepo implements UsageRepo {
   constructor(private readonly apiKeys: ApiKeyRepo) {}
 
   private key(r: UsageBucketIdentity): string {
-    return [r.keyId, r.model, r.upstream ?? '', r.modelKey, r.hour, canonicalPricingSelectorKey(r.pricingSelector)].join('\0');
+    return usageRecordIdentity(r);
   }
 
   private toRecord(state: UsageBucketState): UsageRecord {
@@ -403,7 +402,7 @@ class MemoryUsageRepo implements UsageRepo {
     const k = this.key({ ...record, pricingSelector });
     let state = this.store.get(k);
     if (!state) {
-      state = { keyId: record.keyId, model: record.model, upstream: record.upstream ?? null, modelKey: record.modelKey, hour: record.hour, pricingSelector, metrics: new Map(), requests: 0 };
+      state = { keyId: record.keyId, model: record.model, upstream: normalizeUsageUpstream(record.upstream), modelKey: record.modelKey, hour: record.hour, pricingSelector, metrics: new Map(), requests: 0 };
       this.store.set(k, state);
     }
     return state;
@@ -488,10 +487,11 @@ class MemoryUsageRepo implements UsageRepo {
   set(record: UsageRecord): Promise<void> {
     const pricingSelector = canonicalizePricingSelector(record.pricingSelector);
     const k = this.key({ ...record, pricingSelector });
+    const upstream = normalizeUsageUpstream(record.upstream);
     const state: UsageBucketState = {
       keyId: record.keyId,
       model: record.model,
-      upstream: record.upstream ?? null,
+      upstream,
       modelKey: record.modelKey,
       hour: record.hour,
       pricingSelector,
@@ -515,7 +515,7 @@ class MemoryWebSearchUsageRepo implements WebSearchUsageRepo {
   private store = new Map<string, WebSearchUsageRecord>();
 
   private key(r: { provider: WebSearchUsageRecord['provider']; keyId: string; action: WebSearchUsageRecord['action']; hour: string }): string {
-    return `${r.provider}\0${r.keyId}\0${r.action}\0${r.hour}`;
+    return webSearchUsageRecordIdentity(r);
   }
 
   record(args: { provider: WebSearchUsageRecord['provider']; keyId: string; action: WebSearchUsageRecord['action']; hour: string; requests: number }): Promise<void> {
@@ -684,7 +684,7 @@ class MemoryPerformanceRepo implements PerformanceRepo {
   }
 
   private rowKey(dims: PerformanceDimensions): string {
-    return `${dims.hour}\0${dims.keyId}\0${dims.model}\0${dims.upstream}\0${dims.operation}\0${dims.runtimeLocation}`;
+    return performanceRecordIdentity(dims);
   }
 
   private upsertRow(dims: PerformanceDimensions): StoredPerformanceRow {
@@ -1481,6 +1481,13 @@ export class InMemoryRepo implements Repo {
   expirationSweeps: ExpirationSweepsRepo;
   scheduledMaintenance: ScheduledMaintenanceRepo;
   agentSetup: AgentSetupRepository;
+
+  // Production personal restore uses the SQLite transaction boundary. Tests
+  // that do not inject persistence failures use this synchronous in-memory
+  // stand-in so they exercise the same public route contract.
+  transaction<T>(operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
 
   constructor() {
     this.users = new MemoryUsersRepo();

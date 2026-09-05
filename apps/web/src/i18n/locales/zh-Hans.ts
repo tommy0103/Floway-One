@@ -1033,20 +1033,31 @@ const zhHansCN = {
         },
       },
       backupRestore: {
+        runtimeError: {
+          title: '备份控件不可用',
+          message: 'Floway 无法确定当前运行时配置。未启用任何导出或恢复控件。{{message}}',
+        },
         export: {
           heading: '导出',
           description:
               '下载用户、API 密钥、服务端密钥、各项配置和用量数据。请像数据库备份一样妥善保管。',
+          personalDescription: '创建用于恢复的密码加密完整备份，或创建用于诊断和分享的不含凭据安全导出。',
+          password: '备份密码',
+          passwordHint: 'Floway 不会保存此密码。在本机或其他设备上恢复完整备份时必须提供该密码。',
           includePerformance: '包含性能遥测数据',
           includePerformanceHint:
               '启用后，导出文件将包含已记录的性能指标以及配置数据。性能数据可能会显著增加文件大小。',
           button: '导出 JSON',
+          fullButton: '下载完整备份',
+          safeButton: '下载安全导出',
+          actionsLabel: '备份导出操作',
           pending: '正在准备导出',
           success: '已下载 {{name}}',
         },
         import: {
           heading: '导入',
           description: '从之前导出的 JSON 备份文件中恢复配置。',
+          personalDescription: '恢复受密码保护的 Floway 完整备份。安全导出不能用于鉴权，也不能用于恢复。',
           dropzone: '将备份文件拖放到此处，或点击浏览',
           dropzoneActive: '释放文件以加载',
           fileSelected: '{{name}}（{{size, bytes}}）',
@@ -1054,8 +1065,12 @@ const zhHansCN = {
           replace: '替换现有数据',
           replaceHint:
               '在导入备份文件之前清除所有现有数据。不勾选时，导入的记录会添加到现有数据中，标识符匹配的已有记录会被覆盖。',
+          replaceHintPersonal: '以原子方式替换当前安装的数据。不勾选时，恢复的记录会与现有数据合并。',
           replaceWarning:
               '导入开始前会永久删除所有现有数据，此操作无法撤销。',
+          replaceWarningPersonal: 'Floway 会先完整校验并认证备份，再替换数据。如果任何恢复写入失败，当前安装会保持不变。',
+          password: '备份密码',
+          passwordHint: '输入用于保护此完整备份的密码。',
           button: '导入数据',
           pending: '正在导入备份文件',
           success: '已导入{{summary}}',
@@ -1070,7 +1085,7 @@ const zhHansCN = {
             performance_other: '{{count, number}} 条性能记录',
           },
           error: '导入失败。',
-          errorInvalidFile: '所选文件不是有效的 Floway 备份文件：{{message}}',
+          errorInvalidFile: '所选文件不是有效的 Floway 备份文件。',
           errorReadFile: '无法读取所选备份文件。',
           previewLabel: {
             users: '用户',
@@ -1085,6 +1100,7 @@ const zhHansCN = {
         confirmTitle: '确认导入',
         confirmMessage:
             '将从所选备份文件导入数据。在替换模式下，所有现有数据将被首先删除。是否继续？',
+        confirmMessagePersonal: '将恢复所选的已认证完整备份。在替换模式下，只有完整恢复成功后才会更改当前安装。是否继续？',
       },
       searchConfig: {
         heading: '搜索提供商',

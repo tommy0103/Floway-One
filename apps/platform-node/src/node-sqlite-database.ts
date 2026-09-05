@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
@@ -26,26 +27,31 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
     private readonly stmt: StatementSync,
     private readonly bound: readonly SqlBindValue[] = [],
     private readonly hardenFiles: () => void = () => undefined,
+    private readonly schedule: <T>(operation: () => T | Promise<T>) => Promise<T> = operation => Promise.resolve().then(operation),
   ) {}
 
   bind(...values: SqlBindValue[]): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.stmt, values, this.hardenFiles);
+    return new NodeSqlitePreparedStatement(this.stmt, values, this.hardenFiles, this.schedule);
   }
 
   first<T = Record<string, unknown>>(): Promise<T | null> {
-    const row = withPostcondition(
-      () => this.stmt.get(...(this.bound as never[])),
-      this.hardenFiles,
-    );
-    return Promise.resolve((row as T | undefined) ?? null);
+    return this.schedule(() => {
+      const row = withPostcondition(
+        () => this.stmt.get(...(this.bound as never[])),
+        this.hardenFiles,
+      );
+      return (row as T | undefined) ?? null;
+    });
   }
 
   all<T = Record<string, unknown>>(): Promise<SqlResult<T>> {
-    const rows = withPostcondition(
-      () => this.stmt.all(...(this.bound as never[])) as T[],
-      this.hardenFiles,
-    );
-    return Promise.resolve({ results: rows, success: true, meta: {} });
+    return this.schedule(() => {
+      const rows = withPostcondition(
+        () => this.stmt.all(...(this.bound as never[])) as T[],
+        this.hardenFiles,
+      );
+      return { results: rows, success: true, meta: {} };
+    });
   }
 
   runSync(): SqlResult {
@@ -61,15 +67,69 @@ class NodeSqlitePreparedStatement implements SqlPreparedStatement {
   }
 
   run(): Promise<SqlResult> {
-    return Promise.resolve(this.runSync());
+    return this.schedule(() => this.runSync());
   }
 }
 
 class NodeSqliteDatabase implements SqlDatabase {
-  constructor(private readonly db: DatabaseSync, private readonly hardenFiles: () => void) {}
+  private readonly transactionContext = new AsyncLocalStorage<boolean>();
+  private operationTail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly hardenFiles: () => void,
+  ) {}
+
+  private recoverTransaction(cause: unknown, lifecycle: TransactionLifecycle): never {
+    const failures = [cause];
+    const recovery = lifecycle.recover();
+    if (recovery.authority === 'active') {
+      try { this.db.exec('ROLLBACK'); } catch (rollbackFailure) { failures.push(rollbackFailure); }
+    }
+    try { this.hardenFiles(); } catch (hardeningFailure) { failures.push(hardeningFailure); }
+    if (failures.length === 1) throw cause;
+    throw new AggregateError(failures, 'Floway transaction failed and recovery was incomplete.', { cause });
+  }
+
+  private async runTransactionLifecycle<T>(
+    kind: TransactionLifecycleKind,
+    body: () => T | Promise<T>,
+  ): Promise<T> {
+    const plan = TRANSACTION_LIFECYCLES[kind];
+    const lifecycle = createTransactionLifecycle(kind);
+    const transition = (next: TransactionLifecycleStateKind): void => { lifecycle.advance(next); };
+    try {
+      this.db.exec(plan.beginSql);
+      transition('begun');
+      transition('body');
+      const result = await body();
+      plan.beforeCommit(transition, this.hardenFiles);
+      transition('commit');
+      this.db.exec('COMMIT');
+      transition('committed');
+      plan.afterCommit(transition, this.hardenFiles);
+      transition('done');
+      return result;
+    } catch (cause) {
+      this.recoverTransaction(cause, lifecycle);
+    }
+  }
+
+  private readonly schedule = <T>(operation: () => T | Promise<T>): Promise<T> => {
+    if (this.transactionContext.getStore()) return Promise.resolve().then(operation);
+    const pending = this.operationTail.then(operation, operation);
+    this.operationTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
 
   prepare(query: string): SqlPreparedStatement {
-    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], this.hardenFiles);
+    const hardenAfterStatement = (): void => {
+      // A personal restore transaction hardens the complete SQLite file set
+      // once, after every write succeeds and before COMMIT. Per-statement
+      // hardening would fail earlier and could not verify that final state.
+      if (!this.transactionContext.getStore()) this.hardenFiles();
+    };
+    return new NodeSqlitePreparedStatement(this.db.prepare(query), [], hardenAfterStatement, this.schedule);
   }
 
   // Wraps the supplied statements in a single transaction so the batch is
@@ -79,40 +139,133 @@ class NodeSqliteDatabase implements SqlDatabase {
   // run while this transaction is still open and trip
   // "cannot start a transaction within a transaction".
   batch(statements: SqlPreparedStatement[]): Promise<SqlResult[]> {
-    this.db.exec('BEGIN');
-    try {
-      const results = statements.map(stmt => {
-        if (!(stmt instanceof NodeSqlitePreparedStatement)) {
-          throw new Error('NodeSqliteDatabase.batch received a statement from a different database adapter');
-        }
-        return stmt.runSync();
-      });
-      this.db.exec('COMMIT');
-      this.hardenFiles();
-      return Promise.resolve(results);
-    } catch (e) {
-      // SQLite auto-rolls-back on a hard error class (SQLITE_FULL,
-      // SQLITE_IOERR, SQLITE_BUSY, SQLITE_NOMEM, SQLITE_INTERRUPT — see
-      // https://www.sqlite.org/lang_transaction.html "Response To Errors
-      // Within A Transaction"); the explicit ROLLBACK then throws
-      // "cannot rollback - no transaction is active" and would replace
-      // the original failure on the way out. Swallow that recovery throw
-      // so `throw e` always wins and the operator sees the real cause.
-      try { this.db.exec('ROLLBACK'); } catch { /* txn already auto-rolled-back */ }
-      try { this.hardenFiles(); } catch { /* preserve the transaction failure */ }
-      throw e;
-    }
+    const runStatements = (): SqlResult[] => statements.map(stmt => {
+      if (!(stmt instanceof NodeSqlitePreparedStatement)) {
+        throw new Error('NodeSqliteDatabase.batch received a statement from a different database adapter');
+      }
+      return stmt.runSync();
+    });
+    // A repository-level batch inside a broader restore transaction is
+    // already protected by that transaction and must not open a nested BEGIN.
+    if (this.transactionContext.getStore()) return this.schedule(runStatements);
+    return this.schedule(() => this.runTransactionLifecycle('batch', runStatements));
+  }
+
+  transaction<T>(operation: () => Promise<T>): Promise<T> {
+    return this.schedule(() => this.transactionContext.run(
+      true,
+      async () => await this.runTransactionLifecycle('interactive', operation),
+    ));
   }
 
   exec(sql: string): Promise<unknown> {
-    withPostcondition(() => this.db.exec(sql), this.hardenFiles);
-    return Promise.resolve(undefined);
+    return this.schedule(() => withPostcondition(() => this.db.exec(sql), this.hardenFiles));
   }
 }
 
 interface CreateNodeSqliteDatabaseOptions {
   readonly permissions?: InitializedPersonalStorage;
 }
+
+export type TransactionLifecyclePhase = 'not-begun' | 'begun' | 'body' | 'commit' | 'committed' | 'finalize' | 'recovery' | 'done';
+export type TransactionLifecycleKind = 'batch' | 'interactive';
+export type TransactionLifecycleStateKind =
+  | 'not-begun'
+  | 'begun'
+  | 'body'
+  | 'precommit-finalize'
+  | 'commit'
+  | 'committed'
+  | 'postcommit-finalize'
+  | 'recover-active'
+  | 'recover-closed'
+  | 'done';
+type TransactionLifecycleState = {
+  readonly kind: TransactionLifecycleStateKind;
+  readonly lifecycle: TransactionLifecycleKind;
+};
+type RecoveryStateKind = 'recover-active' | 'recover-closed';
+
+type TransactionLifecycleTransition = (next: TransactionLifecycleStateKind) => void;
+interface TransactionLifecyclePlan {
+  readonly beginSql: 'BEGIN' | 'BEGIN IMMEDIATE';
+  readonly beforeCommit: (transition: TransactionLifecycleTransition, hardenFiles: () => void) => void;
+  readonly afterCommit: (transition: TransactionLifecycleTransition, hardenFiles: () => void) => void;
+}
+
+const TRANSACTION_LIFECYCLES = {
+  batch: {
+    beginSql: 'BEGIN',
+    beforeCommit: () => undefined,
+    afterCommit: (transition, hardenFiles) => {
+      transition('postcommit-finalize');
+      hardenFiles();
+    },
+  },
+  interactive: {
+    beginSql: 'BEGIN IMMEDIATE',
+    beforeCommit: (transition, hardenFiles) => {
+      transition('precommit-finalize');
+      hardenFiles();
+    },
+    afterCommit: () => undefined,
+  },
+} as const satisfies Record<TransactionLifecycleKind, TransactionLifecyclePlan>;
+
+const LIFECYCLE_STATES = {
+  'not-begun': { phase: 'not-begun', recovery: 'recover-closed', next: { batch: ['begun', 'recover-closed'], interactive: ['begun', 'recover-closed'] } },
+  begun: { phase: 'begun', recovery: 'recover-active', next: { batch: ['body', 'recover-active'], interactive: ['body', 'recover-active'] } },
+  body: { phase: 'body', recovery: 'recover-active', next: { batch: ['commit', 'recover-active'], interactive: ['precommit-finalize', 'recover-active'] } },
+  'precommit-finalize': { phase: 'finalize', recovery: 'recover-active', next: { batch: [], interactive: ['commit', 'recover-active'] } },
+  commit: { phase: 'commit', recovery: 'recover-active', next: { batch: ['committed', 'recover-active'], interactive: ['committed', 'recover-active'] } },
+  committed: { phase: 'committed', recovery: 'recover-closed', next: { batch: ['postcommit-finalize', 'recover-closed'], interactive: ['done', 'recover-closed'] } },
+  'postcommit-finalize': { phase: 'finalize', recovery: 'recover-closed', next: { batch: ['done', 'recover-closed'], interactive: [] } },
+  'recover-active': { phase: 'recovery', recovery: 'recover-active', next: { batch: [], interactive: [] } },
+  'recover-closed': { phase: 'recovery', recovery: 'recover-closed', next: { batch: [], interactive: [] } },
+  done: { phase: 'done', recovery: 'recover-closed', next: { batch: ['recover-closed'], interactive: ['recover-closed'] } },
+} as const satisfies Record<TransactionLifecycleStateKind, {
+  readonly phase: TransactionLifecyclePhase;
+  readonly recovery: RecoveryStateKind;
+  readonly next: Record<TransactionLifecycleKind, readonly TransactionLifecycleStateKind[]>;
+}>;
+
+const advanceTransactionLifecycle = (
+  current: TransactionLifecycleState,
+  next: TransactionLifecycleStateKind,
+): TransactionLifecycleState => {
+  const allowed = LIFECYCLE_STATES[current.kind].next[current.lifecycle] as readonly TransactionLifecycleStateKind[];
+  if (!allowed.includes(next)) {
+    throw new Error(`Invalid Floway ${current.lifecycle} transaction lifecycle transition: ${current.kind} -> ${next}`);
+  }
+  return { kind: next, lifecycle: current.lifecycle };
+};
+
+const transactionPhase = (state: TransactionLifecycleState): TransactionLifecyclePhase =>
+  LIFECYCLE_STATES[state.kind].phase;
+
+export interface TransactionLifecycle {
+  readonly phase: TransactionLifecyclePhase;
+  advance(next: TransactionLifecycleStateKind): TransactionLifecyclePhase;
+  recover(): { readonly authority: 'active' | 'closed'; readonly phase: 'recovery' };
+}
+
+export const createTransactionLifecycle = (kind: TransactionLifecycleKind): TransactionLifecycle => {
+  let state: TransactionLifecycleState = { kind: 'not-begun', lifecycle: kind };
+  return {
+    get phase() { return transactionPhase(state); },
+    advance(next) {
+      state = advanceTransactionLifecycle(state, next);
+      return transactionPhase(state);
+    },
+    recover() {
+      state = advanceTransactionLifecycle(state, LIFECYCLE_STATES[state.kind].recovery);
+      return {
+        authority: state.kind === 'recover-active' ? 'active' : 'closed',
+        phase: 'recovery',
+      };
+    },
+  };
+};
 
 export const createNodeSqliteDatabase = (
   path: string,

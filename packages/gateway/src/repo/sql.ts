@@ -5,6 +5,7 @@ import { decodeAliasTargets, decodeAnnouncedMetadata, encodeAliasTargets, encode
 import { SqlOpenAIResponsesItemsRepo, SqlOpenAIResponsesSnapshotsRepo } from './openai-responses-state-sql.ts';
 import { querySqlPerformanceOverview } from './performance-overview-sql.ts';
 import { normalizeProxyFallbackList } from './proxy-fallback-list.ts';
+import { normalizeUsageUpstream, performanceRecordIdentity, usageStorageIdentity, webSearchUsageRecordIdentity } from './record-identities.ts';
 import { SqlScheduledMaintenanceRepo } from './scheduled-maintenance-sql.ts';
 import { generateSessionToken } from './session-tokens.ts';
 import { SqlSpilledFilesRepo } from './spilled-files-sql.ts';
@@ -482,8 +483,9 @@ class SqlUsageRepo implements UsageRepo {
   }
 
   async record(record: UsageRecord): Promise<void> {
-    const upstream = record.upstream ?? null;
+    const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
+    usageStorageIdentity({ ...record, upstream, pricingSelectorKey: selector });
     await this.db.prepare(
       `INSERT INTO usage_requests (key_id, model, upstream, model_key, hour, pricing_selector, requests) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO UPDATE SET requests = requests + excluded.requests`,
@@ -519,8 +521,9 @@ class SqlUsageRepo implements UsageRepo {
   }
 
   async set(record: UsageRecord): Promise<void> {
-    const upstream = record.upstream ?? null;
+    const upstream = normalizeUsageUpstream(record.upstream);
     const selector = canonicalPricingSelectorKey(record.pricingSelector);
+    usageStorageIdentity({ ...record, upstream, pricingSelectorKey: selector });
     const statements: SqlPreparedStatement[] = [
       this.db.prepare("DELETE FROM usage WHERE key_id = ? AND model = ? AND COALESCE(upstream, '') = COALESCE(?, '') AND model_key = ? AND hour = ? AND pricing_selector = ?")
         .bind(record.keyId, record.model, upstream, record.modelKey, record.hour, selector),
@@ -551,7 +554,14 @@ interface UsageRequestRow {
 
 type UsageIdentityRow = Pick<UsageMetricRow, 'key_id' | 'model' | 'upstream' | 'model_key' | 'hour' | 'pricing_selector'>;
 const usageBucketKey = (row: UsageIdentityRow): string =>
-  [row.key_id, row.model, row.upstream ?? '', row.model_key, row.hour, row.pricing_selector].join('\0');
+  usageStorageIdentity({
+    keyId: row.key_id,
+    model: row.model,
+    upstream: row.upstream,
+    modelKey: row.model_key,
+    hour: row.hour,
+    pricingSelectorKey: row.pricing_selector,
+  });
 
 const assembleUsageRecords = (metrics: readonly UsageMetricRow[], requests: readonly UsageRequestRow[]): UsageRecord[] => {
   const byBucket = new Map<string, UsageRecord>();
@@ -584,6 +594,7 @@ class SqlWebSearchUsageRepo implements WebSearchUsageRepo {
 
   async record(args: { provider: WebSearchUsageRecord['provider']; keyId: string; action: WebSearchUsageRecord['action']; hour: string; requests: number }): Promise<void> {
     const validProvider = assertWebSearchProviderName(args.provider);
+    webSearchUsageRecordIdentity({ ...args, provider: validProvider });
     await this.db
       .prepare(
         `INSERT INTO search_usage (provider, key_id, action, hour, requests) VALUES (?, ?, ?, ?, ?)
@@ -637,6 +648,7 @@ class SqlWebSearchUsageRepo implements WebSearchUsageRepo {
 
   async set(record: WebSearchUsageRecord): Promise<void> {
     const provider = assertWebSearchProviderName(record.provider);
+    webSearchUsageRecordIdentity({ ...record, provider });
     await this.db
       .prepare(
         `INSERT INTO search_usage (provider, key_id, action, hour, requests) VALUES (?, ?, ?, ?, ?)
@@ -670,11 +682,10 @@ const performanceDimensionsFromRow = (row: PerformanceDimensionRow): Performance
   runtimeLocation: row.runtime_location,
 });
 
-const performanceRecordKey = (dims: PerformanceDimensions): string =>
-  `${dims.hour}\0${dims.keyId}\0${dims.model}\0${dims.upstream}\0${dims.operation}\0${dims.runtimeLocation}`;
-
-const performanceDimensionBinds = (dims: PerformanceDimensions): SqlBindValue[] =>
-  [dims.hour, dims.keyId, dims.model, dims.upstream, dims.operation, dims.runtimeLocation];
+const performanceDimensionBinds = (dims: PerformanceDimensions): SqlBindValue[] => {
+  performanceRecordIdentity(dims);
+  return [dims.hour, dims.keyId, dims.model, dims.upstream, dims.operation, dims.runtimeLocation];
+};
 
 const PERFORMANCE_SUMMARY_COUNT_COLUMNS = ['requests', 'ttft_samples_ok', 'errors_with_output', 'errors_no_output', 'neutral', 'tpot_samples', 'ttft_ms_sum', 'tpot_us_sum'] as const;
 type PerformanceSummaryCountColumn = typeof PERFORMANCE_SUMMARY_COUNT_COLUMNS[number];
@@ -798,7 +809,7 @@ class SqlPerformanceRepo implements PerformanceRepo {
     const records = new Map<string, Omit<PerformanceTelemetryRecord, 'buckets'> & { buckets: PerformanceBucketRow[] }>();
     for (const row of summaryRows) {
       const dims = performanceDimensionsFromRow(row);
-      records.set(performanceRecordKey(dims), {
+      records.set(performanceRecordIdentity(dims), {
         ...dims,
         requests: row.requests,
         ttftSamplesOk: row.ttft_samples_ok,
@@ -818,7 +829,7 @@ class SqlPerformanceRepo implements PerformanceRepo {
     ).all<PerformanceDimensionRow & { metric: PerformanceMetric; lower: number; upper: number | null; count: number }>();
     for (const row of bucketRows) {
       const dims = performanceDimensionsFromRow(row);
-      const key = performanceRecordKey(dims);
+      const key = performanceRecordIdentity(dims);
       const record = records.get(key);
       // Every write path inserts the summary + buckets atomically, so a bucket
       // row without its summary is a DB invariant violation, not a domain case.
@@ -1657,6 +1668,7 @@ class SqlAgentSetupRepo implements AgentSetupRepository {
 }
 
 export class SqlRepo implements Repo {
+  transaction?: <T>(operation: () => Promise<T>) => Promise<T>;
   users: UsersRepo;
   sessions: SessionsRepo;
   apiKeys: ApiKeyRepo;
@@ -1694,5 +1706,6 @@ export class SqlRepo implements Repo {
     this.expirationSweeps = new SqlExpirationSweepsRepo(db);
     this.scheduledMaintenance = new SqlScheduledMaintenanceRepo(db);
     this.agentSetup = new SqlAgentSetupRepo(db);
+    if (db.transaction) this.transaction = operation => db.transaction!(operation);
   }
 }

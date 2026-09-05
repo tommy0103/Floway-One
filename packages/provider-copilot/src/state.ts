@@ -192,3 +192,48 @@ export const readCopilotUpstreamState = (raw: unknown): CopilotUpstreamState => 
     seat: raw.seat ?? null,
   };
 };
+
+const copilotQuotaForSafeExport = (snapshot: CopilotQuotaSnapshot): unknown => ({
+  observed_at: snapshot.observed_at,
+  reset_at: snapshot.reset_at,
+  quotas: Object.fromEntries(Object.entries(snapshot.quotas).map(([id, quota]) => [
+    id,
+    {
+      entitlement: quota.entitlement,
+      overage_count: quota.overage_count,
+      overage_permitted: quota.overage_permitted,
+      percent_remaining: quota.percent_remaining,
+      quota_remaining: quota.quota_remaining,
+      unlimited: quota.unlimited,
+    },
+  ])),
+});
+
+export const copilotUpstreamStateForSafeExport = (raw: unknown): unknown => {
+  const state = readCopilotUpstreamState(raw);
+  return {
+    knownModels: state.knownModels === null
+      ? null
+      : {
+          fetchedAt: state.knownModels.fetchedAt,
+          models: Object.fromEntries(Object.entries(state.knownModels.models).map(([id, model]) => [
+            id,
+            { lastSeenAt: model.lastSeenAt },
+          ])),
+        },
+    quotaSnapshot: state.quotaSnapshot === null
+      ? null
+      : {
+          fetchedAt: state.quotaSnapshot.fetchedAt,
+          data: copilotQuotaForSafeExport(state.quotaSnapshot.data),
+        },
+    seat: state.seat === null
+      ? null
+      : {
+          fetchedAt: state.seat.fetchedAt,
+          observedAt: state.seat.data.observed_at,
+          plan: state.seat.data.plan,
+          sku: state.seat.data.sku,
+        },
+  };
+};

@@ -1,25 +1,32 @@
+import { formatWithOptions } from 'node:util';
+
 import { Hono } from 'hono';
 import { expect, test, vi } from 'vitest';
 
-// The import handler warms the SWR models cache for every saved upstream by
-// calling each provider's getProvidedModels, which for Copilot / Custom would
-// make real upstream HTTP requests the test sandbox cannot serve and hang
-// until the vitest timeout. Stub the cache layer to a no-op so the import
-// path's own behavior (upserts, identity validation, etc.) is what the tests
-// exercise — the warm itself has dedicated coverage in models-cache_test.ts.
-vi.mock('../../../src/data-plane/providers/models-cache.ts', () => ({
-  fetchUpstreamModelsCached: () => Promise.resolve([]),
+const { warmModelsCacheMock } = vi.hoisted(() => ({
+  warmModelsCacheMock: vi.fn<(record: UpstreamRecord) => Promise<unknown>>(() => Promise.resolve(null)),
 }));
 
-import { exportData, importData } from '../../../src/control-plane/data-transfer/routes.ts';
-import { exportQuery, importBody } from '../../../src/control-plane/schemas.ts';
+// Import exercises the post-commit warm boundary without making provider
+// network calls. The actual reporter remains loaded so rejection observation
+// is tested through the production error boundary rather than a test double.
+vi.mock('../../../src/control-plane/shared/warm-models-cache.ts', async () => ({
+  ...await vi.importActual('../../../src/control-plane/shared/warm-models-cache.ts'),
+  warmModelsCache: warmModelsCacheMock,
+}));
+
+import { BackupArchiveAuthenticationError, createEncryptedBackupArchive, openEncryptedBackupArchive } from '../../../src/control-plane/data-transfer/backup-archive.ts';
+import { createFullBackup, exportData, importData, ImportIdentityError } from '../../../src/control-plane/data-transfer/routes.ts';
+import { exportQuery, fullBackupBody, importBody } from '../../../src/control-plane/schemas.ts';
 import { upstreamRecordToFullJson } from '../../../src/control-plane/upstreams/serialize.ts';
 import { DEFAULT_WEB_SEARCH_CONFIG } from '../../../src/data-plane/tools/web-search/config.ts';
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
+import { ClientSafeBadRequestError } from '../../../src/middleware/client-safe-error.ts';
+import { internalErrorResponse } from '../../../src/middleware/internal-error-response.ts';
 import { zValidator } from '../../../src/middleware/zod-validator.ts';
 import { initRepo } from '../../../src/repo/index.ts';
 import { SqlRepo } from '../../../src/repo/sql.ts';
-import type { ApiKey, PerformanceTelemetryRecord, Repo, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
+import type { ApiKey, ModelAliasRecord, PerformanceTelemetryRecord, Repo, WebSearchUsageRecord, StoredOpenAIResponsesItem, UsageRecord, User } from '../../../src/repo/types.ts';
 import { tokenUsageMetrics } from '../../../src/repo/usage-metrics.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
 import { InMemoryRepo } from '../../repo/memory.ts';
@@ -228,6 +235,47 @@ const CODEX_UPSTREAM: UpstreamRecord = {
   },
 };
 
+const CLAUDE_CODE_UPSTREAM: UpstreamRecord = {
+  id: 'up_claude_code_a',
+  kind: 'claude-code',
+  name: 'Claude Code (alice)',
+  enabled: true,
+  sortOrder: 35,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  flagOverrides: {},
+  disabledPublicModelIds: [],
+  proxyFallbackList: [],
+  modelPrefix: null,
+  modelsCache: null,
+  hue: 210,
+  config: {
+    accounts: [{
+      email: 'alice@example.com',
+      accountUuid: 'claude-account-a',
+      organizationUuid: null,
+      subscriptionType: 'pro',
+      rateLimitTier: 'default_claude_pro',
+    }],
+  },
+  state: {
+    accounts: [{
+      accountUuid: 'claude-account-a',
+      tokenKind: 'oauth',
+      refreshToken: 'claude-refresh-secret',
+      state: 'active',
+      stateUpdatedAt: '2026-01-01T00:00:00.000Z',
+      accessToken: {
+        token: 'claude-access-secret',
+        expiresAt: 1_900_000_000_000,
+        refreshedAt: '2026-01-01T00:00:00.000Z',
+      },
+      quotaSnapshot: null,
+      usageProbeSnapshot: null,
+    }],
+  },
+};
+
 const USAGE_1: UsageRecord = {
   keyId: 'key-a',
   model: 'claude-opus-4-7',
@@ -316,10 +364,26 @@ const PERFORMANCE_2: PerformanceTelemetryRecord = {
   ],
 };
 
+const ROUTING_ALIAS: ModelAliasRecord = {
+  id: 'alias-recovery',
+  name: 'recovery-route',
+  kind: 'chat',
+  selection: 'first-available',
+  displayName: 'Recovery route',
+  visibleInModelsList: true,
+  targets: [{ target_model_id: 'gpt-public', rules: { reasoning: { effort: 'high' } } }],
+  announcedMetadata: { limits: { max_output_tokens: 4096 } },
+  sortOrder: 4,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+};
+
 const setupWithRepo = <T extends Repo>(repo: T) => {
   initRepo(repo);
   const app = new Hono();
+  app.onError(internalErrorResponse);
   app.get('/export', zValidator('query', exportQuery), exportData);
+  app.post('/export', zValidator('json', fullBackupBody), createFullBackup);
   app.post('/import', zValidator('json', importBody), importData);
   return { repo, app };
 };
@@ -341,6 +405,28 @@ const doImport = async (app: Hono, mode: string, data: unknown, version: unknown
   return { status: resp.status, body: (await resp.json()) as Record<string, any> };
 };
 
+const doEncryptedImport = async (app: Hono, mode: 'merge' | 'replace', data: unknown) => {
+  const password = 'test-backup-password';
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data,
+  }, password);
+  const resp = await app.request('/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, archive, password }),
+  });
+  const responseText = await resp.text();
+  let body: Record<string, any>;
+  try {
+    body = JSON.parse(responseText) as Record<string, any>;
+  } catch {
+    body = { error: responseText };
+  }
+  return { status: resp.status, body };
+};
+
 const latestImportData = (overrides: Record<string, unknown> = {}) => ({
   users: [SEED_ADMIN],
   apiKeys: [],
@@ -358,6 +444,41 @@ test('import round-trips a usage record carrying a positive input-length coordin
   const result = await doImport(app, 'replace', latestImportData({ usage: [longRow] }));
   assertEquals(result.status, 200);
   assertEquals(await repo.usage.listAll(), [longRow]);
+});
+
+test('SQL import rejects non-representable NUL metric identities before mutating stored state', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.apiKeys.save(KEY_A);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+  const before = (await doExport(app, true)).data;
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  const attempts = [
+    await doImport(app, 'replace', latestImportData({ usage: [{ ...USAGE_2, model: 'model\0capability' }] })),
+    await doImport(app, 'replace', latestImportData({ searchUsage: [{ ...WEB_SEARCH_USAGE_2, keyId: 'key\0capability' }] })),
+    await doImport(app, 'replace', latestImportData({ performanceIncluded: true, performance: [{ ...PERFORMANCE_2, model: 'model\0capability' }] })),
+  ];
+
+  assertEquals(attempts.map(attempt => attempt.status), [400, 400, 400]);
+  assertEquals(attempts.map(attempt => attempt.body.error), [
+    'invalid usage identity at index 0: usage.model must not contain NUL',
+    'invalid searchUsage identity at index 0: searchUsage.keyId must not contain NUL',
+    'invalid performance identity at index 0: performance.model must not contain NUL',
+  ]);
+  assertEquals(logged.length, 3);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toMatchObject({
+      name: 'ImportIdentityError',
+      cause: { name: 'InvalidMetricIdentityError' },
+    });
+  }
+  assertEquals((await doExport(app, true)).data, before);
+  log.mockRestore();
 });
 
 test('import validates generic pricing selectors', async () => {
@@ -438,6 +559,410 @@ test('export includes performance only when requested', async () => {
   assertEquals(hasOwn(defaultExport.data, 'performance'), false);
   assertEquals(fullExport.data.performanceIncluded, true);
   assertEquals(fullExport.data.performance, [PERFORMANCE_1, PERFORMANCE_2]);
+});
+
+test('personal full backup encrypts every recovery secret under the supplied password', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.upstreams.save(COPILOT_UPSTREAM);
+  await repo.upstreams.save(AZURE_UPSTREAM);
+  await repo.upstreams.save(CODEX_UPSTREAM);
+  await repo.webSearchConfig.save({
+    provider: 'tavily',
+    tavily: { apiKey: 'tavily-recovery-secret' },
+    microsoftWebIq: { apiKey: '' },
+    jina: { apiKey: '' },
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'portable-password' }),
+    });
+    assertEquals(response.status, 200);
+    const archive = await response.json();
+    const serialized = JSON.stringify(archive);
+    expect(serialized).not.toContain(KEY_A.key);
+    expect(serialized).not.toContain(KEY_A.serverSecret);
+    expect(serialized).not.toContain('sk-custom');
+    expect(serialized).not.toContain('tavily-recovery-secret');
+
+    const restored = await openEncryptedBackupArchive(archive, 'portable-password') as Record<string, any>;
+    assertEquals(restored.version, 20);
+    assertEquals(restored.data.apiKeys, [KEY_A]);
+    assertEquals(restored.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id).config.apiKey, 'sk-custom');
+    assertEquals(restored.data.searchConfig.tavily.apiKey, 'tavily-recovery-secret');
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('safe export structurally omits every authentication-bearing field', async () => {
+  const { app, repo } = setup();
+  const customWithUrlSecrets: UpstreamRecord = {
+    ...CUSTOM_UPSTREAM,
+    config: {
+      ...(CUSTOM_UPSTREAM.config as Record<string, unknown>),
+      baseUrl: 'https://custom-user:custom-password@custom.example.com/gateway/base-path-secret?api_key=custom-query-secret#custom-fragment-secret',
+      pathOverrides: {
+        '/chat/completions': '/v1/path-override-secret/chat?api_key=query-secret#fragment-secret',
+      },
+      modelsFetch: { enabled: true, endpoint: '/models/models-fetch-path-secret?api_key=query-secret#fragment-secret' },
+      models: [{
+        upstreamModelId: 'rerank-safe-export',
+        kind: 'rerank',
+        endpoints: { rerank: {} },
+        rerankTarget: {
+          protocol: 'cohere-v2',
+          path: '/rerank/rerank-path-secret?api_key=query-secret#fragment-secret',
+        },
+      }],
+    },
+  };
+  const azureWithUrlSecrets: UpstreamRecord = {
+    ...AZURE_UPSTREAM,
+    config: {
+      ...(AZURE_UPSTREAM.config as Record<string, unknown>),
+      endpoint: 'https://azure-user:azure-password@example.openai.azure.com/openai/v1',
+    },
+  };
+  const { apiKey: _ollamaApiKey, ...unauthenticatedOllamaConfig } = OLLAMA_UPSTREAM.config as Record<string, unknown>;
+  const ollamaWithUrlSecrets: UpstreamRecord = {
+    ...OLLAMA_UPSTREAM,
+    config: {
+      ...unauthenticatedOllamaConfig,
+      baseUrl: 'https://ollama-user:ollama-password@ollama.example.com/ollama-path-capability-secret?token=ollama-query-secret#ollama-fragment-secret',
+    },
+  };
+  assertEquals(hasOwn(ollamaWithUrlSecrets.config as object, 'apiKey'), false);
+  const authenticatedOllama: UpstreamRecord = {
+    ...OLLAMA_UPSTREAM,
+    id: 'up_ollama_authenticated',
+    name: 'Authenticated Ollama',
+  };
+  assertEquals(hasOwn(authenticatedOllama.config as object, 'apiKey'), true);
+  await repo.users.save({ ...SEED_ADMIN, passwordHash: 'password-hash-secret' });
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(customWithUrlSecrets);
+  await repo.upstreams.save(COPILOT_UPSTREAM);
+  await repo.upstreams.save(azureWithUrlSecrets);
+  await repo.upstreams.save(CODEX_UPSTREAM);
+  await repo.upstreams.save(ollamaWithUrlSecrets);
+  await repo.upstreams.save(authenticatedOllama);
+  await repo.upstreams.save(CLAUDE_CODE_UPSTREAM);
+  await repo.proxies.save({
+    id: 'proxy-safe-export',
+    name: 'Authenticated proxy',
+    url: 'socks5://proxy-user:proxy-password@127.0.0.1:1080',
+    dialTimeoutSeconds: 9,
+  });
+  await repo.webSearchConfig.save({
+    provider: 'tavily',
+    tavily: { apiKey: 'tavily-safe-export-secret' },
+    microsoftWebIq: { apiKey: 'microsoft-safe-export-secret' },
+    jina: { apiKey: 'jina-safe-export-secret' },
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+
+  const response = await app.request('/export?kind=safe');
+  assertEquals(response.status, 200);
+  const exported = await response.json() as Record<string, any>;
+  assertEquals(exported.format, 'floway-safe-export');
+  assertEquals(exported.version, 1);
+  assertEquals(exported.data.users[0], {
+    id: SEED_ADMIN.id,
+    username: SEED_ADMIN.username,
+    isAdmin: SEED_ADMIN.isAdmin,
+    upstreamIds: SEED_ADMIN.upstreamIds,
+    createdAt: SEED_ADMIN.createdAt,
+    deletedAt: SEED_ADMIN.deletedAt,
+  });
+  assertEquals(exported.data.apiKeys[0].name, KEY_A.name);
+  assertEquals(hasOwn(exported.data.apiKeys[0], 'key'), false);
+  assertEquals(hasOwn(exported.data.apiKeys[0], 'serverSecret'), false);
+  const custom = exported.data.upstreams.find((upstream: any) => upstream.id === CUSTOM_UPSTREAM.id);
+  assertEquals(custom.config.baseUrl, 'https://custom.example.com');
+  assertEquals(Object.keys(custom.config).toSorted(), [
+    'authStyle', 'basePathConfigured', 'baseUrl', 'endpoints', 'ingressHeadersRules', 'models', 'modelsFetch', 'pathOverrideKinds',
+  ]);
+  assertEquals(custom.config.endpoints, CUSTOM_UPSTREAM.config && (CUSTOM_UPSTREAM.config as any).endpoints);
+  assertEquals(custom.config.ingressHeadersRules, [
+    { key: 'x-request-id', source: 'client' },
+    { key: 'x-route', source: 'configured' },
+  ]);
+  assertEquals(custom.config.pathOverrideKinds, ['/chat/completions']);
+  assertEquals(custom.config.modelsFetch, { enabled: true, endpointConfigured: true });
+  assertEquals(custom.config.models[0].rerankTarget, { protocol: 'cohere-v2', pathConfigured: true });
+  assertEquals(hasOwn(custom.config, 'apiKey'), false);
+  assertEquals(custom.state, null);
+  const copilot = exported.data.upstreams.find((upstream: any) => upstream.id === COPILOT_UPSTREAM.id);
+  assertEquals(copilot.config.githubHost, 'github.com');
+  assertEquals(copilot.config.user.login, 'alice');
+  assertEquals(Object.keys(copilot.config).toSorted(), ['githubHost', 'user']);
+  assertEquals(Object.keys(copilot.config.user).toSorted(), ['id', 'login', 'name']);
+  assertEquals(hasOwn(copilot.config, 'githubToken'), false);
+  const azure = exported.data.upstreams.find((upstream: any) => upstream.id === AZURE_UPSTREAM.id);
+  assertEquals(azure.config.endpoint, 'https://example.openai.azure.com/openai/v1');
+  assertEquals(Object.keys(azure.config).toSorted(), ['endpoint', 'models']);
+  assertEquals(azure.config.models.length, 2);
+  assertEquals(hasOwn(azure.config, 'apiKey'), false);
+  const codex = exported.data.upstreams.find((upstream: any) => upstream.id === CODEX_UPSTREAM.id);
+  assertEquals(codex.config.accounts[0].email, 'alice@example.com');
+  assertEquals(codex.state.accounts[0].state, 'active');
+  assertEquals(codex.state.accounts[0].openaiDeviceId, '11111111-2222-4333-8444-555555555555');
+  assertEquals(Object.keys(codex.state.accounts[0]).toSorted(), [
+    'chatgptAccountId', 'openaiDeviceId', 'quotaSnapshot', 'state', 'state_updated_at',
+  ]);
+  assertEquals(hasOwn(codex.state.accounts[0], 'refresh_token'), false);
+  assertEquals(hasOwn(codex.state.accounts[0], 'accessToken'), false);
+  const ollama = exported.data.upstreams.find((upstream: any) => upstream.id === OLLAMA_UPSTREAM.id);
+  assertEquals(ollama.config.baseUrl, 'https://ollama.example.com');
+  assertEquals(ollama.config.basePathConfigured, true);
+  assertEquals(Object.keys(ollama.config).toSorted(), ['basePathConfigured', 'baseUrl', 'cloudUsage', 'models']);
+  assertEquals(ollama.config.cloudUsage, true);
+  assertEquals(hasOwn(ollama.config, 'apiKey'), false);
+  const authenticatedOllamaExport = exported.data.upstreams.find((upstream: any) => upstream.id === authenticatedOllama.id);
+  assertEquals(hasOwn(authenticatedOllamaExport.config, 'apiKey'), false);
+  const claude = exported.data.upstreams.find((upstream: any) => upstream.id === CLAUDE_CODE_UPSTREAM.id);
+  assertEquals(claude.config.accounts[0].subscriptionType, 'pro');
+  assertEquals(claude.state.accounts[0].state, 'active');
+  assertEquals(Object.keys(claude.state.accounts[0]).toSorted(), [
+    'accountUuid', 'quotaSnapshot', 'state', 'stateUpdatedAt', 'tokenKind', 'usageProbeSnapshot',
+  ]);
+  assertEquals(hasOwn(claude.state.accounts[0], 'refreshToken'), false);
+  assertEquals(hasOwn(claude.state.accounts[0], 'accessToken'), false);
+  assertEquals(exported.data.proxies[0], { id: 'proxy-safe-export', name: 'Authenticated proxy', dial_timeout_seconds: 9 });
+  assertEquals(exported.data.searchConfig, {
+    provider: 'tavily',
+    credentials: {
+      tavily: { configured: true },
+      'microsoft-web-iq': { configured: true },
+      jina: { configured: true },
+    },
+    passthroughOpenAiSearch: { enabled: false, upstreamId: '', model: '' },
+  });
+  const serialized = JSON.stringify(exported);
+  for (const secret of [
+    'password-hash-secret',
+    KEY_A.key,
+    KEY_A.serverSecret,
+    'sk-custom',
+    'ghu-alice',
+    'az-key',
+    'rt_alice_v3',
+    'ollama-key',
+    'claude-refresh-secret',
+    'claude-access-secret',
+    'custom-user',
+    'custom-password',
+    'custom-query-secret',
+    'custom-fragment-secret',
+    'base-path-secret',
+    'path-override-secret',
+    'path-override-fragment-secret',
+    'models-fetch-secret',
+    'models-fetch-path-secret',
+    'models-fetch-fragment-secret',
+    'rerank-path-secret',
+    'rerank-path-fragment-secret',
+    'azure-user',
+    'azure-password',
+    'ollama-user',
+    'ollama-password',
+    'ollama-path-capability-secret',
+    'ollama-query-secret',
+    'ollama-fragment-secret',
+    'proxy-user',
+    'proxy-password',
+    'tavily-safe-export-secret',
+    'microsoft-safe-export-secret',
+    'jina-safe-export-secret',
+  ]) expect(serialized).not.toContain(secret);
+});
+
+test('personal restore authenticates an encrypted full backup before changing live data', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({ apiKeys: [KEY_B] }),
+  }, 'restore-password');
+  const tampered = { ...archive, ciphertext: `${archive.ciphertext.slice(0, -2)}AA` };
+
+  initRuntimeProfile('personal');
+  try {
+    for (const [candidate, password] of [
+      [archive, 'wrong-password'],
+      [tampered, 'restore-password'],
+    ] as const) {
+      const failed = await app.request('/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'replace', archive: candidate, password }),
+      });
+      assertEquals(failed.status, 400);
+      assertEquals(await repo.apiKeys.list(), [KEY_A]);
+    }
+
+    const restored = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive, password: 'restore-password' }),
+    });
+    assertEquals(restored.status, 200);
+    assertEquals(await repo.apiKeys.list(), [KEY_B]);
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('post-import cache warming reports every original rejection after the personal restore commits', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const customNative = Object.assign(new Error('custom provider unavailable'), { code: 'ECONNRESET' });
+  const azureNative = Object.assign(new Error('azure provider unavailable'), { code: 'ETIMEDOUT' });
+  const customFailure = new Error('custom cache warm failed', { cause: customNative });
+  const azureFailure = new Error('azure cache warm failed', { cause: azureNative });
+  warmModelsCacheMock.mockImplementation(record => {
+    if (record.id === CUSTOM_UPSTREAM.id) return Promise.reject(customFailure);
+    if (record.id === AZURE_UPSTREAM.id) return Promise.reject(azureFailure);
+    return Promise.resolve(null);
+  });
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  initRuntimeProfile('personal');
+  try {
+    const result = await doEncryptedImport(app, 'replace', latestImportData({
+      apiKeys: [KEY_B],
+      upstreams: [upstreamRecordToFullJson(CUSTOM_UPSTREAM), upstreamRecordToFullJson(AZURE_UPSTREAM)],
+    }));
+
+    assertEquals(result.status, 200);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_B]);
+    assertEquals((await repo.upstreams.list()).map(upstream => upstream.id).toSorted(), [
+      AZURE_UPSTREAM.id,
+      CUSTOM_UPSTREAM.id,
+    ].toSorted());
+    const warmLogs = logged.filter(args => args[0] === '[models-cache] post-import warm failed');
+    assertEquals(warmLogs.length, 2);
+    const failuresById = new Map(warmLogs.map(args => [args[1], args[2]]));
+    expect(failuresById.get(CUSTOM_UPSTREAM.id)).toBe(customFailure);
+    expect((failuresById.get(CUSTOM_UPSTREAM.id) as Error).cause).toBe(customNative);
+    expect(failuresById.get(AZURE_UPSTREAM.id)).toBe(azureFailure);
+    expect((failuresById.get(AZURE_UPSTREAM.id) as Error).cause).toBe(azureNative);
+  } finally {
+    log.mockRestore();
+    warmModelsCacheMock.mockReset();
+    warmModelsCacheMock.mockResolvedValue(null);
+    initRuntimeProfile('server');
+  }
+});
+
+test('backup authentication rejection retains its internal cause chain but returns and logs no secrets', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  const password = 'PASSWORD_NOT_FOR_RESPONSE_21';
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({ apiKeys: [KEY_B], upstreams: [upstreamRecordToFullJson(CUSTOM_UPSTREAM)] }),
+  }, password);
+  const tampered = { ...archive, ciphertext: `${archive.ciphertext.slice(0, -2)}AA` };
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive: tampered, password }),
+    });
+    const body = await response.text();
+
+    assertEquals(response.status, 400);
+    assertEquals(JSON.parse(body), { error: 'The backup could not be authenticated or validated.' });
+    const reported = logged[0]?.[0];
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toBeInstanceOf(BackupArchiveAuthenticationError);
+    expect(((reported as ClientSafeBadRequestError).cause as BackupArchiveAuthenticationError).cause).toBeInstanceOf(Error);
+    const rendered = formatWithOptions({ colors: false, depth: null }, '%o', reported);
+    for (const secret of [password, KEY_B.key, KEY_B.serverSecret, 'sk-custom']) {
+      expect(`${body}\n${rendered}`).not.toContain(secret);
+    }
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+  } finally {
+    log.mockRestore();
+    initRuntimeProfile('server');
+  }
+});
+
+test('personal profile refuses legacy plaintext export and import paths', async () => {
+  const { app, repo } = setup();
+  await repo.users.save(SEED_ADMIN);
+  initRuntimeProfile('personal');
+  try {
+    const exported = await app.request('/export');
+    assertEquals(exported.status, 400);
+
+    const imported = await doImport(app, 'replace', latestImportData());
+    assertEquals(imported.status, 400);
+    assertEquals(imported.body.error, 'Personal profile restore requires a password-protected full backup.');
+  } finally {
+    initRuntimeProfile('server');
+  }
+});
+
+test('a personal restore persistence failure rolls back every live-data change and preserves its cause', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  const usersBefore = await repo.users.listIncludingDeleted();
+  const archive = await createEncryptedBackupArchive({
+    version: 20,
+    exportedAt: '2026-09-03T00:00:00.000Z',
+    data: latestImportData({
+      apiKeys: [KEY_B],
+      upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+    }),
+  }, 'rollback-password');
+  const persistenceCause = new Error('forced upstream persistence failure');
+  const saveUpstream = vi.spyOn(repo.upstreams, 'save').mockRejectedValueOnce(persistenceCause);
+  let observedFailure: Error | undefined;
+  app.onError((error, c) => {
+    observedFailure = error;
+    return c.json({ error: error.message }, 500);
+  });
+
+  initRuntimeProfile('personal');
+  try {
+    const response = await app.request('/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'replace', archive, password: 'rollback-password' }),
+    });
+
+    assertEquals(response.status, 500);
+    assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
+    assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+    assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+    assertEquals(saveUpstream.mock.calls.length, 1);
+    expect(observedFailure).toBe(persistenceCause);
+  } finally {
+    saveUpstream.mockRestore();
+    initRuntimeProfile('server');
+  }
 });
 
 test('import rejects any version other than the current one before deleting data', async () => {
@@ -1129,6 +1654,106 @@ test('import rejects api key unique identity conflicts before mutating', async (
   assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
 });
 
+test('import rejects duplicate outer collection identities before mutating any state', async () => {
+  const { app, repo } = setup();
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+  await repo.users.save(SEED_ADMIN);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+  await repo.webSearchConfig.save(DEFAULT_WEB_SEARCH_CONFIG);
+  const before = await (await app.request('/export')).json() as { data: unknown };
+
+  const attempts = [
+    await doImport(app, 'replace', latestImportData({
+      upstreams: [
+        upstreamRecordToFullJson(CUSTOM_UPSTREAM),
+        upstreamRecordToFullJson({ ...CUSTOM_UPSTREAM, name: 'Hybrid', config: { ...(CUSTOM_UPSTREAM.config as object), baseUrl: 'https://different.example' } }),
+      ],
+    })),
+    await doImport(app, 'replace', latestImportData({ usage: [{ ...USAGE_2, upstream: null }, { ...USAGE_2, upstream: '', requests: USAGE_2.requests + 1 }] })),
+    await doImport(app, 'replace', latestImportData({ searchUsage: [WEB_SEARCH_USAGE_2, { ...WEB_SEARCH_USAGE_2, requests: WEB_SEARCH_USAGE_2.requests + 1 }] })),
+    await doImport(app, 'replace', latestImportData({ performanceIncluded: true, performance: [PERFORMANCE_2, { ...PERFORMANCE_2, ttftMsSum: PERFORMANCE_2.ttftMsSum + 1 }] })),
+  ];
+
+  for (const attempt of attempts) assertEquals(attempt.status, 400);
+  assertEquals(attempts.map(attempt => attempt.body.error), [
+    'duplicate upstreams identity at indexes 0 and 1',
+    'duplicate usage identity at indexes 0 and 1',
+    'duplicate searchUsage identity at indexes 0 and 1',
+    'duplicate performance identity at indexes 0 and 1',
+  ]);
+  assertEquals(logged.length, 4);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toMatchObject({ name: 'ImportIdentityError' });
+  }
+  assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+  assertEquals(await repo.usage.listAll(), [USAGE_1]);
+  assertEquals(await repo.webSearchUsage.listAll(), [WEB_SEARCH_USAGE_1]);
+  assertEquals(await repo.performance.listAll(), [PERFORMANCE_1]);
+  const after = await (await app.request('/export')).json() as { data: unknown };
+  assertEquals(after.data, before.data);
+  log.mockRestore();
+});
+
+test('import rejects SQLite-NOCASE active username conflicts before mutating full state', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  const existingAlice = { ...USER_BOB, id: 3, username: 'Alice' };
+  await repo.users.save(SEED_ADMIN);
+  await repo.users.save(existingAlice);
+  await repo.apiKeys.save(KEY_A);
+  await repo.upstreams.save(CUSTOM_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
+  await repo.usage.set(USAGE_1);
+  await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
+  await repo.performance.set(PERFORMANCE_1);
+  await repo.webSearchConfig.save(DEFAULT_WEB_SEARCH_CONFIG);
+  const before = (await doExport(app, true)).data;
+  const logged: unknown[][] = [];
+  const log = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+
+  const replace = await doImport(app, 'replace', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'Admin' }],
+  }));
+  const merge = await doImport(app, 'merge', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'ALICE' }],
+  }));
+
+  assertEquals(replace.status, 400);
+  assertEquals(replace.body.error, 'invalid users: duplicate active users username "admin" at indexes 0 and 1');
+  assertEquals(merge.status, 400);
+  assertEquals(merge.body.error, 'invalid users: active users username "alice" for user 2 conflicts with existing user 3');
+  assertEquals(logged.length, 2);
+  for (const [reported] of logged) {
+    expect(reported).toBeInstanceOf(ClientSafeBadRequestError);
+    expect((reported as ClientSafeBadRequestError).cause).toBeInstanceOf(ImportIdentityError);
+    expect(((reported as ClientSafeBadRequestError).cause as Error).stack).toBeTruthy();
+  }
+  assertEquals((await doExport(app, true)).data, before);
+  log.mockRestore();
+});
+
+test('merge import allows an active username to reuse a deleted destination username', async () => {
+  const db = await createSqliteTestDb();
+  const { app, repo } = setupWithRepo(new SqlRepo(db));
+  await repo.users.save(SEED_ADMIN);
+  await repo.users.save({ ...USER_BOB, id: 3, username: 'Alice', deletedAt: '2026-01-02T00:00:00.000Z' });
+
+  const result = await doImport(app, 'merge', latestImportData({
+    users: [SEED_ADMIN, { ...USER_BOB, username: 'ALICE' }],
+  }));
+
+  assertEquals(result.status, 200);
+  assertEquals((await repo.users.findByUsername('alice'))?.id, USER_BOB.id);
+  assertEquals((await repo.users.listIncludingDeleted()).find(user => user.id === 3)?.deletedAt, '2026-01-02T00:00:00.000Z');
+});
+
 test('import requires an exact lowercase hexadecimal serverSecret on every api key', async () => {
   const { app, repo } = setup();
   await repo.apiKeys.save(KEY_A);
@@ -1462,7 +2087,7 @@ test('personal profile rejects a multi-user import before mutating stored data',
   await repo.apiKeys.save(KEY_A);
   initRuntimeProfile('personal');
   try {
-    const result = await doImport(app, 'replace', latestImportData({
+    const result = await doEncryptedImport(app, 'replace', latestImportData({
       users: [SEED_ADMIN, USER_BOB],
       apiKeys: [{ ...KEY_B, userId: USER_BOB.id }],
     }));
@@ -1483,11 +2108,7 @@ test('personal replace import preserves the owner when its atomic upsert fails',
   const upsert = vi.spyOn(repo.users, 'upsertForImport').mockRejectedValueOnce(persistenceError);
   initRuntimeProfile('personal');
   try {
-    const response = await app.request('/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'replace', version: 20, data: latestImportData() }),
-    });
+    const response = await doEncryptedImport(app, 'replace', latestImportData());
 
     assertEquals(response.status, 500);
     assertEquals(await repo.users.listIncludingDeleted(), usersBefore);
@@ -1506,7 +2127,7 @@ test('personal replace import restores every owner field in SQLite, including cr
   const { app, repo } = setupWithRepo(new SqlRepo(db));
   initRuntimeProfile('personal');
   try {
-    const result = await doImport(app, 'replace', latestImportData());
+    const result = await doEncryptedImport(app, 'replace', latestImportData());
 
     assertEquals(result.status, 200);
     assertEquals(await repo.users.listIncludingDeleted(), [SEED_ADMIN]);
@@ -1673,6 +2294,7 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
   await repo.upstreams.save(CUSTOM_UPSTREAM);
   await repo.upstreams.save(AZURE_UPSTREAM);
   await repo.upstreams.save(CODEX_UPSTREAM);
+  await repo.modelAliases.insert(ROUTING_ALIAS);
   await repo.usage.set(USAGE_1);
   await repo.usage.set(USAGE_2);
   await repo.webSearchUsage.set(WEB_SEARCH_USAGE_1);
@@ -1690,6 +2312,7 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
 
   const exported = await doExport(app, true);
   assertEquals(exported.version, 20);
+  assertEquals(exported.data.modelAliases, [ROUTING_ALIAS]);
 
   // Replace-import the export's own `data`, verbatim. If the export emits any
   // shape the import parser rejects, this 400s — the round trip is the
@@ -1702,11 +2325,98 @@ test('a full v20 export re-imports verbatim — the export→import round trip i
   assertEquals((await repo.upstreams.list()).find(u => u.id === 'up_codex_a')?.state, CODEX_UPSTREAM.state);
   assertEquals((await repo.users.listIncludingDeleted()).find(u => u.id === USER_BOB.id), USER_BOB);
   assertEquals((await repo.apiKeys.findByRawKey(KEY_B.key))?.userId, USER_BOB.id);
+  assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
   const restoredKeyA = await repo.apiKeys.findByRawKey(KEY_A.key);
   if (restoredKeyA === null) throw new Error('restored key A missing');
   assertEquals((await repo.usage.listAll()).find(u => u.keyId === restoredKeyA.id && u.hour === USAGE_1.hour), { ...USAGE_1, keyId: restoredKeyA.id });
   assertEquals((await repo.performance.listAll()).find(p => p.keyId === restoredKeyA.id && p.hour === PERFORMANCE_1.hour), { ...PERFORMANCE_1, keyId: restoredKeyA.id });
   assertEquals(await repo.webSearchConfig.get(), config);
+});
+
+test('model alias duplicate ids and names are rejected before personal or server data mutation', async () => {
+  for (const profile of ['server', 'personal'] as const) {
+    const { app, repo } = setup();
+    await repo.apiKeys.save(KEY_A);
+    await repo.upstreams.save(CUSTOM_UPSTREAM);
+    await repo.modelAliases.insert(ROUTING_ALIAS);
+    initRuntimeProfile(profile);
+    try {
+      const duplicate = { ...ROUTING_ALIAS, updatedAt: '2026-02-02T00:00:00.000Z' };
+      const data = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [ROUTING_ALIAS, duplicate],
+      });
+      const result = profile === 'personal'
+        ? await doEncryptedImport(app, 'replace', data)
+        : await doImport(app, 'replace', data);
+
+      assertEquals(result.status, 400);
+      assertEquals(result.body.error, `invalid modelAliases: duplicate id ${ROUTING_ALIAS.id} at indexes 0 and 1`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+
+      const duplicateName = { ...ROUTING_ALIAS, id: 'alias-duplicate-name' };
+      const duplicateNameData = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [ROUTING_ALIAS, duplicateName],
+      });
+      const duplicateNameResult = profile === 'personal'
+        ? await doEncryptedImport(app, 'replace', duplicateNameData)
+        : await doImport(app, 'replace', duplicateNameData);
+      assertEquals(duplicateNameResult.status, 400);
+      assertEquals(duplicateNameResult.body.error, `invalid modelAliases: duplicate name ${ROUTING_ALIAS.name} at indexes 0 and 1`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+    } finally {
+      initRuntimeProfile('server');
+    }
+  }
+});
+
+test('model alias merge name conflicts are rejected before personal or server data mutation', async () => {
+  for (const profile of ['server', 'personal'] as const) {
+    const { app, repo } = setup();
+    await repo.apiKeys.save(KEY_A);
+    await repo.upstreams.save(CUSTOM_UPSTREAM);
+    await repo.modelAliases.insert(ROUTING_ALIAS);
+    initRuntimeProfile(profile);
+    try {
+      const conflicting = { ...ROUTING_ALIAS, id: 'alias-different-id' };
+      const data = latestImportData({
+        apiKeys: [KEY_B],
+        upstreams: [upstreamRecordToFullJson(AZURE_UPSTREAM)],
+        modelAliases: [conflicting],
+      });
+      const result = profile === 'personal'
+        ? await doEncryptedImport(app, 'merge', data)
+        : await doImport(app, 'merge', data);
+
+      assertEquals(result.status, 400);
+      assertEquals(result.body.error, `invalid modelAliases: name ${ROUTING_ALIAS.name} conflicts with existing alias ${ROUTING_ALIAS.id}`);
+      assertEquals(await repo.apiKeys.listIncludingDeleted(), [KEY_A]);
+      assertEquals(await repo.upstreams.list(), [CUSTOM_UPSTREAM]);
+      assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+    } finally {
+      initRuntimeProfile('server');
+    }
+  }
+});
+
+test('legacy v20 replace imports preserve aliases when modelAliases is omitted and clear them when explicitly empty', async () => {
+  const { app, repo } = setup();
+  await repo.modelAliases.insert(ROUTING_ALIAS);
+
+  const omitted = await doImport(app, 'replace', latestImportData());
+  assertEquals(omitted.status, 200);
+  assertEquals(await repo.modelAliases.list(), [ROUTING_ALIAS]);
+
+  const explicitEmpty = await doImport(app, 'replace', latestImportData({ modelAliases: [] }));
+  assertEquals(explicitEmpty.status, 200);
+  assertEquals(await repo.modelAliases.list(), []);
 });
 
 test('any data bearing a historical version is rejected on the version gate, before mutating', async () => {

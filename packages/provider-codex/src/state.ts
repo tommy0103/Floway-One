@@ -255,3 +255,39 @@ export const readCodexUpstreamState = (raw: unknown): CodexUpstreamState => {
     })),
   };
 };
+
+const codexQuotaSnapshotForSafeExport = (snapshot: CodexQuotaSnapshot): unknown => ({
+  observed_at: snapshot.observed_at,
+  ...(snapshot.active_limit === undefined ? {} : { active_limit: snapshot.active_limit }),
+  ...(snapshot.plan_type === undefined ? {} : { plan_type: snapshot.plan_type }),
+  ...(snapshot.primary_used_percent === undefined ? {} : { primary_used_percent: snapshot.primary_used_percent }),
+  ...(snapshot.primary_window_minutes === undefined ? {} : { primary_window_minutes: snapshot.primary_window_minutes }),
+  ...(snapshot.primary_reset_after_at === undefined ? {} : { primary_reset_after_at: snapshot.primary_reset_after_at }),
+  ...(snapshot.secondary_used_percent === undefined ? {} : { secondary_used_percent: snapshot.secondary_used_percent }),
+  ...(snapshot.secondary_window_minutes === undefined ? {} : { secondary_window_minutes: snapshot.secondary_window_minutes }),
+  ...(snapshot.secondary_reset_after_at === undefined ? {} : { secondary_reset_after_at: snapshot.secondary_reset_after_at }),
+  ...(snapshot.credits_has_credits === undefined ? {} : { credits_has_credits: snapshot.credits_has_credits }),
+  ...(snapshot.credits_balance === undefined ? {} : { credits_balance: snapshot.credits_balance }),
+  ...(snapshot.ratelimited_until === undefined ? {} : { ratelimited_until: snapshot.ratelimited_until }),
+});
+
+export const codexUpstreamStateForSafeExport = (raw: unknown): unknown => {
+  const state = readCodexUpstreamState(raw);
+  return {
+    accounts: state.accounts.map(account => ({
+      chatgptAccountId: account.chatgptAccountId,
+      state: account.state,
+      state_updated_at: account.state_updated_at,
+      openaiDeviceId: account.openaiDeviceId,
+      quotaSnapshot: account.quotaSnapshot === null
+        ? null
+        : Object.fromEntries(Object.entries(account.quotaSnapshot).map(([accountId, snapshot]) => [
+            accountId,
+            {
+              fetchedAt: snapshot.fetchedAt,
+              data: codexQuotaSnapshotForSafeExport(snapshot.data),
+            },
+          ])),
+    })),
+  };
+};

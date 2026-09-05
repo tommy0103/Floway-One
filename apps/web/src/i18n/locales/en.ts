@@ -1083,14 +1083,26 @@ const en = {
         },
       },
       backupRestore: {
+        runtimeError: {
+          title: 'Backup controls are unavailable',
+          message: 'Floway could not determine this runtime profile. No export or restore controls were enabled. {{message}}',
+        },
         export: {
           heading: 'Export',
           description:
               'Download users, API keys, server secrets, configurations, and usage data. Treat the file like a database backup.',
+          personalDescription:
+              'Create a password-protected full backup for recovery, or a credential-free safe export for diagnostics and sharing.',
+          password: 'Backup password',
+          passwordHint:
+              'Floway does not save this password. You will need it to restore the full backup on this or another device.',
           includePerformance: 'Include Performance Telemetry',
           includePerformanceHint:
               'When enabled, the export will include recorded performance metrics alongside configuration data. Performance data can significantly increase file size.',
           button: 'Export JSON',
+          fullButton: 'Download Full Backup',
+          safeButton: 'Download Safe Export',
+          actionsLabel: 'Backup export actions',
           pending: 'Preparing the export',
           success: 'Downloaded {{name}}',
         },
@@ -1098,6 +1110,8 @@ const en = {
           heading: 'Import',
           description:
               'Restore configuration from a previously exported backup file in JSON format.',
+          personalDescription:
+              'Restore a password-protected Floway full backup. Safe exports cannot authenticate and cannot be restored.',
           dropzone: 'Drag and drop a backup file here, or click to browse',
           dropzoneActive: 'Release to load the file',
           fileSelected: '{{name}} ({{size, bytes}})',
@@ -1105,8 +1119,14 @@ const en = {
           replace: 'Replace existing data',
           replaceHint:
               'Clear all existing data before importing the backup file. Left unchecked, imported records are added alongside existing data and existing records with matching identifiers are overwritten.',
+          replaceHintPersonal:
+              'Replace the current installation atomically. Left unchecked, restored records are merged with existing data.',
           replaceWarning:
               'All existing data is permanently deleted before the import runs. This cannot be undone.',
+          replaceWarningPersonal:
+              'Floway validates and authenticates the complete backup before replacing data. If any restore write fails, the current installation remains intact.',
+          password: 'Backup password',
+          passwordHint: 'Enter the password that protected this full backup.',
           button: 'Import Data',
           pending: 'Importing the backup file',
           success: 'Imported {{summary}}',
@@ -1131,8 +1151,7 @@ const en = {
             performance_other: '{{count, number}} performance records',
           },
           error: 'Import failed.',
-          errorInvalidFile:
-              'The selected file is not a valid Floway backup file: {{message}}',
+          errorInvalidFile: 'The selected file is not a valid Floway backup file.',
           errorReadFile: 'The selected backup file could not be read.',
           previewLabel: {
             users: 'Users',
@@ -1147,6 +1166,8 @@ const en = {
         confirmTitle: 'Confirm Import',
         confirmMessage:
             'This will import data from the selected backup file. In replace mode, all existing data will be deleted first. Continue?',
+        confirmMessagePersonal:
+            'This will restore the selected authenticated full backup. In replace mode, the current installation changes only if the complete restore succeeds. Continue?',
       },
       searchConfig: {
         heading: 'Search Provider',

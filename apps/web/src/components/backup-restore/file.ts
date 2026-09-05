@@ -2,11 +2,16 @@ import type { InferResponseType } from 'hono/client';
 import { z } from 'zod';
 
 import type { api } from '../../api/client';
-import { errorMessage } from '../../lib/error-message';
+import {
+  BACKUP_ARCHIVE_VERSION,
+  parseEncryptedBackupArchive,
+  type EncryptedBackupArchive,
+} from '@floway-dev/platform/backup-archive';
 
 // Annotated with the gateway's own literal so a bump there fails this
 // assignment instead of silently rejecting every backup the deployment writes.
-export const BACKUP_FILE_VERSION: InferResponseType<typeof api.api.export.$get, 200>['version'] = 20;
+export const BACKUP_FILE_VERSION = 20 satisfies InferResponseType<typeof api.api.export.$get, 200>['version'];
+export const ENCRYPTED_BACKUP_FILE_VERSION = BACKUP_ARCHIVE_VERSION satisfies InferResponseType<typeof api.api.export.$post, 200>['version'];
 
 const backupFileSchema = z.object({
   version: z.literal(BACKUP_FILE_VERSION),
@@ -15,6 +20,7 @@ const backupFileSchema = z.object({
     users: z.array(z.unknown()),
     apiKeys: z.array(z.unknown()),
     upstreams: z.array(z.unknown()),
+    modelAliases: z.array(z.unknown()).optional(),
     proxies: z.array(z.unknown()),
     usage: z.array(z.unknown()),
     searchUsage: z.array(z.unknown()),
@@ -35,25 +41,64 @@ const backupFileSchema = z.object({
 export type BackupFile = z.infer<typeof backupFileSchema>;
 export type BackupFileData = BackupFile['data'];
 
+export type BackupFileDiagnosticCode = 'malformed-json' | 'invalid-backup';
+
+export class BackupFileDiagnosticError extends Error {
+  readonly clientMessageKey = 'dashboard.backupRestore.import.errorInvalidFile' as const;
+  readonly code: BackupFileDiagnosticCode;
+
+  constructor(code: BackupFileDiagnosticCode, cause: unknown) {
+    super(code === 'malformed-json'
+      ? 'Floway backup file contains malformed JSON'
+      : 'Floway backup file failed structural validation', { cause });
+    this.name = 'BackupFileDiagnosticError';
+    this.code = code;
+  }
+}
+
 export type ParsedBackupFile =
   | { ok: true; payload: BackupFile }
-  | { ok: false; message: string };
+  | { ok: false; error: BackupFileDiagnosticError };
 
-// A rejected file is nearly always an export from another version or product,
-// so every issue is reported by path rather than collapsed into one message.
-const issueList = (error: z.ZodError): string => error.issues
-  .map(issue => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
-  .join('; ');
+type ParsedBackupJson =
+  | { ok: true; value: unknown }
+  | { ok: false; error: BackupFileDiagnosticError };
+
+const parseBackupJson = (raw: string): ParsedBackupJson => {
+  try {
+    return { ok: true, value: JSON.parse(raw) as unknown };
+  } catch (cause) {
+    return { ok: false, error: new BackupFileDiagnosticError('malformed-json', cause) };
+  }
+};
+
+export const legacyImportRequest = (payload: BackupFile, mode: 'merge' | 'replace') => ({
+  version: BACKUP_FILE_VERSION,
+  mode,
+  data: payload.data,
+} as const);
 
 export const parseBackupFile = (raw: string): ParsedBackupFile => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    return { ok: false, message: errorMessage(error) };
-  }
-  const result = backupFileSchema.safeParse(parsed);
+  const parsed = parseBackupJson(raw);
+  if (!parsed.ok) return parsed;
+  const result = backupFileSchema.safeParse(parsed.value);
   return result.success
     ? { ok: true, payload: result.data }
-    : { ok: false, message: issueList(result.error) };
+    : { ok: false, error: new BackupFileDiagnosticError('invalid-backup', result.error) };
+};
+
+export type EncryptedBackupFile = EncryptedBackupArchive;
+
+export type ParsedEncryptedBackupFile =
+  | { ok: true; archive: EncryptedBackupFile }
+  | { ok: false; error: BackupFileDiagnosticError };
+
+export const parseEncryptedBackupFile = (raw: string): ParsedEncryptedBackupFile => {
+  const parsed = parseBackupJson(raw);
+  if (!parsed.ok) return parsed;
+  try {
+    return { ok: true, archive: parseEncryptedBackupArchive(parsed.value) };
+  } catch (cause) {
+    return { ok: false, error: new BackupFileDiagnosticError('invalid-backup', cause) };
+  }
 };
