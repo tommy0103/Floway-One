@@ -18,3 +18,12 @@ apps/web/.react-router/
 # itself when entry.ts resolves the default `./data/` relative to its own cwd.
 /data/
 apps/platform-node/data/
+
+# Desktop bundles assemble the target-specific Node sidecar and production
+# runtime immediately before Tauri builds the installer.
+/apps/desktop/src-tauri/bundle-inputs/
+/apps/desktop/src-tauri/bundle-inputs.previous/
+/apps/desktop/src-tauri/.bundle-staging/
+/apps/desktop/src-tauri/.desktop-verification/
+/apps/desktop/src-tauri/gen/
+/apps/desktop/src-tauri/target/

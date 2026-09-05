@@ -74,11 +74,13 @@ const deleteCredential = async (credential: DeviceMasterKeyCredential): Promise<
 };
 
 const exerciseIsolatedCredentialStore = async (): Promise<boolean> => {
-  const service = `Floway packaged credential verification ${randomUUID()}`;
-  const account = `test-${randomUUID()}`;
+  const identity = {
+    service: `Floway packaged credential verification ${randomUUID()}`,
+    account: `test-${randomUUID()}`,
+  };
   let credential: DeviceMasterKeyCredential;
   try {
-    credential = await createOperatingSystemCredential(service, account);
+    credential = await createOperatingSystemCredential(identity);
     const expected = randomBytes(32);
     await credential.setSecret(expected);
     const loaded = await readCredential(credential);

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Floway",
+  "version": "0.1.0",
+  "identifier": "dev.floway.one",
+  "build": {
+    "beforeBuildCommand": "pnpm run prepare:bundle"
+  },
+  "app": {
+    "windows": []
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.generated.png"
+    ],
+    "externalBin": [
+      "bundle-inputs/binaries/floway-node"
+    ],
+    "resources": {
+      "bundle-inputs/runtime/": "runtime/",
+      "bundle-inputs/desktop-bundle-contract.json": "desktop-bundle-contract.json"
+    }
+  }
+}

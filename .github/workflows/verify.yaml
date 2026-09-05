@@ -66,6 +66,32 @@ jobs:
       - name: ${{ matrix.check.name }}
         run: ${{ matrix.check.run }}
 
+  desktop:
+    name: desktop-${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Enable exact package-manager version
+        run: corepack enable
+      - name: Set up exact packaged Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Install both macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build, install, launch, and inspect the desktop application
+        run: pnpm run test:desktop
+
   packaged-node-windows:
     name: packaged-node-windows
     runs-on: windows-latest

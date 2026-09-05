@@ -26,7 +26,7 @@ describe('Node listener', () => {
       displayEndpoint: 'http://127.0.0.1:0',
       hostname: '127.0.0.1',
       port: 0,
-      serviceName: 'Floway One',
+      serviceName: 'Floway',
     });
 
     expect(address.address).toBe('127.0.0.1');
@@ -47,7 +47,7 @@ describe('Node listener', () => {
         displayEndpoint: `http://127.0.0.1:${occupiedAddress.port}`,
         hostname: '127.0.0.1',
         port: occupiedAddress.port,
-        serviceName: 'Floway One',
+        serviceName: 'Floway',
       });
       throw new Error('expected the occupied port to fail');
     } catch (error) {

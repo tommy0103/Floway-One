@@ -1,20 +1,20 @@
-# Floway One 产品与技术规格
+# Floway 产品与技术规格
 
 | 项目 | 内容 |
 | --- | --- |
 | 状态 | Draft 0.1 |
 | 日期 | 2026-09-02 |
-| 产品 | Floway One |
+| 产品 | Floway |
 | 基础项目 | Floway |
 | 首发形态 | 本机桌面应用 |
 
 ## 1. 摘要
 
-Floway One 是面向个人开发者的本地 LLM 网关。它将多个订阅账户和 API Provider 汇聚到一个稳定的本机地址，由一个后台进程统一完成鉴权、模型发现、协议转换、模型路由、故障回退、用量统计和请求诊断。
+Floway 是面向个人开发者的本地 LLM 网关。它将多个订阅账户和 API Provider 汇聚到一个稳定的本机地址，由一个后台进程统一完成鉴权、模型发现、协议转换、模型路由、故障回退、用量统计和请求诊断。
 
-Floway One 的产品形态参考 Clash：后台核心持续提供本地代理能力，桌面应用负责启动、状态展示和配置管理，Web Dashboard 是核心的控制面。用户关闭桌面窗口后，网关可以继续在后台运行；只有明确退出 Floway One 时才停止网关。
+Floway 的产品形态参考 Clash：后台核心持续提供本地代理能力，桌面应用负责启动、状态展示和配置管理，Web Dashboard 是核心的控制面。用户关闭桌面窗口后，网关可以继续在后台运行；只有明确退出 Floway 时才停止网关。
 
-Floway One 基于 Floway 二次开发，复用现有 Gateway、Provider、协议转换、SQLite 存储和 Dashboard，不维护第二套网关实现或第二套前端。
+Floway 复用现有 Gateway、Provider、协议转换、SQLite 存储和 Dashboard，不维护第二套网关实现或第二套前端。
 
 ## 2. 产品定位
 
@@ -22,7 +22,7 @@ Floway One 基于 Floway 二次开发，复用现有 Gateway、Provider、协议
 
 > 所有模型，一个本地入口。
 
-Floway One 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本地接口。用户只配置一次客户端，之后通过 Floway One 管理 Provider、订阅账户、模型和路由。
+Floway 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本地接口。用户只配置一次客户端，之后通过 Floway 管理 Provider、订阅账户、模型和路由。
 
 ### 2.2 目标用户
 
@@ -43,7 +43,7 @@ Floway One 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本�
 
 ### 3.1 MVP 目标
 
-- 提供可安装的 Floway One 桌面应用。
+- 提供可安装的 Floway 桌面应用。
 - 在一个后台进程中运行 Floway Gateway、SQLite 和 Dashboard 静态资源。
 - 默认仅监听 `127.0.0.1`。
 - 使用稳定且可配置的本机端口，默认端口为 `8788`。
@@ -79,11 +79,11 @@ Floway One 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本�
 
 ### 4.4 单租户是后端不变量
 
-隐藏用户管理页面不足以构成单租户。Floway One 必须在服务端拒绝创建、删除或修改额外用户，并保证所有 API Key 都属于唯一 owner。
+隐藏用户管理页面不足以构成单租户。Floway 必须在服务端拒绝创建、删除或修改额外用户，并保证所有 API Key 都属于唯一 owner。
 
 ### 4.5 保持上游可同步
 
-个人版能力应尽量集中在桌面壳和本地运行时中。通用 Gateway 改进优先保持可回馈 Floway 上游，避免在共享模块中散布 Floway One 专用条件。
+个人版能力应尽量集中在桌面壳和本地运行时中。通用 Gateway 改进优先保持可回馈上游，避免在共享模块中散布桌面专用条件。
 
 ## 5. 术语
 
@@ -93,7 +93,7 @@ Floway One 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本�
 | Local Runtime | 在本机组合 Core、SQLite、文件存储和 Dashboard 的 Node.js 运行时。 |
 | Desktop Shell | 基于 Tauri 2 的窗口、托盘、进程和系统集成层。 |
 | Dashboard | 现有 `apps/web` 构建出的静态 React 应用。 |
-| Owner | Floway One 中唯一的人类管理者，对应现有 seed admin 用户。 |
+| Owner | Floway 中唯一的人类管理者，对应现有 seed admin 用户。 |
 | API Key | 提供给 AI 工具或项目的数据面凭据。 |
 | Upstream | Copilot、Codex、Claude Code、Custom、Azure 或 Ollama 等上游连接。 |
 | Personal Profile | 开启单 owner、本机访问和精简 UI 的显式运行模式。 |
@@ -102,7 +102,7 @@ Floway One 为 Codex、Claude Code 等 AI 编程工具提供一个稳定的本�
 
 ```text
 ┌──────────────────────────────────────────────┐
-│               Floway One.app                 │
+│                 Floway.app                   │
 │                                              │
 │  ┌────────────────────────────────────────┐  │
 │  │ Tauri 2 Desktop Shell                  │  │
@@ -239,8 +239,8 @@ Desktop Shell 不实现 Provider、路由、Key、用量或配置业务。
 
 - 启动应用时显示主窗口。
 - 关闭主窗口时隐藏窗口，Gateway 继续运行。
-- 点击托盘图标或“打开 Floway One”恢复窗口。
-- 点击“退出 Floway One”时优雅停止 sidecar，再退出桌面进程。
+- 点击托盘图标或“打开 Floway”恢复窗口。
+- 点击“退出 Floway”时优雅停止 sidecar，再退出桌面进程。
 - sidecar 异常退出时，托盘显示错误状态并提供查看日志和重启操作。
 - 操作系统关机或用户注销时尽力优雅停止，不阻塞系统退出。
 
@@ -250,13 +250,13 @@ Desktop Shell 不实现 Provider、路由、Key、用量或配置业务。
 
 MVP 托盘菜单包含：
 
-- 打开 Floway One
+- 打开 Floway
 - Gateway 状态与地址
 - 复制 Gateway 地址
 - 重启 Gateway
 - 开机启动
 - 打开日志目录
-- 退出 Floway One
+- 退出 Floway
 
 ### 8.4 Sidecar 发行
 
@@ -270,7 +270,7 @@ MVP 不要求把所有资源压缩成一个二进制文件。`sharp` 等原生�
 
 ### 9.1 数据模型
 
-Floway One 保留 Floway 现有 `users`、`sessions` 和 `api_keys.user_id` 结构，以降低与上游同步的冲突。
+Floway 保留现有 `users`、`sessions` 和 `api_keys.user_id` 结构，以降低与上游同步的冲突。
 
 Personal Profile 下应用以下不变量：
 
@@ -436,7 +436,7 @@ UI 隐藏是体验优化，后端拒绝才是安全和数据一致性保证。
 
 ### 12.4 本地凭据
 
-Floway One 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与系统凭据存储结合的方案：
+Floway 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与系统凭据存储结合的方案：
 
 - 数据目录和敏感文件使用仅当前用户可读写的权限。
 - 每台设备生成独立的 256-bit 主密钥。
@@ -447,11 +447,11 @@ Floway One 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储
 - 日志、崩溃报告和导出文件不得意外包含明文凭据。
 - 不得把主密钥直接写入普通备份。
 
-Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与应用配置位于同一目录。Floway One 保存的是可长期使用的订阅凭据，因此只借鉴字段加密方式，不沿用同目录 key-file 作为桌面正式版的正常路径。
+Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与应用配置位于同一目录。Floway 保存的是可长期使用的订阅凭据，因此只借鉴字段加密方式，不沿用同目录 key-file 作为桌面正式版的正常路径。
 
 ### 12.5 WebView
 
-- WebView 只允许导航到 Floway One 的 loopback origin。
+- WebView 只允许导航到 Floway 的 loopback origin。
 - OAuth 和文档等外部链接使用系统浏览器打开。
 - 禁止任意远程页面获得 Tauri IPC 权限。
 - Tauri command 使用最小 allowlist，不向 Dashboard 暴露通用 shell 执行能力。
@@ -509,7 +509,7 @@ Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与�
 - 导入不得静默丢弃其他用户或重写 Key 所有权。
 - 恢复完成后应验证单 owner 不变量。
 
-Floway One 提供两种明确区分的导出：
+Floway 提供两种明确区分的导出：
 
 | 导出类型 | 默认 | 内容 | 保护方式 |
 | --- | --- | --- | --- |
@@ -631,7 +631,7 @@ Floway One 提供两种明确区分的导出：
 
 MVP 只有同时满足以下条件才可称为可用：
 
-1. 一台没有 Docker、Node.js 和 pnpm 的受支持机器能够安装并启动 Floway One。
+1. 一台没有 Docker、Node.js 和 pnpm 的受支持机器能够安装并启动 Floway。
 2. 首次启动自动创建数据目录、数据库和唯一 owner，不需要执行终端命令。
 3. Dashboard 在应用窗口中正常加载，并与 Gateway 使用同一 origin。
 4. 用户能够连接至少一个现有 Floway Upstream，并成功获取模型。
@@ -703,14 +703,14 @@ MVP 只有同时满足以下条件才可称为可用：
 
 ## 20. 上游同步策略
 
-Floway One 应保持以下代码组织原则：
+Floway 应保持以下代码组织原则：
 
 - 通用协议、Provider 和 Gateway 修复尽量保持与 Floway 上游一致。
 - 桌面能力集中在新的 Desktop Shell 和 Local Runtime 组合层。
 - Personal Profile 通过显式接口进入 Gateway，不在业务调用点散布环境变量判断。
-- 定期将 Floway 上游 `main` 合并到 Floway One 工作分支，再通过正常验证进入 Floway One `main`。
+- 定期将上游 `main` 合并到工作分支，再通过正常验证进入 `main`。
 - 能独立成立的通用修复优先向 Floway 上游贡献，减少永久差异。
-- Floway One 的品牌、安装器、桌面生命周期和单租户体验保留在二开仓库。
+- Floway 的品牌、安装器、桌面生命周期和单租户体验保留在桌面仓库。
 
 ## 21. 风险
 
@@ -726,9 +726,9 @@ Floway One 应保持以下代码组织原则：
 
 ## 22. Clash 对标决策
 
-本节以 Clash Verge Rev 的桌面壳与 Mihomo core 组合为参照。Floway One 借鉴其“桌面壳管理独立 core”的产品结构，但根据 LLM 客户端持久化 endpoint、Provider token 价值更高、请求正文更敏感等差异调整实现。
+本节以 Clash Verge Rev 的桌面壳与 Mihomo core 组合为参照。Floway 借鉴其“桌面壳管理独立 core”的产品结构，但根据 LLM 客户端持久化 endpoint、Provider token 价值更高、请求正文更敏感等差异调整实现。
 
-| 议题 | Clash Verge Rev 观察 | Floway One 决策 |
+| 议题 | Clash Verge Rev 观察 | Floway 决策 |
 | --- | --- | --- |
 | macOS 架构 | 官方发布分别构建 Apple Silicon 和 Intel 安装包。 | 首个公开版本同时发布 arm64 与 x64 独立安装包。 |
 | 凭据存储 | 对 WebDAV 字段使用 AES-256-GCM，但加密 key 保存在应用目录。 | 使用字段级带认证加密，主密钥由系统凭据存储保护，不在普通配置目录放置主密钥。 |
@@ -767,7 +767,7 @@ Floway One 应保持以下代码组织原则：
 
 ## 23. 成功判断
 
-Floway One 的核心成功指标不是安装量，而是用户是否停止反复修改各个 AI 工具的 Provider、模型和 endpoint 配置。
+Floway 的核心成功指标不是安装量，而是用户是否停止反复修改各个 AI 工具的 Provider、模型和 endpoint 配置。
 
 首轮验证应重点观察：
 
@@ -776,4 +776,4 @@ Floway One 的核心成功指标不是安装量，而是用户是否停止反复
 - 用户是否实际创建多个 Key，并按工具或项目使用。
 - 用户是否在多个 Upstream 之间切换而无需修改客户端。
 - 上游变化发生后，自动升级能否在用户介入前恢复兼容性。
-- 用户是否信任 Floway One 保存本地订阅凭据。
+- 用户是否信任 Floway 保存本地订阅凭据。

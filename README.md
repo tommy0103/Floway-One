@@ -137,7 +137,7 @@ before starting so it also works immediately after a clean checkout.
 Production Node.js deployments must set both `NODE_ENV=production` and a
 non-empty `ADMIN_KEY`.
 
-Floway One's explicit personal profile instead binds only to
+Floway's explicit personal profile instead binds only to
 `http://127.0.0.1:8788` and stores its database, files, logs directory, and
 `runtime.json` below the operating system's per-user application-data
 directory:
@@ -172,13 +172,22 @@ Secret Service, Windows Credential Manager, and macOS Keychain to exercise
 platform-specific credential storage, assembly, and startup paths. Each link is
 also a script of its own, in the order the chain runs them: `typegen`, `lint`,
 `typecheck`, `test`,
-`test:installers`, `check:agents-md`, `check:generated-assets`,
+`test:desktop`, `test:installers`, `check:agents-md`, `check:generated-assets`,
 `check:verify-parity`, `build:web`, and `test:packaged-node`. The build carries
-the assertions about the emitted bundle, and the final check assembles an
-isolated production Node runtime and executes its image command. `typegen` comes
-first because the generated route types are not checked in and the lint
-configuration is type-aware, so a fresh clone has to produce them before
-anything else can read the dashboard's sources.
+the assertions about the emitted bundle. `test:desktop` uses the exact packaged
+Node and pnpm versions to build separate arm64 and x64 macOS applications with
+Tauri's production features, installs each executable artifact that the host can
+run into an isolated application-like path, starts its packaged personal runtime,
+checks migrations, loopback health and Dashboard assets, and fault-tests resources,
+the actually loaded native Keyring binding, architecture, and live-child cleanup.
+The final check assembles an isolated production
+Node runtime and executes its image command. `typegen` comes first because the
+generated route types are not checked in and the lint configuration is
+type-aware, so a fresh clone has to produce them before anything else can read
+the dashboard's sources. Desktop release authorities are the versioned
+[Node.js distribution](https://nodejs.org/dist/v24.19.0/),
+[Tauri 2.11.5](https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5),
+and [Tauri Shell 2.3.6](https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6).
 
 [AGENTS.md](./AGENTS.md) defines the repository-wide agent requirements and
 indexes its CI workflows, skills, workspace packages, and their responsibilities.

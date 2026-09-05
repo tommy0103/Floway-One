@@ -169,9 +169,10 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const profile = args.length === 0
     ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
     : selectNodeRuntimeProfile(args);
+  const resolvePersonalPaths = overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths;
   const personal = profile === 'personal'
     ? (() => {
-        const paths = (overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths)();
+        const paths = resolvePersonalPaths();
         const storage = (overrides.initializePersonalStorage ?? initializePersonalStorage)(paths);
         return { paths, storage };
       })()

@@ -87,7 +87,10 @@ export const startIsolatedLinuxSecretService = async (
     let lastError: unknown;
     while (Date.now() < deadline) {
       try {
-        await createOperatingSystemCredential(`Floway Secret Service readiness ${randomUUID()}`, 'probe');
+        await createOperatingSystemCredential({
+          service: `Floway Secret Service readiness ${randomUUID()}`,
+          account: 'probe',
+        });
         lastError = undefined;
         break;
       } catch (error) {

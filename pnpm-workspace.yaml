@@ -3,6 +3,12 @@ packages:
   - apps/*
   - tools
 
+# Modern pnpm deploy derives a frozen, package-specific lockfile only when
+# workspace packages are injected. Desktop assembly selects that path with a
+# hoisted linker so Tauri receives physical production dependencies, while the
+# existing server assembler retains its legacy isolated layout.
+injectWorkspacePackages: true
+
 # pnpm blocks lifecycle scripts by default. These four ship prebuilt binaries
 # or native bindings and need theirs to run: esbuild and sharp for the Node
 # deployment target, unrs-resolver for the ESLint TypeScript resolver, workerd

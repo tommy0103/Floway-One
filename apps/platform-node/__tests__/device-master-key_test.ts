@@ -78,7 +78,7 @@ test('device master key preserves credential-store failures as error causes', as
 test('Linux requires Secret Service and preserves its unavailable error as the original cause', async () => {
   const unavailable = new Error('No D-Bus session bus');
   const credentialError = await assertRejects(
-    async () => await createOperatingSystemCredential('Floway test', 'unavailable', 'linux', {
+    async () => await createOperatingSystemCredential({ service: 'Floway test', account: 'unavailable' }, 'linux', {
       Entry: class {
         getSecret = () => null;
         setSecret = () => undefined;
@@ -96,7 +96,7 @@ test('Linux requires Secret Service and preserves its unavailable error as the o
 test('Linux rejects a successful vendor keyutils fallback mutation when Secret Service readback has no value', async () => {
   let fallbackPassword: string | null = null;
   let secretServiceReads = 0;
-  const credential = await createOperatingSystemCredential('Floway test', 'fallback', 'linux', {
+  const credential = await createOperatingSystemCredential({ service: 'Floway test', account: 'fallback' }, 'linux', {
     Entry: class {
       getSecret = () => null;
       setSecret = () => undefined;
@@ -118,4 +118,22 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   assertEquals(secretServiceReads, 3);
   assert(error.cause instanceof Error);
   assertEquals(error.cause.message, 'Failed to verify the Floway device master key in Linux Secret Service');
+});
+
+test('explicit operating-system credential identity stays isolated from the product default', async () => {
+  let constructed: readonly string[] | undefined;
+  await createOperatingSystemCredential({
+    service: 'Floway package test service',
+    account: 'package-test-account',
+  }, 'darwin', {
+    Entry: class {
+      constructor(service: string, account: string) { constructed = [service, account]; }
+      getSecret = () => null;
+      setSecret = () => undefined;
+      setPassword = () => undefined;
+      deleteCredential = () => false;
+    },
+    findCredentials: () => [],
+  });
+  assertEquals(constructed, ['Floway package test service', 'package-test-account']);
 });

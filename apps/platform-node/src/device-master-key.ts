@@ -3,7 +3,10 @@ import { randomBytes } from 'node:crypto';
 import type { Credential } from '@napi-rs/keyring';
 
 import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
-import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
+import {
+  DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY,
+  type DeviceMasterKeyCredentialIdentity,
+} from './device-master-key-credential-identity.ts';
 
 const DEVICE_MASTER_KEY_BYTES = 32;
 type Awaitable<T> = T | Promise<T>;
@@ -46,14 +49,13 @@ const decodeLinuxSecret = (stored: string): Uint8Array => {
 // key file beside SQLite.
 // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
 export const createOperatingSystemCredential = async (
-  service: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.service,
-  account: string = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.account,
+  identity: DeviceMasterKeyCredentialIdentity = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY,
   platform: NodeJS.Platform = process.platform,
   bindings?: KeyringBindings,
 ): Promise<DeviceMasterKeyCredential> => {
   const resolvedBindings = bindings ?? await loadDefaultKeyringBindings();
   if (platform !== 'linux') {
-    const entry = new resolvedBindings.Entry(service, account);
+    const entry = new resolvedBindings.Entry(identity.service, identity.account);
     return {
       getSecret: () => entry.getSecret(),
       setSecret: secret => entry.setSecret(secret),
@@ -70,13 +72,13 @@ export const createOperatingSystemCredential = async (
   // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L527-L553
   const listFromSecretService = (): Credential[] => {
     try {
-      return resolvedBindings.findCredentials(service);
+      return resolvedBindings.findCredentials(identity.service);
     } catch (cause) {
       throw new Error('Linux Secret Service is unavailable for the Floway device master key', { cause });
     }
   };
   const readPassword = (): string | null => {
-    const matches = listFromSecretService().filter(credential => credential.account === account);
+    const matches = listFromSecretService().filter(credential => credential.account === identity.account);
     if (matches.length > 1) {
       throw new Error('Linux Secret Service contains ambiguous Floway device master key entries');
     }
@@ -84,7 +86,7 @@ export const createOperatingSystemCredential = async (
   };
 
   listFromSecretService();
-  const entry = new resolvedBindings.Entry(service, account);
+  const entry = new resolvedBindings.Entry(identity.service, identity.account);
   return {
     getSecret: () => {
       const password = readPassword();

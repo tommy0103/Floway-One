@@ -1,6 +1,6 @@
 # Domain Docs
 
-Floway One uses a single domain context across its monorepo.
+Floway uses a single domain context across its monorepo.
 
 ## Before exploring
 
