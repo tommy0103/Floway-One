@@ -66,7 +66,11 @@ fn write_fixture(root: &Path) {
         })
     });
     let contract = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
+        "compatibility": {
+            "protocolVersion": 1,
+            "releaseVersion": "0.1.0",
+        },
         "dashboard": { "assets": dashboard_assets },
         "migrations": { "files": migration_files },
         "node": {
@@ -91,6 +95,9 @@ fn resolves_only_packaged_runtime_resources_for_the_personal_sidecar() {
     let runtime = resolve_runtime_bundle(&root).expect("complete packaged resources must resolve");
     assert_eq!(NODE_SIDECAR_NAME, "floway-node");
     assert_eq!(runtime.root, root.join("runtime"));
+    assert_eq!(runtime.compatibility.protocol_version, 1);
+    assert_eq!(runtime.compatibility.release_version, "0.1.0");
+    assert_eq!(runtime.compatibility.contract_digest.len(), 64);
     assert_eq!(runtime.contract, root.join("desktop-bundle-contract.json"));
     assert_eq!(runtime.dashboard_assets.len(), 3);
     assert_eq!(runtime.migration_files.len(), 2);

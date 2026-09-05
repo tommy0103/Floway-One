@@ -28,6 +28,10 @@ export const MACOS_TARGET_TRIPLES = Object.freeze([
   HOST_TARGET_TRIPLES.darwin.x64,
 ] as const);
 
+export const DESKTOP_COMPATIBILITY_VERSION = 1;
+
+const exactVersion = /^\d+\.\d+\.\d+$/;
+
 export const targetTripleForHost = (
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
@@ -57,8 +61,25 @@ export const readPackagedNodeVersion = async (desktopRoot: string): Promise<stri
   }
   // Node publishes this versioned directory and its immutable SHASUMS file.
   // https://nodejs.org/dist/v24.19.0/SHASUMS256.txt
-  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  if (!exactVersion.test(version)) {
     throw new Error(`Desktop Node version authority is invalid at ${versionPath}`);
+  }
+  return version;
+};
+
+export const readDesktopReleaseVersion = async (desktopRoot: string): Promise<string> => {
+  const manifestPath = resolve(desktopRoot, 'package.json');
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (cause) {
+    throw new Error(`Desktop release version authority is unavailable at ${manifestPath}`, { cause });
+  }
+  const version = typeof value === 'object' && value !== null && 'version' in value
+    ? (value as { version?: unknown }).version
+    : undefined;
+  if (typeof version !== 'string' || !exactVersion.test(version)) {
+    throw new Error(`Desktop release version authority is invalid at ${manifestPath}`);
   }
   return version;
 };

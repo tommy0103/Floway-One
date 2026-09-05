@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { prepareDesktopBundle } from './src/bundle.ts';
 import {
   architectureForTargetTriple,
+  readDesktopReleaseVersion,
   readPackagedNodeVersion,
 } from './src/release-contract.ts';
 
@@ -20,6 +21,7 @@ const executeNode = process.env.FLOWAY_DESKTOP_EXECUTE_NODE === undefined
   ? nodeExecutable === process.execPath
   : process.env.FLOWAY_DESKTOP_EXECUTE_NODE === '1';
 const nodeVersion = await readPackagedNodeVersion(desktopRoot);
+const releaseVersion = await readDesktopReleaseVersion(desktopRoot);
 
 const generateRuntime = async (outputRoot: string): Promise<void> => {
   await new Promise<void>((resolveRun, rejectRun) => {
@@ -47,6 +49,7 @@ await prepareDesktopBundle({
   nodeExecutable,
   nodePlatform: 'darwin',
   nodeVersion,
+  releaseVersion,
   targetTriple,
   executeNode,
 });

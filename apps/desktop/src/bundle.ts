@@ -9,6 +9,7 @@ import { assertSingleMachOArchitecture, thinMachOToArchitecture, type MachOArchi
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
 import {
   architectureForTargetTriple,
+  DESKTOP_COMPATIBILITY_VERSION,
   readPackagedNodeVersion,
   targetTripleForHost,
 } from './release-contract.ts';
@@ -21,6 +22,7 @@ export interface PrepareDesktopBundleOptions {
   readonly nodeExecutable: string;
   readonly nodePlatform: NodeJS.Platform;
   readonly nodeVersion: string;
+  readonly releaseVersion: string;
   readonly targetTriple: string;
   readonly executeNode?: boolean;
   readonly exchangeDirectories?: AtomicDirectoryExchange;
@@ -35,7 +37,11 @@ export interface PreparedDesktopBundle {
 }
 
 interface DesktopBundleContract {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
+  readonly compatibility: {
+    readonly protocolVersion: typeof DESKTOP_COMPATIBILITY_VERSION;
+    readonly releaseVersion: string;
+  };
   readonly dashboard: {
     readonly assets: readonly BundleFileContract[];
   };
@@ -262,6 +268,7 @@ export const prepareDesktopBundle = async ({
   nodeExecutable,
   nodePlatform,
   nodeVersion,
+  releaseVersion,
   targetTriple,
   executeNode = true,
   exchangeDirectories = exchangeDirectoriesAtomically,
@@ -306,7 +313,11 @@ export const prepareDesktopBundle = async ({
       canonicalMigrations,
     );
     const contract: DesktopBundleContract = {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      compatibility: {
+        protocolVersion: DESKTOP_COMPATIBILITY_VERSION,
+        releaseVersion,
+      },
       dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
       migrations: { files: canonicalMigrations },
       node: {

@@ -9,6 +9,11 @@ import {
   resolveNodeRuntimeProfile,
   type BootstrappedNodePlatform,
 } from './bootstrap.ts';
+import {
+  DESKTOP_RUNTIME_CONTRACT_ENV,
+  loadDesktopRuntimeCompatibility,
+  type DesktopRuntimeCompatibility,
+} from './desktop-runtime-compatibility.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
@@ -88,6 +93,7 @@ export interface NodeEntryOverrides {
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
+  readonly loadDesktopRuntimeCompatibility?: typeof loadDesktopRuntimeCompatibility;
   readonly initPersonalDashboardBootstrap?: typeof initPersonalDashboardBootstrap;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
@@ -134,10 +140,12 @@ const prepareNodePlatform = async (
 const startNodeListener = async (
   profile: RuntimeProfileMode,
   personalRuntime: PersonalRuntime | null,
+  desktopCompatibility: DesktopRuntimeCompatibility | null,
   port: number,
   overrides: NodeEntryOverrides,
 ): Promise<NodeEntryInfo> => {
   const localApp = (overrides.createLocalApp ?? createLocalApp)({
+    desktopCompatibility,
     gatewayFetch: app.fetch,
     staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
   });
@@ -180,6 +188,11 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   if (personal !== null) {
     installPersonalLogging(personal.paths.logsDir, { permissions: personal.storage });
   }
+  const desktopCompatibility = profile === 'personal'
+    ? (overrides.loadDesktopRuntimeCompatibility ?? loadDesktopRuntimeCompatibility)(
+        process.env[DESKTOP_RUNTIME_CONTRACT_ENV],
+      )
+    : null;
   const startupWarnings: string[] = [];
   const personalRuntime = personal === null
     ? null
@@ -229,7 +242,13 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       if (dashboardBootstrap !== null) {
         (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(dashboardBootstrap.activate());
       }
-      const info = await startNodeListener(profile, personalRuntime, port, overrides);
+      const info = await startNodeListener(
+        profile,
+        personalRuntime,
+        desktopCompatibility,
+        port,
+        overrides,
+      );
       startScheduledMaintenance();
       return info;
     },

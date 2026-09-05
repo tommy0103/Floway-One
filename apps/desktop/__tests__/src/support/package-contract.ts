@@ -9,6 +9,8 @@ import { visitFileTree } from '../../../src/filesystem-tree.ts';
 import { assertSingleMachOArchitecture } from '../../../src/mach-o.ts';
 import {
   architectureForTargetTriple,
+  DESKTOP_COMPATIBILITY_VERSION,
+  readDesktopReleaseVersion,
   readPackagedNodeVersion,
   type DesktopTargetTriple,
 } from '../../../src/release-contract.ts';
@@ -22,6 +24,10 @@ interface BundleFileContract {
 }
 
 interface DesktopBundleContract {
+  readonly compatibility: {
+    readonly protocolVersion: unknown;
+    readonly releaseVersion: unknown;
+  };
   readonly dashboard: { readonly assets: readonly BundleFileContract[] };
   readonly migrations: { readonly files: readonly BundleFileContract[] };
   readonly node: {
@@ -98,10 +104,15 @@ export const verifyPackagedApplication = async (options: {
     access(resolve(runtimeRoot, 'apps/web/dist/client/dashboard-routes.json')),
   ]);
 
-  const packagedNodeVersion = await readPackagedNodeVersion(desktopRoot);
+  const [packagedNodeVersion, releaseVersion] = await Promise.all([
+    readPackagedNodeVersion(desktopRoot),
+    readDesktopReleaseVersion(desktopRoot),
+  ]);
   const contract = JSON.parse(await readFile(contractPath, 'utf8')) as Partial<DesktopBundleContract>;
   if (
-    contract.schemaVersion !== 1
+    contract.schemaVersion !== 2
+    || contract.compatibility?.protocolVersion !== DESKTOP_COMPATIBILITY_VERSION
+    || contract.compatibility.releaseVersion !== releaseVersion
     || contract.node?.architecture !== expectedArchitecture
     || contract.node.platform !== 'darwin'
     || contract.node.targetTriple !== targetTriple

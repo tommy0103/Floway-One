@@ -7,8 +7,19 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+const DESKTOP_BUNDLE_SCHEMA_VERSION: u64 = 2;
+pub(crate) const DESKTOP_COMPATIBILITY_VERSION: u64 = 1;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeCompatibility {
+    pub contract_digest: String,
+    pub protocol_version: u64,
+    pub release_version: String,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeBundle {
+    pub compatibility: RuntimeCompatibility,
     pub contract: PathBuf,
     pub dashboard_assets: Vec<PathBuf>,
     pub dashboard_index: PathBuf,
@@ -80,6 +91,7 @@ fn invalid_contract(path: &Path, message: impl Into<String>) -> BundleResourceEr
 }
 
 struct ValidatedBundleContract {
+    compatibility: RuntimeCompatibility,
     dashboard_assets: Vec<PathBuf>,
     migration_files: Vec<PathBuf>,
 }
@@ -190,11 +202,51 @@ fn validate_contract(
     if contract
         .get("schemaVersion")
         .and_then(serde_json::Value::as_u64)
-        != Some(1)
+        != Some(DESKTOP_BUNDLE_SCHEMA_VERSION)
     {
         return Err(invalid_contract(
             contract_path,
             "the desktop bundle schema version is not supported",
+        ));
+    }
+    let compatibility = contract
+        .get("compatibility")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            invalid_contract(
+                contract_path,
+                "the desktop compatibility contract is missing",
+            )
+        })?;
+    let protocol_version = compatibility
+        .get("protocolVersion")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            invalid_contract(
+                contract_path,
+                "the desktop compatibility protocol is missing",
+            )
+        })?;
+    let release_version = compatibility
+        .get("releaseVersion")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| {
+            let segments = value.split('.').collect::<Vec<_>>();
+            segments.len() == 3
+                && segments.iter().all(|segment| {
+                    !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
+        .ok_or_else(|| invalid_contract(contract_path, "the desktop release version is invalid"))?;
+    if protocol_version != DESKTOP_COMPATIBILITY_VERSION
+        || release_version != env!("CARGO_PKG_VERSION")
+    {
+        return Err(invalid_contract(
+            contract_path,
+            format!(
+                "the desktop compatibility contract requires protocol {protocol_version} release {release_version}; this shell requires protocol {DESKTOP_COMPATIBILITY_VERSION} release {}",
+                env!("CARGO_PKG_VERSION")
+            ),
         ));
     }
     let node = contract
@@ -277,6 +329,11 @@ fn validate_contract(
         ));
     }
     Ok(ValidatedBundleContract {
+        compatibility: RuntimeCompatibility {
+            contract_digest: format!("{:x}", Sha256::digest(source.as_bytes())),
+            protocol_version,
+            release_version: release_version.to_owned(),
+        },
         dashboard_assets,
         migration_files,
     })
@@ -289,6 +346,7 @@ pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, Bund
     let validated = validate_contract(&contract, &root)?;
     let migrations = platform_node.join("node_modules/@floway-dev/gateway/migrations");
     Ok(RuntimeBundle {
+        compatibility: validated.compatibility,
         contract,
         dashboard_assets: validated.dashboard_assets,
         dashboard_index: require_file(root.join("apps/web/dist/client/index.html"))?,

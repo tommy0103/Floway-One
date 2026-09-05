@@ -76,8 +76,19 @@ describe('desktop bundle preparation', () => {
     ) as {
       bundle: { externalBin: string[]; resources: Record<string, string> };
       productName: string;
+      version: string;
     };
+    const [desktopManifest, sidecarManifest, dashboardManifest, cargoManifest] = await Promise.all([
+      readFile(resolve(desktopRoot, 'package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, '../platform-node/package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, '../web/package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8'),
+    ]);
     expect(config.productName).toBe('Floway');
+    expect(config.version).toBe(desktopManifest.version);
+    expect(sidecarManifest.version).toBe(desktopManifest.version);
+    expect(dashboardManifest.version).toBe(desktopManifest.version);
+    expect(cargoManifest).toMatch(new RegExp(`^version = "${desktopManifest.version.replaceAll('.', '\\.')}"$`, 'mu'));
     expect(config.bundle.externalBin).toEqual(['bundle-inputs/binaries/floway-node']);
     expect(config.bundle.resources).toEqual({
       'bundle-inputs/desktop-bundle-contract.json': 'desktop-bundle-contract.json',
@@ -120,6 +131,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable,
       nodePlatform: process.platform,
       nodeVersion: '24.19.0',
+      releaseVersion: '0.1.0',
       targetTriple,
     });
 
@@ -129,9 +141,14 @@ describe('desktop bundle preparation', () => {
     ));
     expect(prepared.contractPath).toBe(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json'));
     const contract = JSON.parse(await readFile(prepared.contractPath, 'utf8')) as {
+      compatibility?: { protocolVersion?: unknown; releaseVersion?: unknown };
       dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
       migrations?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
     };
+    expect(contract.compatibility).toEqual({
+      protocolVersion: 1,
+      releaseVersion: '0.1.0',
+    });
     expect(contract.dashboard?.assets?.map(asset => asset.path)).toEqual([
       'assets/lazy-dashboard.js',
       'dashboard-routes.json',
@@ -171,6 +188,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple: targetTripleForHost(process.platform, process.arch),
       executeNode: false,
       validateSidecar: async () => undefined,
@@ -197,6 +215,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple: targetTripleForHost(process.platform, process.arch),
       executeNode: false,
       validateSidecar: async () => undefined,
@@ -217,6 +236,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const published = await prepareDesktopBundle(options);
@@ -256,6 +276,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const first = await prepareDesktopBundle(options);
@@ -281,6 +302,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const published = await prepareDesktopBundle(options);
@@ -318,6 +340,7 @@ describe('desktop bundle preparation', () => {
         nodeExecutable: process.execPath,
         nodePlatform: process.platform,
         nodeVersion: process.versions.node,
+        releaseVersion: '0.1.0',
         targetTriple: targetTripleForHost(process.platform, process.arch),
         cleanupStaging: async () => { throw cleanupFailure; },
       });
@@ -344,6 +367,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: resolve(root, 'node'),
       nodePlatform: 'darwin',
       nodeVersion: '24.19.0',
+      releaseVersion: '0.1.0',
       targetTriple: 'x86_64-apple-darwin',
     })).rejects.toThrow('incompatible with the build host darwin/arm64');
     expect(generateRuntime).not.toHaveBeenCalled();
@@ -362,6 +386,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: resolve(root, 'node'),
       nodePlatform: 'darwin',
       nodeVersion: '24.18.0',
+      releaseVersion: '0.1.0',
       targetTriple: 'aarch64-apple-darwin',
     })).rejects.toThrow('Desktop bundles require Node.js 24.19.0; received 24.18.0');
     expect(generateRuntime).not.toHaveBeenCalled();

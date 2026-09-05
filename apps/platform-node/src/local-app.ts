@@ -4,6 +4,10 @@ import { join, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 
+import {
+  DESKTOP_RUNTIME_HEALTH_PATH,
+  type DesktopRuntimeCompatibility,
+} from './desktop-runtime-compatibility.ts';
 import { isGatewayOwnedPath } from '@floway-dev/protocols/common';
 
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
@@ -13,6 +17,7 @@ const ROUTES_MANIFEST = 'dashboard-routes.json';
 type GatewayResponse = Response | Promise<Response>;
 
 export interface LocalAppOptions<GatewayArgs extends unknown[]> {
+  desktopCompatibility?: DesktopRuntimeCompatibility | null;
   gatewayFetch: (request: Request, ...args: GatewayArgs) => GatewayResponse;
   staticRoot: string;
 }
@@ -70,6 +75,7 @@ const isDashboardRequest = (request: Request, matchesNavigationPath: (pathname: 
 };
 
 export const createLocalApp = <GatewayArgs extends unknown[]>({
+  desktopCompatibility,
   gatewayFetch,
   staticRoot,
 }: LocalAppOptions<GatewayArgs>) => {
@@ -103,6 +109,20 @@ export const createLocalApp = <GatewayArgs extends unknown[]>({
   return {
     fetch: (request: Request, ...args: GatewayArgs): GatewayResponse => {
       const { pathname } = new URL(request.url);
+      if (desktopCompatibility !== null && desktopCompatibility !== undefined
+        && pathname === DESKTOP_RUNTIME_HEALTH_PATH
+        && (request.method === 'GET' || request.method === 'HEAD')) {
+        return new Response(request.method === 'HEAD' ? null : JSON.stringify({
+          compatibility: desktopCompatibility,
+          service: 'floway',
+          status: 'ok',
+        }), {
+          headers: {
+            'Cache-Control': 'no-store',
+            'Content-Type': 'application/json',
+          },
+        });
+      }
       if (isGatewayOwnedPath(pathname)) return gatewayFetch(request, ...args);
       if (isDashboardRequest(request, matchesNavigationPath)) return dashboard.fetch(request);
       return new Response('404 Not Found', { status: 404 });
