@@ -28,6 +28,14 @@ path = "__tests__/src/navigation_test.rs"
 name = "sidecar_supervisor"
 path = "__tests__/src/sidecar_supervisor_test.rs"
 
+[[test]]
+name = "runtime_status"
+path = "__tests__/src/runtime_status_test.rs"
+
+[[test]]
+name = "sidecar_log"
+path = "__tests__/src/sidecar_log_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
@@ -49,7 +57,7 @@ percent-encoding = { version = "=2.3.2" }
 # https://github.com/servo/rust-url/releases/tag/v2.5.8
 url = { version = "=2.5.8" }
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5
-tauri = { version = "=2.11.5", optional = true, features = [] }
+tauri = { version = "=2.11.5", optional = true, features = ["tray-icon"] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
 tauri-plugin-shell = { version = "=2.3.6", optional = true }
 [build-dependencies]

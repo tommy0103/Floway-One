@@ -8,7 +8,33 @@ pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_ENV: &str = "FLOWAY_BOOTSTRAP_TOKEN";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
+pub const DESKTOP_STATUS_ROUTE: &str = "desktop-status";
 const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopAction {
+    OpenLogs,
+    Restart,
+}
+
+pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
+    if candidate.scheme() != "floway-action" {
+        return None;
+    }
+    match candidate.host_str()? {
+        "open-logs" => Some(DesktopAction::OpenLogs),
+        "restart" => Some(DesktopAction::Restart),
+        _ => None,
+    }
+}
+
+pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {
+    if new_window || candidate.path().trim_matches('/') != DESKTOP_STATUS_ROUTE {
+        return false;
+    }
+    (candidate.scheme() == "tauri" && candidate.host_str() == Some("localhost"))
+        || (candidate.scheme() == "http" && candidate.host_str() == Some("tauri.localhost"))
+}
 
 fn has_valid_percent_encoding(value: &str) -> bool {
     let bytes = value.as_bytes();

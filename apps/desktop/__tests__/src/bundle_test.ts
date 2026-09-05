@@ -74,6 +74,7 @@ describe('desktop bundle preparation', () => {
     const config = JSON.parse(
       await readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
     ) as {
+      build: { frontendDist: string };
       bundle: { externalBin: string[]; resources: Record<string, string> };
       productName: string;
       version: string;
@@ -85,6 +86,7 @@ describe('desktop bundle preparation', () => {
       readFile(resolve(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8'),
     ]);
     expect(config.productName).toBe('Floway');
+    expect(config.build.frontendDist).toBe('bundle-inputs/runtime/apps/web/dist/client');
     expect(config.version).toBe(desktopManifest.version);
     expect(sidecarManifest.version).toBe(desktopManifest.version);
     expect(dashboardManifest.version).toBe(desktopManifest.version);

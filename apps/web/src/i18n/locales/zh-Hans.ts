@@ -24,6 +24,8 @@ const zhHansCN = {
         failed: '复制失败',
       },
       errors: {
+        desktopCompatibilityMismatch: 'Dashboard 版本与桌面运行时不匹配。',
+        desktopRuntimeUnavailable: '无法加载桌面运行时状态。',
         refresh: '刷新',
         back: '返回',
         title: '错误',
@@ -33,6 +35,28 @@ const zhHansCN = {
         runtimeCapabilitiesUnavailable: '无法加载运行时能力。请在网关可用后刷新。',
         sourceMapLoading: '正在加载源代码映射…',
         sourceMapFailed: '源代码映射加载失败',
+      },
+    },
+    desktop: {
+      status: {
+        attention: '需要处理',
+        failedTitle: 'Floway 无法启动本机 Gateway',
+        failures: {
+          asset: 'Dashboard 文件缺失，或与当前 Floway 版本不匹配。',
+          compatibility: '桌面壳、本机运行时和 Dashboard 并非来自同一个兼容版本。',
+          migration: '无法安全升级本机数据库。',
+          nativeDependency: '打包的原生依赖与当前计算机不匹配。',
+          port: '配置的本机端口不可用。',
+          storage: 'Floway 无法读取或写入本机数据或日志。',
+          timeout: '本机 Gateway 未能在启动时限内进入健康状态。',
+          unexpectedExit: '本机 Gateway 意外停止。',
+          unknown: '本机 Gateway 报告了意外故障。',
+        },
+        openLogs: '打开日志',
+        restart: '重启 Gateway',
+        startingBadge: '正在启动',
+        startingDescription: '正在检查打包的运行时、本机存储、数据库和 Dashboard，然后再打开控制面。',
+        startingTitle: '正在启动 Floway',
       },
     },
     auth: {
@@ -173,6 +197,13 @@ const zhHansCN = {
         otherDevices: '当前以你的账户登录的其他设备将会退出登录。',
         save: '修改密码',
         passwordUpdated: '密码已更新，其他设备已退出登录。',
+        desktop: {
+          openLogs: '打开日志',
+          protocol: '兼容协议',
+          running: '运行中',
+          title: '本机 Gateway',
+          version: '版本',
+        },
         validation: {
           currentPasswordRequired: '必须填写当前密码。',
           newPasswordRequired: '必须填写新密码。',

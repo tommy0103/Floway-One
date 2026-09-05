@@ -68,18 +68,36 @@ export const readPackagedNodeVersion = async (desktopRoot: string): Promise<stri
 };
 
 export const readDesktopReleaseVersion = async (desktopRoot: string): Promise<string> => {
-  const manifestPath = resolve(desktopRoot, 'package.json');
-  let value: unknown;
+  const sources = [
+    resolve(desktopRoot, 'package.json'),
+    resolve(desktopRoot, '../platform-node/package.json'),
+    resolve(desktopRoot, '../web/package.json'),
+    resolve(desktopRoot, 'src-tauri/tauri.conf.json'),
+  ];
+  let values: unknown[];
+  let cargoManifest: string;
   try {
-    value = JSON.parse(await readFile(manifestPath, 'utf8'));
+    [values, cargoManifest] = await Promise.all([
+      Promise.all(sources.map(async path => JSON.parse(await readFile(path, 'utf8')) as unknown)),
+      readFile(resolve(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8'),
+    ]);
   } catch (cause) {
-    throw new Error(`Desktop release version authority is unavailable at ${manifestPath}`, { cause });
+    throw new Error(`Desktop release version authorities are unavailable beneath ${desktopRoot}`, { cause });
   }
-  const version = typeof value === 'object' && value !== null && 'version' in value
+  const versions = values.map(value => typeof value === 'object' && value !== null && 'version' in value
     ? (value as { version?: unknown }).version
-    : undefined;
-  if (typeof version !== 'string' || !exactVersion.test(version)) {
-    throw new Error(`Desktop release version authority is invalid at ${manifestPath}`);
+    : undefined);
+  const cargoVersion = /^version = "(\d+\.\d+\.\d+)"$/mu.exec(cargoManifest)?.[1];
+  const version = versions[0];
+  if (
+    typeof version !== 'string'
+    || !exactVersion.test(version)
+    || versions.some(candidate => candidate !== version)
+    || cargoVersion !== version
+  ) {
+    throw new Error(
+      `Desktop shell, sidecar, Dashboard, Tauri configuration, and Cargo release versions must match exactly: ${JSON.stringify([...versions, cargoVersion])}`,
+    );
   }
   return version;
 };

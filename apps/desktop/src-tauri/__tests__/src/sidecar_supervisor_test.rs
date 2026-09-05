@@ -97,7 +97,7 @@ fn spawn_failure_preserves_its_original_cause_and_ownership_remains_empty() {
 }
 
 #[test]
-fn repeated_or_late_registration_is_rejected_without_spawning_another_process() {
+fn repeated_registration_is_rejected_but_failure_recovery_can_spawn_after_termination() {
     let supervisor = PackageProcessSupervisor::new();
     let (stopped_sender, _stopped_receiver) = mpsc::channel();
     supervisor
@@ -122,13 +122,19 @@ fn repeated_or_late_registration_is_rejected_without_spawning_another_process() 
     assert!(!second_spawned.load(Ordering::SeqCst));
 
     assert!(supervisor.record_termination());
-    let late_spawned = AtomicBool::new(false);
-    let failure = supervisor
+    let restarted = AtomicBool::new(false);
+    let (restart_stopped_sender, _restart_stopped_receiver) = mpsc::channel();
+    supervisor
         .spawn_registered(|| -> Result<((), ObservedChild), ForcedSpawnFailure> {
-            late_spawned.store(true, Ordering::SeqCst);
-            unreachable!("a late process must not spawn")
+            restarted.store(true, Ordering::SeqCst);
+            Ok((
+                (),
+                ObservedChild {
+                    stop_requested: Arc::new(AtomicBool::new(false)),
+                    stopped: restart_stopped_sender,
+                },
+            ))
         })
-        .expect_err("registration after termination must fail");
-    assert!(matches!(failure, ProcessRegistrationError::AlreadyOwned));
-    assert!(!late_spawned.load(Ordering::SeqCst));
+        .expect("a failed runtime may be restarted explicitly");
+    assert!(restarted.load(Ordering::SeqCst));
 }

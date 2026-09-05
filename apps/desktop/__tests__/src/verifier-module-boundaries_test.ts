@@ -22,3 +22,15 @@ test('verifier-only output cleanup support lives outside production src', async 
   await expect(readFile(resolve(desktopRoot, 'src/desktop-verification.ts'), 'utf8'))
     .rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+test('Tauri composition stays thin while runtime recovery has one owning module', async () => {
+  const [app, controller] = await Promise.all([
+    readFile(resolve(desktopRoot, 'src-tauri/src/app.rs'), 'utf8'),
+    readFile(resolve(desktopRoot, 'src-tauri/src/runtime_controller.rs'), 'utf8'),
+  ]);
+  expect(app.split('\n').length).toBeLessThan(10);
+  expect(app).toContain('crate::runtime_controller::run()');
+  expect(controller).toContain('struct DesktopController');
+  expect(controller).toContain('fn begin_health_probe(');
+  expect(controller).toContain('fn fail_attempt(');
+});

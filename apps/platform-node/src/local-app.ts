@@ -112,13 +112,15 @@ export const createLocalApp = <GatewayArgs extends unknown[]>({
       if (desktopCompatibility !== null && desktopCompatibility !== undefined
         && pathname === DESKTOP_RUNTIME_HEALTH_PATH
         && (request.method === 'GET' || request.method === 'HEAD')) {
-        return new Response(request.method === 'HEAD' ? null : JSON.stringify({
+        const body = JSON.stringify({
           compatibility: desktopCompatibility,
           service: 'floway',
           status: 'ok',
-        }), {
+        });
+        return new Response(request.method === 'HEAD' ? null : body, {
           headers: {
             'Cache-Control': 'no-store',
+            'Content-Length': String(Buffer.byteLength(body)),
             'Content-Type': 'application/json',
           },
         });

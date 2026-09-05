@@ -1,7 +1,8 @@
 use floway_desktop::{
-    DASHBOARD_ORIGIN, DashboardNavigationPolicy, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
-    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, PERSONAL_RUNTIME_READY_PREFIX,
-    dashboard_bootstrap_url, enforce_dashboard_navigation, ready_dashboard_origin,
+    DASHBOARD_ORIGIN, DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
+    PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
+    PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
+    enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +25,39 @@ fn owns_bootstrap_and_ready_protocol_constants() {
     assert_eq!(
         ready_dashboard_origin("migration complete\nFloway listening on http://127.0.0.1:9217\n"),
         Some("http://127.0.0.1:9217")
+    );
+}
+
+#[test]
+fn limits_shell_status_navigation_and_actions_to_the_owned_surface() {
+    assert_eq!(DESKTOP_STATUS_ROUTE, "desktop-status");
+    assert!(is_desktop_status_navigation(
+        &url::Url::parse("tauri://localhost/desktop-status?state=failed").unwrap(),
+        false,
+    ));
+    assert!(is_desktop_status_navigation(
+        &url::Url::parse("http://tauri.localhost/desktop-status").unwrap(),
+        false,
+    ));
+    assert!(!is_desktop_status_navigation(
+        &url::Url::parse("https://tauri.localhost/desktop-status").unwrap(),
+        false,
+    ));
+    assert!(!is_desktop_status_navigation(
+        &url::Url::parse("tauri://localhost/desktop-status").unwrap(),
+        true,
+    ));
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://open-logs").unwrap()),
+        Some(DesktopAction::OpenLogs),
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://restart").unwrap()),
+        Some(DesktopAction::Restart),
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://quit").unwrap()),
+        None,
     );
 }
 

@@ -14,9 +14,12 @@ test('shipping desktop and Node sources contain no verification modes or environ
     'apps/desktop/src-tauri/src/bundle_contract.rs',
     'apps/desktop/src-tauri/src/lib.rs',
     'apps/desktop/src-tauri/src/navigation.rs',
+    'apps/desktop/src-tauri/src/runtime_controller.rs',
+    'apps/desktop/src-tauri/src/runtime_status.rs',
+    'apps/desktop/src-tauri/src/sidecar_log.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
-  const [app, _bundle, _library, _navigation, supervisor] = desktopSources;
+  const [_app, _bundle, _library, _navigation, runtimeController, _runtimeStatus, _sidecarLog, supervisor] = desktopSources;
   const nodeSources = await Promise.all([
     'apps/platform-node/src/device-master-key.ts',
     'apps/platform-node/src/run-node-entry.ts',
@@ -31,26 +34,27 @@ test('shipping desktop and Node sources contain no verification modes or environ
     expect(source).not.toContain('--verify-personal-runtime');
     expect(source).not.toContain('FLOWAY_PERSONAL_VERIFICATION');
   }
-  expect(app).not.toContain('.env("ADMIN_KEY"');
-  expect(app).not.toContain('.env("PORT"');
-  expect(app).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
-  expect(app).toContain('WebviewUrl::External(url)');
-  expect(app).toContain('ready_dashboard_origin(&runtime_stdout)');
-  expect(app).toContain('.on_navigation(move |candidate|');
-  expect(app).toContain('.on_new_window(move |candidate, _features|');
-  expect(app).toContain('NewWindowResponse::Deny');
-  const ownerSetup = app.indexOf('let supervisor = PackageProcessSupervisor::new();');
-  const preflight = app.indexOf('let runtime = resolve_runtime_bundle(&resource_dir)?;');
-  const registeredSpawn = app.indexOf('let events = supervisor.spawn_registered(||');
+  expect(runtimeController).not.toContain('.env("ADMIN_KEY"');
+  expect(runtimeController).not.toContain('.env("PORT"');
+  expect(runtimeController).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
+  expect(runtimeController).toContain('.navigate(dashboard_url)');
+  expect(runtimeController).toContain('ready_dashboard_origin(&runtime_stdout)');
+  expect(runtimeController).toContain('.on_navigation(move |candidate|');
+  expect(runtimeController).toContain('.on_new_window(move |candidate, _features|');
+  expect(runtimeController).toContain('NewWindowResponse::Deny');
+  const ownerSetup = runtimeController.indexOf('supervisor: PackageProcessSupervisor::new(),');
+  const preflight = runtimeController.indexOf('let runtime = resolve_runtime_bundle(&resource_dir)?;');
+  const registeredSpawn = runtimeController.indexOf('let events = controller.supervisor.spawn_registered(||');
   expect(ownerSetup).toBeGreaterThan(-1);
-  expect(preflight).toBeGreaterThan(ownerSetup);
+  expect(preflight).toBeGreaterThan(-1);
   expect(registeredSpawn).toBeGreaterThan(preflight);
   expect(supervisor).toContain('Registration shares one lock with stop/termination bookkeeping');
 });
 
-test('issue 15 process safety introduces no issue 17 window or owner-lifetime policy', async () => {
+test('issue 16 recovery adds no issue 17 general lifetime policy', async () => {
   const sources = await Promise.all([
     'apps/desktop/src-tauri/src/app.rs',
+    'apps/desktop/src-tauri/src/runtime_controller.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
     'apps/desktop/src-tauri/Cargo.toml',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
@@ -59,16 +63,18 @@ test('issue 15 process safety introduces no issue 17 window or owner-lifetime po
     'signal_hook',
     'SIGTERM',
     'GRACEFUL_SHUTDOWN',
-    'TrayIcon',
     'SingleInstance',
     'Autostart',
     'CloseRequested',
     '.hide()',
-    'restart_sidecar',
+    'GRACEFUL_QUIT',
   ]) {
     expect(combined).not.toContain(deferredPolicy);
   }
-  expect(combined).toContain('Window, tray, singleton, restart,');
+  expect(combined).toContain('failure-only restart transition');
+  expect(combined).toContain('automatic restart,');
+  expect(combined).toContain('TrayIconBuilder');
+  expect(combined).toContain('restart_failed_runtime');
   expect(combined).toContain('RunEvent::ExitRequested');
   expect(combined).toContain('ProcessState::StopRequested');
   expect(combined).toContain('ProcessState::Terminated');
@@ -107,6 +113,7 @@ test('the legacy product identifier remains only in established bundle, app-data
   }
 
   const allowed = occurrences.filter(({ line, path }) => {
+    if (path === 'apps/desktop/src-tauri/src/runtime_controller.rs') return line.includes('.join(');
     if (path === 'apps/platform-node/src/device-master-key-credential-identity.ts') return line.includes('service:');
     if (path === 'apps/platform-node/src/personal-runtime.ts') {
       return line.includes('Application Support') || line.includes('win32.join');

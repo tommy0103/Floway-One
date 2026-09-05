@@ -26,6 +26,8 @@ const en = {
         failed: 'Copy failed',
       },
       errors: {
+        desktopCompatibilityMismatch: 'The Dashboard version does not match the desktop runtime.',
+        desktopRuntimeUnavailable: 'Desktop runtime status could not be loaded.',
         refresh: 'Refresh',
         back: 'Back',
         title: 'Error',
@@ -35,6 +37,28 @@ const en = {
         runtimeCapabilitiesUnavailable: 'Runtime capabilities could not be loaded. Refresh after the gateway is available.',
         sourceMapLoading: 'Loading source maps…',
         sourceMapFailed: 'Source maps could not be loaded',
+      },
+    },
+    desktop: {
+      status: {
+        attention: 'Needs attention',
+        failedTitle: 'Floway could not start the local Gateway',
+        failures: {
+          asset: 'Dashboard files are missing or do not match this Floway release.',
+          compatibility: 'The desktop shell, local runtime, and Dashboard are not from the same compatible release.',
+          migration: 'The local database could not be upgraded safely.',
+          nativeDependency: 'A packaged native dependency does not match this computer.',
+          port: 'The configured local port is unavailable.',
+          storage: 'Floway cannot read or write its local data or logs.',
+          timeout: 'The local Gateway did not become healthy before the startup deadline.',
+          unexpectedExit: 'The local Gateway stopped unexpectedly.',
+          unknown: 'The local Gateway reported an unexpected failure.',
+        },
+        openLogs: 'Open logs',
+        restart: 'Restart Gateway',
+        startingBadge: 'Starting',
+        startingDescription: 'Checking the packaged runtime, local storage, database, and Dashboard before opening the control plane.',
+        startingTitle: 'Starting Floway',
       },
     },
     auth: {
@@ -185,6 +209,13 @@ const en = {
         otherDevices: 'Other devices currently logged in as you will be signed out.',
         save: 'Change password',
         passwordUpdated: 'Password updated. Other devices have been signed out.',
+        desktop: {
+          openLogs: 'Open logs',
+          protocol: 'Compatibility protocol',
+          running: 'Running',
+          title: 'Local Gateway',
+          version: 'Version',
+        },
         validation: {
           currentPasswordRequired: 'Current password is required.',
           newPasswordRequired: 'New password is required.',

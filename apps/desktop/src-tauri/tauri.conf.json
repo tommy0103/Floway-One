@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.floway.one",
   "build": {
-    "beforeBuildCommand": "pnpm run prepare:bundle"
+    "beforeBuildCommand": "pnpm run prepare:bundle",
+    "frontendDist": "bundle-inputs/runtime/apps/web/dist/client"
   },
   "app": {
     "windows": []

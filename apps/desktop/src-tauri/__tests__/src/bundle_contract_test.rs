@@ -169,6 +169,31 @@ fn stale_dashboard_contract_fails_before_runtime_startup() {
 }
 
 #[test]
+fn incompatible_release_contract_fails_before_runtime_startup() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let contract_path = root.join("desktop-bundle-contract.json");
+    let mut contract: serde_json::Value = serde_json::from_slice(
+        &read(&contract_path).expect("fixture bundle contract must be readable"),
+    )
+    .expect("fixture bundle contract must be JSON");
+    contract["compatibility"]["releaseVersion"] = json!("0.2.0");
+    write(&contract_path, format!("{contract}\n")).expect("incompatible contract must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("incompatible release must fail");
+    assert_eq!(error.path(), contract_path);
+    assert!(
+        error
+            .source()
+            .expect("compatibility cause must be retained")
+            .to_string()
+            .contains("this shell requires protocol 1 release 0.1.0")
+    );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
 fn missing_independent_migration_fails_with_the_original_filesystem_error() {
     let root = temporary_root();
     write_fixture(&root);

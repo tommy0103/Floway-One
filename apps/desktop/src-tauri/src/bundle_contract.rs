@@ -17,7 +17,7 @@ pub struct RuntimeCompatibility {
     pub release_version: String,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeBundle {
     pub compatibility: RuntimeCompatibility,
     pub contract: PathBuf,

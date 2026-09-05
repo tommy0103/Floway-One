@@ -109,7 +109,8 @@ enum ProcessState {
     Terminated,
 }
 
-/// Owns only the packaged child process. Window, tray, singleton, restart,
+/// Owns only the packaged child process. The failure-only restart transition
+/// belongs to #16 recovery; general window, tray, singleton, automatic restart,
 /// autostart, and user-driven lifetime policy remain the responsibility of #17.
 pub(crate) struct PackageProcessSupervisor {
     changed: Condvar,
@@ -137,7 +138,7 @@ impl PackageProcessSupervisor {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !matches!(*state, ProcessState::Empty) {
+        if !matches!(*state, ProcessState::Empty | ProcessState::Terminated) {
             return Err(ProcessRegistrationError::AlreadyOwned);
         }
         let (events, child) = spawn().map_err(ProcessRegistrationError::Spawn)?;
