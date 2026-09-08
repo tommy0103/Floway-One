@@ -371,15 +371,9 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: 
         // authority and unrestricted diagnostics never enter this event.
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/mod.rs#L313-L336
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L2379-L2382
-        let query = loaded_url
-            .query_pairs()
-            .collect::<std::collections::HashMap<_, _>>();
         let route = loaded_url.path();
-        let state = query.get("state").map(|value| value.as_ref());
-        let failure_kind = query.get("kind").map(|value| value.as_ref());
         if route.trim_matches('/') != DESKTOP_STATUS_ROUTE
-            || state != Some("failed")
-            || failure_kind != Some(kind.as_str())
+            || controller.phase() != RuntimePhase::Failed
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -392,9 +386,9 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: 
             "phase": "failed",
             "tray": controller.tray.diagnostic_snapshot()?,
             "window": {
-                "failureKind": failure_kind,
+                "failureKind": kind.as_str(),
                 "route": route,
-                "state": state,
+                "state": "failed",
                 "title": window.title()?,
                 "visible": window.is_visible()?,
             },
