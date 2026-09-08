@@ -829,17 +829,16 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 if payload.event() == PageLoadEvent::Finished
                     && is_desktop_status_navigation(payload.url(), false)
                 {
-                    if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>() {
-                        let failure_kind = payload.url().query_pairs().find_map(|(key, value)| {
-                            (key == "kind")
-                                .then(|| FailureKind::from_status(value.as_ref()))
-                                .flatten()
+                    let failure_kind = payload.url().query_pairs().find_map(|(key, value)| {
+                        (key == "kind")
+                            .then(|| FailureKind::from_status(value.as_ref()))
+                            .flatten()
+                    });
+                    if let Some(kind) = failure_kind {
+                        let snapshot_app = page_load_app.clone();
+                        thread::spawn(move || {
+                            emit_failure_surface_snapshot(snapshot_app, kind);
                         });
-                        if controller.phase() == RuntimePhase::Failed {
-                            if let Some(kind) = failure_kind {
-                                emit_failure_surface_snapshot(page_load_app.clone(), kind);
-                            }
-                        }
                     }
                     if page_load_gate.mark_loaded() {
                         start_runtime(&page_load_app);
