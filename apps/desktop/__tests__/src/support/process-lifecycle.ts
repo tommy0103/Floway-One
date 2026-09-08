@@ -262,33 +262,40 @@ export const observePackagedFailureSurface = async (options: {
   );
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
   const observedChildren = new Set<number>();
-  const deadline = Date.now() + 10_000;
   let captured = '';
-  const required = [
+  const failureEvidence = [
     ...options.expectedFragments,
     `Floway desktop runtime state: failed kind=${options.failureKind}`,
+  ];
+  const surfaceEvidence = [
     'FLOWAY_DESKTOP_SURFACE ',
     'FLOWAY_DESKTOP_RENDERED_SURFACE ',
   ];
-  while (Date.now() < deadline) {
-    if (options.sidecarMustNotStart && child.pid !== undefined) {
-      for (const pid of await directChildPids(child.pid)) observedChildren.add(pid);
+  const observeUntil = async (deadline: number, expected: readonly string[]): Promise<void> => {
+    while (Date.now() < deadline) {
+      if (options.sidecarMustNotStart && child.pid !== undefined) {
+        for (const pid of await directChildPids(child.pid)) observedChildren.add(pid);
+      }
+      captured = output();
+      if (expected.every(fragment => captured.includes(fragment))) return;
+      if (child.exitCode !== null || child.signalCode !== null) break;
+      await new Promise(resolveWait => setTimeout(resolveWait, 10));
     }
-    captured = output();
-    if (required.every(fragment => captured.includes(fragment))) break;
-    if (child.exitCode !== null || child.signalCode !== null) break;
-    await new Promise(resolveWait => setTimeout(resolveWait, 10));
+  };
+  await observeUntil(Date.now() + 10_000, failureEvidence);
+  if (failureEvidence.every(fragment => captured.includes(fragment))) {
+    await observeUntil(Date.now() + 10_000, surfaceEvidence);
+  }
+  for (const fragment of [...failureEvidence, ...surfaceEvidence]) {
+    if (!captured.includes(fragment)) {
+      throw new Error(`Floway production setup omitted ${JSON.stringify(fragment)}\n${captured}`);
+    }
   }
   if (child.pid === undefined || !processIsRunning(child.pid)) {
     throw new Error(`Floway production app did not retain its visible failure surface\n${output()}`);
   }
   if (options.sidecarMustNotStart && observedChildren.size > 0) {
     throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedChildren].join(', ')}`);
-  }
-  for (const fragment of required) {
-    if (!captured.includes(fragment)) {
-      throw new Error(`Floway production setup omitted ${JSON.stringify(fragment)}\n${captured}`);
-    }
   }
   await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
     failureKind: options.failureKind,
