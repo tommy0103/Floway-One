@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createInstalledAppVerificationContext } from './support/installed-app.ts';
 import { compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
-import { assertPortAndStorageFailureSurfaces } from './support/packaged-faults.ts';
+import { assertMigrationFailureSurface, assertPortAndStorageFailureSurfaces } from './support/packaged-faults.ts';
 import {
   assertPersonalRuntime,
   assertUnexpectedSidecarExitSurfacesFailure,
@@ -170,48 +170,17 @@ if (launchSupported) {
     });
     console.log('Floway production preflight rejected a stale Dashboard contract without spawning a sidecar');
 
-    const independentMigrations = context.migrationNames.filter(name => name !== '0084_protected_search_secret_columns.sql');
-    const [missingMigrationName, modifiedMigrationName] = independentMigrations;
-    if (missingMigrationName === undefined || modifiedMigrationName === undefined) {
-      throw new Error('Packaged migration contract needs two independent non-0084 migrations for fault verification');
-    }
-    const installedMissingMigration = resolve(context.migrations, missingMigrationName);
-    await withFailureSafeCleanup(async faultCleanup => {
-      const renamedMigration = `${installedMissingMigration}.missing`;
-      await rename(installedMissingMigration, renamedMigration);
-      faultCleanup.defer('missing migration restoration', async () => await rename(renamedMigration, installedMissingMigration));
-      const expected = ['Floway desktop runtime resource is unavailable', missingMigrationName, 'No such file'];
-      await observePackagedFailureSurface({
-        applicationHome: resolve(isolatedRoot, 'ShellData-missing-migration'),
-        executable: context.executable,
-        expectedFragments: expected,
-        failureKind: 'migration',
-        nativeWindowProbe,
-        persistedLogFragments: expected,
-        sidecarMustNotStart: true,
-      });
-      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-    });
-    console.log(`Floway production preflight rejected missing independent migration ${missingMigrationName} without spawning a sidecar`);
-
-    const installedModifiedMigration = resolve(context.migrations, modifiedMigrationName);
-    await withFailureSafeCleanup(async faultCleanup => {
-      const originalMigration = await readFile(installedModifiedMigration);
-      faultCleanup.defer('modified migration restoration', async () => await writeFile(installedModifiedMigration, originalMigration));
-      await writeFile(installedModifiedMigration, Buffer.concat([originalMigration, Buffer.from('\n-- tampered\n')]));
-      const expected = ['migration file digest is stale', modifiedMigrationName];
-      await observePackagedFailureSurface({
-        applicationHome: resolve(isolatedRoot, 'ShellData-stale-migration'),
-        executable: context.executable,
-        expectedFragments: expected,
-        failureKind: 'migration',
-        nativeWindowProbe,
-        persistedLogFragments: expected,
-        sidecarMustNotStart: true,
-      });
-      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-    });
-    console.log(`Floway production preflight rejected modified independent migration ${modifiedMigrationName} without spawning a sidecar`);
+    const migrationName = context.migrationNames.find(name => name !== '0084_protected_search_secret_columns.sql');
+    if (migrationName === undefined) throw new Error('Packaged migration contract needs an independent migration for fault verification');
+    await assertMigrationFailureSurface(
+      nativeWindowProbe,
+      context,
+      isolatedRoot,
+      migrationName,
+      productionEntry,
+      productionContract,
+    );
+    console.log(`Floway packaged runtime surfaced the original failure from invalid migration ${migrationName}`);
 
     const missingEntry = `${context.entry}.missing`;
     await withFailureSafeCleanup(async faultCleanup => {

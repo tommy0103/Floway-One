@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 
@@ -62,5 +62,48 @@ export const assertPortAndStorageFailureSurfaces = async (
     failureKind: 'storage',
     nativeWindowProbe,
     sidecarMustNotStart: true,
+  });
+});
+
+export const assertMigrationFailureSurface = async (
+  nativeWindowProbe: string,
+  context: InstalledAppVerificationContext,
+  isolatedRoot: string,
+  migrationName: string,
+  productionEntry: string,
+  productionContract: string,
+): Promise<void> => await withFailureSafeCleanup(async cleanup => {
+  const migrationPath = resolve(context.migrations, migrationName);
+  const originalMigration = await readFile(migrationPath);
+  cleanup.defer('migration-fault runtime entry', async () => await writeFile(context.entry, productionEntry));
+  cleanup.defer('migration-fault bundle contract', async () => await writeFile(context.contract, productionContract));
+  cleanup.defer('migration-fault SQL', async () => await writeFile(migrationPath, originalMigration));
+
+  const invalidMigration = Buffer.concat([originalMigration, Buffer.from('\nTHIS IS NOT SQL;\n')]);
+  await writeFile(migrationPath, invalidMigration);
+  const contract = JSON.parse(productionContract) as {
+    migrations: { files: Array<{ path: string; sha256: string }> };
+  };
+  const entry = contract.migrations.files.find(file => file.path === migrationName);
+  if (entry === undefined) throw new Error(`Migration contract omits ${migrationName}`);
+  entry.sha256 = createHash('sha256').update(invalidMigration).digest('hex');
+  await writeFile(context.contract, `${JSON.stringify(contract, undefined, 2)}\n`);
+
+  const verificationRoot = resolve(isolatedRoot, 'PersonalData-migration-fault');
+  const credentialIdentity: CredentialIdentity = {
+    service: `Floway desktop package verification ${randomUUID()}`,
+    account: `device-master-key-${randomUUID()}`,
+  };
+  cleanup.defer('migration-fault personal data', async () => await rm(verificationRoot, { force: true, recursive: true }));
+  cleanup.defer('migration-fault credential', async () => await runCredentialScript(context, credentialIdentity, 'delete'));
+  await writeFile(context.entry, personalEntrySource(verificationRoot, credentialIdentity));
+  const expected = ['Floway could not apply its local database migrations', 'near "THIS": syntax error'];
+  await observePackagedFailureSurface({
+    applicationHome: resolve(isolatedRoot, 'ShellData-migration-fault'),
+    executable: context.executable,
+    expectedFragments: expected,
+    failureKind: 'migration',
+    nativeWindowProbe,
+    persistedLogFragments: expected,
   });
 });
