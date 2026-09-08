@@ -85,19 +85,6 @@ fn parses_a_structured_sidecar_failure_without_flattening_its_chain() {
 }
 
 #[test]
-fn status_failure_kinds_cover_shell_owned_terminal_states() {
-    assert_eq!(
-        FailureKind::from_status("timeout"),
-        Some(FailureKind::Timeout)
-    );
-    assert_eq!(
-        FailureKind::from_status("unexpected-exit"),
-        Some(FailureKind::UnexpectedExit)
-    );
-    assert_eq!(FailureKind::from_status("constructor"), None);
-}
-
-#[test]
 fn decodes_a_structured_failure_split_across_stderr_events() {
     let mut decoder = SidecarFailureDecoder::default();
     assert!(

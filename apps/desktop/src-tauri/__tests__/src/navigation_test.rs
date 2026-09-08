@@ -91,20 +91,18 @@ fn hashes_only_bounded_typed_rendered_recovery_content() {
         "Open logs",
         "floway-action://open-logs",
     ];
-    let mut url = url::Url::parse("floway-action://report-rendered-surface").unwrap();
-    url.query_pairs_mut()
-        .append_pair("failureKind", "port")
-        .append_pair("locale", "en")
-        .append_pair("title", copy[0])
-        .append_pair("message", copy[1])
-        .append_pair("restartLabel", copy[2])
-        .append_pair("restartHref", copy[3])
-        .append_pair("logsLabel", copy[4])
-        .append_pair("logsHref", copy[5]);
-
-    let diagnostic = rendered_surface_diagnostic(&url)
-        .expect("rendered action must be recognized")
-        .expect("bounded rendered action must be accepted");
+    let surface = serde_json::json!({
+        "failureKind": "port",
+        "locale": "en",
+        "title": copy[0],
+        "message": copy[1],
+        "restartLabel": copy[2],
+        "restartHref": copy[3],
+        "logsLabel": copy[4],
+        "logsHref": copy[5],
+    });
+    let diagnostic =
+        rendered_surface_diagnostic(&surface).expect("bounded rendered action must be accepted");
     assert_eq!(diagnostic["failureKind"], "port");
     assert_eq!(diagnostic["locale"], "en");
     assert_eq!(
@@ -120,16 +118,20 @@ fn hashes_only_bounded_typed_rendered_recovery_content() {
 
 #[test]
 fn rejects_untyped_or_unbounded_rendered_recovery_reports() {
-    for candidate in [
-        "floway-action://report-rendered-surface?failureKind=constructor",
-        "floway-action://report-rendered-surface?failureKind=port&failureKind=storage",
-        "floway-action://report-rendered-surface?failureKind=port&locale=en&title=ok&message=ok&restartLabel=ok&restartHref=https%3A%2F%2Fexample.test&logsLabel=ok&logsHref=floway-action%3A%2F%2Fopen-logs",
+    for surface in [
+        serde_json::json!({ "failureKind": "constructor" }),
+        serde_json::json!({
+            "failureKind": "port",
+            "locale": "en",
+            "title": "ok",
+            "message": "ok",
+            "restartLabel": "ok",
+            "restartHref": "https://example.test",
+            "logsLabel": "ok",
+            "logsHref": "floway-action://open-logs",
+        }),
     ] {
-        assert!(
-            rendered_surface_diagnostic(&url::Url::parse(candidate).unwrap())
-                .unwrap()
-                .is_err()
-        );
+        assert!(rendered_surface_diagnostic(&surface).is_err());
     }
 }
 

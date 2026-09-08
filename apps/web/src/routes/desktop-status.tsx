@@ -1,3 +1,4 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useLayoutEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 
@@ -56,27 +57,27 @@ export default function DesktopStatus() {
 
   useLayoutEffect(() => {
     if (!failed || surface.current === null) return;
-    const isPackagedStatus = window.location.protocol === 'tauri:'
-      || (window.location.protocol === 'http:' && window.location.host === 'tauri.localhost');
-    if (!isPackagedStatus) return;
+    if (!isTauri()) return;
     const title = surface.current.querySelector('h1')?.textContent?.trim();
     const message = surface.current.querySelector('p')?.textContent?.trim();
     const restart = surface.current.querySelector<HTMLAnchorElement>('a[href="floway-action://restart"]');
     const logs = surface.current.querySelector<HTMLAnchorElement>('a[href="floway-action://open-logs"]');
     const locale = document.documentElement.lang;
     if (title === undefined || message === undefined || restart === null || logs === null) return;
-    const report = new URL('floway-action://report-rendered-surface');
-    for (const [key, value] of [
-      ['failureKind', status.failureKind],
-      ['locale', locale],
-      ['title', title],
-      ['message', message],
-      ['restartLabel', restart.textContent?.trim() ?? ''],
-      ['restartHref', restart.href],
-      ['logsLabel', logs.textContent?.trim() ?? ''],
-      ['logsHref', logs.href],
-    ] as const) report.searchParams.set(key, value);
-    window.location.assign(report);
+    void invoke('report_desktop_rendered_surface', {
+      surface: {
+        failureKind: status.failureKind,
+        locale,
+        logsHref: logs.href,
+        logsLabel: logs.textContent?.trim() ?? '',
+        message,
+        restartHref: restart.href,
+        restartLabel: restart.textContent?.trim() ?? '',
+        title,
+      },
+    }).catch(() => {
+      console.error('Floway could not report the rendered desktop recovery surface');
+    });
   }, [failed, i18n.resolvedLanguage, status.failureKind]);
 
   return (

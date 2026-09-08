@@ -109,14 +109,6 @@ impl FailureKind {
             _ => return None,
         })
     }
-
-    pub fn from_status(value: &str) -> Option<Self> {
-        Some(match value {
-            "timeout" => Self::Timeout,
-            "unexpected-exit" => Self::UnexpectedExit,
-            _ => Self::from_wire(value)?,
-        })
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

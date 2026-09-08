@@ -741,19 +741,6 @@ fn restart_failed_runtime(app: &AppHandle) {
 }
 
 fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool {
-    if let Some(diagnostic) = rendered_surface_diagnostic(candidate) {
-        match diagnostic.and_then(|value| serde_json::to_string(&value).map_err(io::Error::other)) {
-            Ok(encoded) if encoded.len() <= MAXIMUM_SURFACE_EVENT_BYTES => {
-                eprintln!("{DESKTOP_RENDERED_SURFACE_EVENT_PREFIX}{encoded}");
-            }
-            Ok(_) => print_error_chain(&io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic exceeded its byte bound",
-            )),
-            Err(error) => print_error_chain(&error),
-        }
-        return false;
-    }
     if let Some(action) = desktop_action(candidate) {
         match action {
             DesktopAction::OpenLogs => open_logs(app),
@@ -785,6 +772,17 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
     }
 }
 
+#[tauri::command]
+fn report_desktop_rendered_surface(surface: serde_json::Value) -> Result<(), String> {
+    let diagnostic = rendered_surface_diagnostic(&surface).map_err(|error| error.to_string())?;
+    let encoded = serde_json::to_string(&diagnostic).map_err(|error| error.to_string())?;
+    if encoded.len() > MAXIMUM_SURFACE_EVENT_BYTES {
+        return Err("Floway rendered failure diagnostic exceeded its byte bound".to_owned());
+    }
+    eprintln!("{DESKTOP_RENDERED_SURFACE_EVENT_PREFIX}{encoded}");
+    Ok(())
+}
+
 fn stop_packaged_process(app_handle: &AppHandle) {
     let Some(controller) = app_handle.try_state::<Arc<DesktopController>>() else {
         return;
@@ -802,6 +800,7 @@ fn stop_packaged_process(app_handle: &AppHandle) {
 fn try_run() -> Result<(), Box<dyn Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![report_desktop_rendered_surface])
         .setup(|app| {
             let app_handle = app.handle().clone();
             // The local status route is bundled with the Dashboard build but

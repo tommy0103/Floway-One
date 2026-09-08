@@ -13,7 +13,6 @@ pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
 pub const DESKTOP_STATUS_ROUTE: &str = "desktop-status";
 const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
 const MAXIMUM_RENDERED_SURFACE_VALUE_BYTES: usize = 512;
-const RENDERED_SURFACE_ACTION: &str = "report-rendered-surface";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopAction {
@@ -32,14 +31,14 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
     }
 }
 
-pub fn rendered_surface_diagnostic(candidate: &Url) -> Option<Result<Value, io::Error>> {
-    if candidate.scheme() != "floway-action"
-        || candidate.host_str() != Some(RENDERED_SURFACE_ACTION)
-    {
-        return None;
-    }
-    Some((|| {
-        let pairs = candidate.query_pairs().collect::<Vec<_>>();
+pub fn rendered_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> {
+    (|| {
+        let fields = surface.as_object().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway rendered failure diagnostic must be an object",
+            )
+        })?;
         let required = [
             "failureKind",
             "locale",
@@ -50,24 +49,19 @@ pub fn rendered_surface_diagnostic(candidate: &Url) -> Option<Result<Value, io::
             "logsLabel",
             "logsHref",
         ];
-        if pairs.len() != required.len() {
+        if fields.len() != required.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Floway rendered failure diagnostic has an invalid field count",
             ));
         }
         let value = |key: &str| -> Result<String, io::Error> {
-            let matches = pairs
-                .iter()
-                .filter(|(candidate, _value)| candidate == key)
-                .collect::<Vec<_>>();
-            if matches.len() != 1 {
-                return Err(io::Error::new(
+            let value = fields.get(key).and_then(Value::as_str).ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Floway rendered failure diagnostic has an invalid {key} field"),
-                ));
-            }
-            let value = matches[0].1.as_ref();
+                )
+            })?;
             if value.is_empty()
                 || value.len() > MAXIMUM_RENDERED_SURFACE_VALUE_BYTES
                 || value.chars().any(char::is_control)
@@ -125,7 +119,7 @@ pub fn rendered_surface_diagnostic(candidate: &Url) -> Option<Result<Value, io::
             "failureKind": failure_kind,
             "locale": locale,
         }))
-    })())
+    })()
 }
 
 pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {
