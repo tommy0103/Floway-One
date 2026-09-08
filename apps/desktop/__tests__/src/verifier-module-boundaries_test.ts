@@ -47,6 +47,10 @@ test('packaged native observation combines actual Tauri objects with an external
   ]) {
     expect(controller).toContain(actualObjectRead);
   }
+  expect(controller).toContain('.on_page_load(');
+  expect(controller).toContain('FLOWAY_DESKTOP_PAGE_LOAD ');
+  expect(controller).not.toContain('FLOWAY_DESKTOP_TEST_SURFACE_PROBE');
+  expect(controller).not.toContain('window.eval(');
   expect(surface).toContain('FLOWAY_DESKTOP_SURFACE ');
   expect(surface).toContain('visibleWindowCount');
 });

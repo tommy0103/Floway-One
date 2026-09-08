@@ -27,6 +27,10 @@ import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 const execFileAsync = promisify(execFile);
 const DASHBOARD_BOOTSTRAP_TIMEOUT_MS = 30_000;
 const DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS = 50;
+const DASHBOARD_PAGE_LOAD_EVENT_PREFIX = 'FLOWAY_DESKTOP_PAGE_LOAD ';
+const DASHBOARD_BOOTSTRAP_COMPLETED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"completed"}';
+const DASHBOARD_BOOTSTRAP_FAILED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"failed"}';
+const DASHBOARD_BOOTSTRAP_REJECTED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"rejected"}';
 
 export type PersonalFailurePhase = 'app' | 'sidecar' | 'listener' | 'dashboard' | 'migration' | 'credential';
 
@@ -110,6 +114,7 @@ const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual
 };
 
 export const waitForDashboardBootstrapSession = async (
+  readOutput: () => string,
   readSessionToken: () => string | undefined,
   options: {
     readonly now?: () => number;
@@ -121,20 +126,51 @@ export const waitForDashboardBootstrapSession = async (
   const sleep = options.sleep ?? (async (milliseconds: number) => {
     await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
   });
-  const deadline = now() + (options.timeoutMs ?? DASHBOARD_BOOTSTRAP_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? DASHBOARD_BOOTSTRAP_TIMEOUT_MS;
+  let deadline = now() + timeoutMs;
+  let documentLoaded = false;
   while (now() < deadline) {
-    const token = readSessionToken();
-    if (token !== undefined) return token;
+    const captured = readOutput();
+    if (captured.includes(DASHBOARD_BOOTSTRAP_FAILED) || captured.includes(DASHBOARD_BOOTSTRAP_REJECTED)) {
+      throw new Error(`Installed Dashboard bootstrap request failed\n${captured}`);
+    }
+    if (!documentLoaded) {
+      documentLoaded = captured.split('\n').some(line => {
+        if (!line.startsWith(DASHBOARD_PAGE_LOAD_EVENT_PREFIX)) return false;
+        try {
+          const event = JSON.parse(line.slice(DASHBOARD_PAGE_LOAD_EVENT_PREFIX.length)) as {
+            bootstrapAuthority?: unknown;
+            event?: unknown;
+            surface?: unknown;
+          };
+          return event.bootstrapAuthority === true
+            && event.event === 'finished'
+            && event.surface === 'dashboard';
+        } catch {
+          return false;
+        }
+      });
+      if (documentLoaded) deadline = now() + timeoutMs;
+    }
+    if (documentLoaded && captured.includes(DASHBOARD_BOOTSTRAP_COMPLETED)) {
+      const token = readSessionToken();
+      if (token !== undefined) return token;
+      throw new Error(`Installed Dashboard reported bootstrap completion without a durable owner session\n${captured}`);
+    }
     await sleep(Math.min(DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS, Math.max(0, deadline - now())));
   }
-  throw new Error('Installed Dashboard did not exchange its one-time bootstrap authority for an owner session');
+  const stage = documentLoaded
+    ? 'did not complete its one-time bootstrap exchange after the document loaded'
+    : 'did not finish loading its bootstrap document';
+  throw new Error(`Installed Dashboard ${stage}\n${readOutput()}`);
 };
 
 const assertDashboardBootstrapAndControlPlane = async (
+  output: () => string,
   origin: string,
   databasePath: string,
 ): Promise<void> => {
-  const sessionToken = await waitForDashboardBootstrapSession(() => {
+  const sessionToken = await waitForDashboardBootstrapSession(output, () => {
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
       database.exec('PRAGMA busy_timeout = 5000');
@@ -257,7 +293,7 @@ export const assertPersonalRuntime = async (
     const assetResponse = await fetch(`${origin}${assetPath}`);
     if (!assetResponse.ok) throw new Error(`Installed Dashboard asset returned ${assetResponse.status}`);
     forcePersonalFailure(forcedFailure, 'dashboard');
-    await assertDashboardBootstrapAndControlPlane(origin, resolve(verificationRoot, 'floway.db'));
+    await assertDashboardBootstrapAndControlPlane(output, origin, resolve(verificationRoot, 'floway.db'));
 
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
     try {
