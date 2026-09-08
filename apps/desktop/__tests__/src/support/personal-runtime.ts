@@ -256,8 +256,8 @@ export const assertPersonalRuntime = async (
     if (assetPath === undefined) throw new Error('Installed Dashboard document names no asset');
     const assetResponse = await fetch(`${origin}${assetPath}`);
     if (!assetResponse.ok) throw new Error(`Installed Dashboard asset returned ${assetResponse.status}`);
-    await assertDashboardBootstrapAndControlPlane(origin, resolve(verificationRoot, 'floway.db'));
     forcePersonalFailure(forcedFailure, 'dashboard');
+    await assertDashboardBootstrapAndControlPlane(origin, resolve(verificationRoot, 'floway.db'));
 
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
     try {
