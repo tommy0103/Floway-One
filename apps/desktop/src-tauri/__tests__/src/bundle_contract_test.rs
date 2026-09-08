@@ -26,6 +26,7 @@ fn write_fixture(root: &Path) {
         "runtime/apps/platform-node/entry.js",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0002_independent.sql",
+        "runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node",
         "runtime/apps/web/dist/client/index.html",
         "runtime/apps/web/dist/client/dashboard-routes.json",
         "runtime/apps/web/dist/client/assets/lazy-dashboard.js",
@@ -66,13 +67,19 @@ fn write_fixture(root: &Path) {
         })
     });
     let contract = json!({
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "compatibility": {
             "protocolVersion": 1,
             "releaseVersion": "0.1.0",
         },
         "dashboard": { "assets": dashboard_assets },
         "migrations": { "files": migration_files },
+        "nativeDependencies": {
+            "files": [{
+                "path": "@napi-rs/keyring/keyring.node",
+                "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node")).unwrap())),
+            }],
+        },
         "node": {
             "architecture": architecture,
             "platform": "darwin",
@@ -101,6 +108,7 @@ fn resolves_only_packaged_runtime_resources_for_the_personal_sidecar() {
     assert_eq!(runtime.contract, root.join("desktop-bundle-contract.json"));
     assert_eq!(runtime.dashboard_assets.len(), 3);
     assert_eq!(runtime.migration_files.len(), 2);
+    assert_eq!(runtime.native_dependency_files.len(), 1);
     assert_eq!(
         runtime.sidecar_arguments(),
         vec![
@@ -229,6 +237,43 @@ fn modified_independent_migration_fails_with_the_contract_cause() {
             .to_string()
             .contains("migration file digest is stale")
     );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn corrupted_native_dependency_fails_with_its_exact_integrity_cause() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let native = root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+    write(&native, "corrupted signed native dependency")
+        .expect("native dependency fixture must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("corrupted native dependency must fail");
+    assert_eq!(error.path(), root.join("desktop-bundle-contract.json"));
+    assert!(
+        error
+            .source()
+            .expect("native integrity cause must be retained")
+            .to_string()
+            .contains("native dependency digest is stale")
+    );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn missing_native_dependency_fails_with_the_original_filesystem_error() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let missing =
+        root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+    remove_file(&missing).expect("native dependency fixture must exist before removal");
+
+    let error = resolve_runtime_bundle(&root).expect_err("missing native dependency must fail");
+    assert_eq!(error.path(), missing);
+    let source = error.source().expect("filesystem cause must be retained");
+    assert!(source.to_string().contains("No such file") || source.to_string().contains("not find"));
 
     remove_dir_all(root).expect("fixture cleanup must succeed");
 }

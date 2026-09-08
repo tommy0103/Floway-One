@@ -24,7 +24,7 @@ pub use navigation::{
     DesktopAction, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
     PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
     enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
-    sanitized_page_load_diagnostic,
+    rendered_surface_diagnostic, sanitized_page_load_diagnostic,
 };
 #[cfg(feature = "desktop")]
 pub use runtime_status::InitialStatusLoadGate;

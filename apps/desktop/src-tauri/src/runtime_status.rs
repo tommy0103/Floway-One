@@ -109,6 +109,14 @@ impl FailureKind {
             _ => return None,
         })
     }
+
+    pub fn from_status(value: &str) -> Option<Self> {
+        Some(match value {
+            "timeout" => Self::Timeout,
+            "unexpected-exit" => Self::UnexpectedExit,
+            _ => Self::from_wire(value)?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,14 +192,6 @@ impl RuntimeAttemptState {
         Some(self.generation)
     }
 
-    pub fn mark_ready(&mut self, generation: u64) -> bool {
-        if self.generation != generation || self.phase != RuntimePhase::Starting {
-            return false;
-        }
-        self.phase = RuntimePhase::Ready;
-        true
-    }
-
     pub fn commit_ready<E>(
         &mut self,
         generation: u64,
@@ -207,14 +207,6 @@ impl RuntimeAttemptState {
 
     pub fn mark_startup_failed(&mut self, generation: u64) -> bool {
         if self.generation != generation || self.phase != RuntimePhase::Starting {
-            return false;
-        }
-        self.phase = RuntimePhase::Failed;
-        true
-    }
-
-    pub fn mark_runtime_failed(&mut self, generation: u64) -> bool {
-        if self.generation != generation || self.phase != RuntimePhase::Ready {
             return false;
         }
         self.phase = RuntimePhase::Failed;

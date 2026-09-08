@@ -9,6 +9,7 @@ import type { InstalledAppVerificationContext } from './installed-app.ts';
 import { assertNativeFailureSurface } from './native-surface.ts';
 import {
   appEnvironmentWithoutPortOverride,
+  assertBoundedSidecarLogs,
   assertNoDirectChildren,
   assertLoopbackPortReleased,
   captureApp,
@@ -273,7 +274,10 @@ export const assertPersonalRuntime = async (
       verificationRoot,
       credentialIdentity,
     ));
-    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(
+      context.executable,
+      appEnvironmentWithoutPortOverride(verificationRoot),
+    );
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
@@ -356,7 +360,10 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       credentialIdentity,
       `setTimeout(() => { throw new Error(${JSON.stringify(parentFailure)}, { cause: new Error(${JSON.stringify(originalCause)}) }); }, 1_500);`,
     ));
-    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(
+      context.executable,
+      appEnvironmentWithoutPortOverride(verificationRoot),
+    );
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
     const sidecarPid = await waitForDirectChild(child, output);
     await waitForHealthyRuntime(child, output, origin);
@@ -366,6 +373,7 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       'Floway packaged runtime exited unexpectedly',
       'Floway desktop runtime state: failed kind=unexpected-exit',
       'FLOWAY_DESKTOP_SURFACE ',
+      'FLOWAY_DESKTOP_RENDERED_SURFACE ',
     ];
     const captured = await waitForOutput(child, output, expected);
     if (child.pid === undefined || !processIsRunning(child.pid)) {
@@ -380,6 +388,7 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       failureKind: 'unexpected-exit',
       forbiddenSnapshotText: [parentFailure, originalCause],
     });
+    await assertBoundedSidecarLogs(verificationRoot, [parentFailure, originalCause]);
     await assertNoDirectChildren(child.pid);
     await assertLoopbackPortReleased(port);
     await terminateProcessGroup(child);

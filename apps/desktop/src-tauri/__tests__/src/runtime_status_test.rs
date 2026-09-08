@@ -85,6 +85,19 @@ fn parses_a_structured_sidecar_failure_without_flattening_its_chain() {
 }
 
 #[test]
+fn status_failure_kinds_cover_shell_owned_terminal_states() {
+    assert_eq!(
+        FailureKind::from_status("timeout"),
+        Some(FailureKind::Timeout)
+    );
+    assert_eq!(
+        FailureKind::from_status("unexpected-exit"),
+        Some(FailureKind::UnexpectedExit)
+    );
+    assert_eq!(FailureKind::from_status("constructor"), None);
+}
+
+#[test]
 fn decodes_a_structured_failure_split_across_stderr_events() {
     let mut decoder = SidecarFailureDecoder::default();
     assert!(
@@ -108,12 +121,20 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let second = state.begin().expect("failed runtime may restart");
 
     assert_ne!(first, second);
-    assert!(!state.mark_ready(first));
+    assert!(
+        !state
+            .commit_ready(first, |_| Ok::<(), ()>(()))
+            .expect("stale ready transition must not fail")
+    );
     assert!(state.is_starting(second));
-    assert!(state.mark_ready(second));
+    assert!(
+        state
+            .commit_ready(second, |_| Ok::<(), ()>(()))
+            .expect("ready transition must succeed")
+    );
     assert_eq!(state.phase(), RuntimePhase::Ready);
     assert!(!state.mark_startup_failed(first));
-    assert!(state.mark_runtime_failed(second));
+    assert!(state.mark_failed(second));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 
@@ -122,7 +143,11 @@ fn a_ready_attempt_cannot_time_out_after_its_deadline() {
     let mut state = RuntimeAttemptState::new();
     let generation = state.begin().expect("attempt must begin");
     let deadline = Instant::now() + Duration::from_millis(1);
-    assert!(state.mark_ready(generation));
+    assert!(
+        state
+            .commit_ready(generation, |_| Ok::<(), ()>(()))
+            .expect("ready transition must succeed")
+    );
     thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1));
 
     assert!(!state.mark_startup_failed(generation));

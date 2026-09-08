@@ -1,9 +1,12 @@
 import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { once } from 'node:events';
+import { access, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
+import { assertNativeFailureSurface } from './native-surface.ts';
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +15,7 @@ const execFileAsync = promisify(execFile);
 // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/signal.h#L101-L104
 export const TERMINATION_SIGNAL: NodeJS.Signals = 'SIGTERM';
 const FORCE_KILL_SIGNAL: NodeJS.Signals = 'SIGKILL';
+const MAXIMUM_SIDECAR_LOG_BYTES = 1024 * 1024;
 
 export type CapturedChild = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -162,10 +166,37 @@ export const reserveNonDefaultLoopbackPort = async (): Promise<number> => await 
   return port;
 });
 
-export const appEnvironmentWithoutPortOverride = (): NodeJS.ProcessEnv => {
+export const appEnvironmentWithoutPortOverride = (applicationHome: string): NodeJS.ProcessEnv => {
   const environment = { ...process.env };
   delete environment.PORT;
+  environment.FLOWAY_DESKTOP_LOGS_DIR = resolve(applicationHome, 'logs');
   return environment;
+};
+
+export const assertBoundedSidecarLogs = async (
+  applicationHome: string,
+  expectedFragments: readonly string[],
+): Promise<void> => {
+  const logsDirectory = resolve(applicationHome, 'logs');
+  const names = (await readdir(logsDirectory)).filter(name => name.startsWith('floway.sidecar.log')).sort();
+  if (names.length === 0 || names.length > 4 || names[0] !== 'floway.sidecar.log') {
+    throw new Error(`Floway persisted an unexpected bounded-log inventory: ${JSON.stringify(names)}`);
+  }
+  let persisted = '';
+  for (const name of names) {
+    const path = resolve(logsDirectory, name);
+    const size = (await stat(path)).size;
+    if (size > MAXIMUM_SIDECAR_LOG_BYTES) {
+      throw new Error(`Floway persisted oversized sidecar log ${path}: ${size} bytes`);
+    }
+    const bytes = await readFile(path);
+    persisted += new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  }
+  for (const fragment of expectedFragments) {
+    if (!persisted.includes(fragment)) {
+      throw new Error(`Floway persisted logs omitted ${JSON.stringify(fragment)} beneath ${applicationHome}`);
+    }
+  }
 };
 
 export const assertLoopbackPortReleased = async (port: number): Promise<void> => {
@@ -205,50 +236,68 @@ export const waitForOutput = async (
   throw new Error(`Floway production app omitted ${JSON.stringify(expectedFragments)}\n${output()}`);
 };
 
-export const observeProductionApp = async (
-  executable: string,
-  expectedFragments: readonly string[],
-  environment: NodeJS.ProcessEnv = process.env,
-): Promise<string> => await withFailureSafeCleanup(async cleanup => {
-  const { child, output } = captureApp(executable, environment);
+export const observePackagedFailureSurface = async (options: {
+  readonly applicationHome: string;
+  readonly executable: string;
+  readonly expectedFragments: readonly string[];
+  readonly failureKind: string;
+  readonly forbiddenSnapshotText?: readonly string[];
+  readonly nativeWindowProbe: string;
+  readonly persistedLogFragments?: readonly string[];
+  readonly sidecarMustNotStart?: boolean;
+}): Promise<string> => await withFailureSafeCleanup(async cleanup => {
+  await mkdir(options.applicationHome, { recursive: true });
+  cleanup.defer('isolated shell application data', async () => {
+    await rm(options.applicationHome, { force: true, recursive: true });
+    await access(options.applicationHome).then(
+      () => { throw new Error(`Floway shell application data remains at ${options.applicationHome}`); },
+      error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      },
+    );
+  });
+  const { child, output } = captureApp(
+    options.executable,
+    appEnvironmentWithoutPortOverride(options.applicationHome),
+  );
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
-  const captured = await waitForOutput(child, output, expectedFragments);
-  if (child.pid === undefined || !processIsRunning(child.pid)) {
-    throw new Error(`Floway production app did not retain its visible failure surface\n${captured}`);
-  }
-  await terminateProcessGroup(child);
-  return captured;
-});
-
-export const observeSetupFailureWithoutSidecar = async (
-  executable: string,
-  expectedFragments: readonly string[],
-): Promise<string> => await withFailureSafeCleanup(async cleanup => {
-  const { child, output } = captureApp(executable, appEnvironmentWithoutPortOverride());
-  cleanup.defer('setup-fault application process group', async () => await terminateProcessGroup(child));
   const observedChildren = new Set<number>();
   const deadline = Date.now() + 10_000;
   let captured = '';
+  const required = [
+    ...options.expectedFragments,
+    `Floway desktop runtime state: failed kind=${options.failureKind}`,
+    'FLOWAY_DESKTOP_SURFACE ',
+    'FLOWAY_DESKTOP_RENDERED_SURFACE ',
+  ];
   while (Date.now() < deadline) {
-    if (child.pid !== undefined) {
+    if (options.sidecarMustNotStart && child.pid !== undefined) {
       for (const pid of await directChildPids(child.pid)) observedChildren.add(pid);
     }
     captured = output();
-    if (expectedFragments.every(fragment => captured.includes(fragment))) break;
+    if (required.every(fragment => captured.includes(fragment))) break;
     if (child.exitCode !== null || child.signalCode !== null) break;
     await new Promise(resolveWait => setTimeout(resolveWait, 10));
   }
   if (child.pid === undefined || !processIsRunning(child.pid)) {
-    throw new Error(`Floway production setup did not retain its visible failure surface\n${output()}`);
+    throw new Error(`Floway production app did not retain its visible failure surface\n${output()}`);
   }
-  if (observedChildren.size > 0) {
+  if (options.sidecarMustNotStart && observedChildren.size > 0) {
     throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedChildren].join(', ')}`);
   }
-  for (const fragment of expectedFragments) {
+  for (const fragment of required) {
     if (!captured.includes(fragment)) {
       throw new Error(`Floway production setup omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
   }
+  await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
+    failureKind: options.failureKind,
+    forbiddenSnapshotText: options.forbiddenSnapshotText ?? options.expectedFragments,
+  });
+  if (options.persistedLogFragments !== undefined) {
+    await assertBoundedSidecarLogs(options.applicationHome, options.persistedLogFragments);
+  }
+  await assertNoDirectChildren(child.pid);
   await terminateProcessGroup(child);
   return captured;
 });

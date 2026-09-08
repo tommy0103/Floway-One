@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +67,10 @@ const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
     await mkdir(resolve(path, '..'), { recursive: true });
     await writeFile(path, content);
   }));
+  const nativeFixture = resolve(runtimeRoot, 'apps/platform-node/node_modules/native-fixture/runtime.node');
+  await mkdir(resolve(nativeFixture, '..'), { recursive: true });
+  if (process.platform === 'darwin') await copyFile(process.execPath, nativeFixture);
+  else await writeFile(nativeFixture, 'native fixture');
 };
 
 describe('desktop bundle preparation', () => {
@@ -164,10 +168,13 @@ describe('desktop bundle preparation', () => {
     ));
     expect(prepared.contractPath).toBe(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json'));
     const contract = JSON.parse(await readFile(prepared.contractPath, 'utf8')) as {
+      schemaVersion?: unknown;
       compatibility?: { protocolVersion?: unknown; releaseVersion?: unknown };
       dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
       migrations?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
+      nativeDependencies?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
     };
+    expect(contract.schemaVersion).toBe(3);
     expect(contract.compatibility).toEqual({
       protocolVersion: 1,
       releaseVersion: '0.1.0',
@@ -183,6 +190,10 @@ describe('desktop bundle preparation', () => {
       '0002_independent.sql',
     ]);
     expect(contract.migrations?.files?.every(file => /^[\da-f]{64}$/.test(String(file.sha256)))).toBe(true);
+    expect(contract.nativeDependencies?.files?.map(file => file.path)).toEqual([
+      'native-fixture/runtime.node',
+    ]);
+    expect(contract.nativeDependencies?.files?.every(file => /^[\da-f]{64}$/.test(String(file.sha256)))).toBe(true);
     expect((await stat(prepared.nodeSidecar)).size).toBe((await stat(nodeExecutable)).size);
     if (process.platform !== 'win32') {
       expect((await stat(prepared.nodeSidecar)).mode & 0o777).toBe(0o755);

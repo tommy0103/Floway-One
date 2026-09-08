@@ -37,7 +37,7 @@ export interface PreparedDesktopBundle {
 }
 
 interface DesktopBundleContract {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly compatibility: {
     readonly protocolVersion: typeof DESKTOP_COMPATIBILITY_VERSION;
     readonly releaseVersion: string;
@@ -46,6 +46,9 @@ interface DesktopBundleContract {
     readonly assets: readonly BundleFileContract[];
   };
   readonly migrations: {
+    readonly files: readonly BundleFileContract[];
+  };
+  readonly nativeDependencies: {
     readonly files: readonly BundleFileContract[];
   };
   readonly node: {
@@ -123,6 +126,15 @@ const migrationFileContract = async (migrationsRoot: string): Promise<readonly B
   })));
   if (files.length === 0) {
     throw new Error(`Desktop bundle migration manifest is empty beneath ${migrationsRoot}`);
+  }
+  return files;
+};
+
+const nativeDependencyFileContract = async (runtimeRoot: string): Promise<readonly BundleFileContract[]> => {
+  const dependenciesRoot = resolve(runtimeRoot, 'apps/platform-node/node_modules');
+  const files = await bundleFileContract(dependenciesRoot, path => path.endsWith('.node'));
+  if (files.length === 0) {
+    throw new Error(`Desktop bundle native dependency manifest is empty beneath ${dependenciesRoot}`);
   }
   return files;
 };
@@ -313,13 +325,14 @@ export const prepareDesktopBundle = async ({
       canonicalMigrations,
     );
     const contract: DesktopBundleContract = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       compatibility: {
         protocolVersion: DESKTOP_COMPATIBILITY_VERSION,
         releaseVersion,
       },
       dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
       migrations: { files: canonicalMigrations },
+      nativeDependencies: { files: await nativeDependencyFileContract(stagedRuntimeRoot) },
       node: {
         architecture: nodeArchitecture,
         platform: nodePlatform,

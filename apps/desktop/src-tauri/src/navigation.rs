@@ -3,6 +3,7 @@ use std::io;
 
 use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use url::Url;
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
@@ -11,6 +12,8 @@ pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
 pub const DESKTOP_STATUS_ROUTE: &str = "desktop-status";
 const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
+const MAXIMUM_RENDERED_SURFACE_VALUE_BYTES: usize = 512;
+const RENDERED_SURFACE_ACTION: &str = "report-rendered-surface";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopAction {
@@ -27,6 +30,102 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
         "restart" => Some(DesktopAction::Restart),
         _ => None,
     }
+}
+
+pub fn rendered_surface_diagnostic(candidate: &Url) -> Option<Result<Value, io::Error>> {
+    if candidate.scheme() != "floway-action"
+        || candidate.host_str() != Some(RENDERED_SURFACE_ACTION)
+    {
+        return None;
+    }
+    Some((|| {
+        let pairs = candidate.query_pairs().collect::<Vec<_>>();
+        let required = [
+            "failureKind",
+            "locale",
+            "title",
+            "message",
+            "restartLabel",
+            "restartHref",
+            "logsLabel",
+            "logsHref",
+        ];
+        if pairs.len() != required.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway rendered failure diagnostic has an invalid field count",
+            ));
+        }
+        let value = |key: &str| -> Result<String, io::Error> {
+            let matches = pairs
+                .iter()
+                .filter(|(candidate, _value)| candidate == key)
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Floway rendered failure diagnostic has an invalid {key} field"),
+                ));
+            }
+            let value = matches[0].1.as_ref();
+            if value.is_empty()
+                || value.len() > MAXIMUM_RENDERED_SURFACE_VALUE_BYTES
+                || value.chars().any(char::is_control)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Floway rendered failure diagnostic has an unsafe {key} field"),
+                ));
+            }
+            Ok(value.to_owned())
+        };
+        let failure_kind = value("failureKind")?;
+        if !matches!(
+            failure_kind.as_str(),
+            "asset"
+                | "compatibility"
+                | "migration"
+                | "native-dependency"
+                | "port"
+                | "storage"
+                | "timeout"
+                | "unexpected-exit"
+                | "unknown"
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway rendered failure diagnostic has an unknown failure kind",
+            ));
+        }
+        let locale = value("locale")?;
+        if !matches!(locale.as_str(), "en" | "zh-Hans") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway rendered failure diagnostic has an unknown locale",
+            ));
+        }
+        let copy = [
+            value("title")?,
+            value("message")?,
+            value("restartLabel")?,
+            value("restartHref")?,
+            value("logsLabel")?,
+            value("logsHref")?,
+        ];
+        if copy[3] != "floway-action://restart" || copy[5] != "floway-action://open-logs" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway rendered failure diagnostic has an unknown recovery action",
+            ));
+        }
+        let encoded = serde_json::to_vec(&copy).map_err(io::Error::other)?;
+        Ok(json!({
+            "actions": ["restart", "open-logs"],
+            "copyDigest": format!("{:x}", Sha256::digest(encoded)),
+            "failureKind": failure_kind,
+            "locale": locale,
+        }))
+    })())
 }
 
 pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {

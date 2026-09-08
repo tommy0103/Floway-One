@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-const DESKTOP_BUNDLE_SCHEMA_VERSION: u64 = 2;
+const DESKTOP_BUNDLE_SCHEMA_VERSION: u64 = 3;
 pub(crate) const DESKTOP_COMPATIBILITY_VERSION: u64 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +27,7 @@ pub struct RuntimeBundle {
     pub entry: PathBuf,
     pub migration_files: Vec<PathBuf>,
     pub migrations: PathBuf,
+    pub native_dependency_files: Vec<PathBuf>,
     pub root: PathBuf,
 }
 
@@ -94,6 +95,7 @@ struct ValidatedBundleContract {
     compatibility: RuntimeCompatibility,
     dashboard_assets: Vec<PathBuf>,
     migration_files: Vec<PathBuf>,
+    native_dependency_files: Vec<PathBuf>,
 }
 
 fn validate_file_contract(
@@ -144,7 +146,7 @@ fn validate_file_contract(
         if actual_hash != expected_hash.to_ascii_lowercase() {
             return Err(invalid_contract(
                 contract_path,
-                format!("the {label} digest is stale for {relative}"),
+                format!("the {label} digest is stale for {}", path.display()),
             ));
         }
         resolved.push(path);
@@ -173,6 +175,43 @@ fn collect_migration_files(root: &Path) -> Result<Vec<PathBuf>, BundleResourceEr
         }
         if file_type.is_file() && path.extension().is_some_and(|extension| extension == "sql") {
             files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn collect_native_dependency_files(root: &Path) -> Result<Vec<PathBuf>, BundleResourceError> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|source| BundleResourceError::new(directory.clone(), source))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|source| BundleResourceError::new(directory.clone(), source))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| BundleResourceError::new(path.clone(), source))?;
+            if file_type.is_symlink() {
+                return Err(BundleResourceError::new(
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "native dependency paths cannot be symbolic links",
+                    ),
+                ));
+            }
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "node")
+            {
+                files.push(path);
+            }
         }
     }
     files.sort();
@@ -328,6 +367,29 @@ fn validate_contract(
             "the installed migration inventory differs from the owning bundle contract",
         ));
     }
+    let native_entries = contract
+        .get("nativeDependencies")
+        .and_then(|dependencies| dependencies.get("files"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            invalid_contract(
+                contract_path,
+                "the native dependency file contract is missing",
+            )
+        })?;
+    let native_dependencies_root = runtime_root.join("apps/platform-node/node_modules");
+    let native_dependency_files = validate_file_contract(
+        contract_path,
+        native_entries,
+        &native_dependencies_root,
+        "native dependency",
+    )?;
+    if native_dependency_files != collect_native_dependency_files(&native_dependencies_root)? {
+        return Err(invalid_contract(
+            contract_path,
+            "the installed native dependency inventory differs from the owning bundle contract",
+        ));
+    }
     Ok(ValidatedBundleContract {
         compatibility: RuntimeCompatibility {
             contract_digest: format!("{:x}", Sha256::digest(source.as_bytes())),
@@ -336,6 +398,7 @@ fn validate_contract(
         },
         dashboard_assets,
         migration_files,
+        native_dependency_files,
     })
 }
 
@@ -354,6 +417,7 @@ pub fn resolve_runtime_bundle(resource_dir: &Path) -> Result<RuntimeBundle, Bund
         entry: require_file(platform_node.join("entry.js"))?,
         migration_files: validated.migration_files,
         migrations,
+        native_dependency_files: validated.native_dependency_files,
         root,
     })
 }

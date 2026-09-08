@@ -3,8 +3,9 @@ use floway_desktop::{
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
     PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
     enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
-    sanitized_page_load_diagnostic,
+    rendered_surface_diagnostic, sanitized_page_load_diagnostic,
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ForcedNavigationOpenFailure;
@@ -78,6 +79,58 @@ fn limits_shell_status_navigation_and_actions_to_the_owned_surface() {
         desktop_action(&url::Url::parse("floway-action://quit").unwrap()),
         None,
     );
+}
+
+#[test]
+fn hashes_only_bounded_typed_rendered_recovery_content() {
+    let copy = [
+        "Floway could not start the local Gateway",
+        "The configured local port is unavailable. Detailed diagnostics are available in the logs.",
+        "Restart Gateway",
+        "floway-action://restart",
+        "Open logs",
+        "floway-action://open-logs",
+    ];
+    let mut url = url::Url::parse("floway-action://report-rendered-surface").unwrap();
+    url.query_pairs_mut()
+        .append_pair("failureKind", "port")
+        .append_pair("locale", "en")
+        .append_pair("title", copy[0])
+        .append_pair("message", copy[1])
+        .append_pair("restartLabel", copy[2])
+        .append_pair("restartHref", copy[3])
+        .append_pair("logsLabel", copy[4])
+        .append_pair("logsHref", copy[5]);
+
+    let diagnostic = rendered_surface_diagnostic(&url)
+        .expect("rendered action must be recognized")
+        .expect("bounded rendered action must be accepted");
+    assert_eq!(diagnostic["failureKind"], "port");
+    assert_eq!(diagnostic["locale"], "en");
+    assert_eq!(
+        diagnostic["actions"],
+        serde_json::json!(["restart", "open-logs"])
+    );
+    assert_eq!(
+        diagnostic["copyDigest"],
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&copy).unwrap()))
+    );
+    assert!(!diagnostic.to_string().contains(copy[1]));
+}
+
+#[test]
+fn rejects_untyped_or_unbounded_rendered_recovery_reports() {
+    for candidate in [
+        "floway-action://report-rendered-surface?failureKind=constructor",
+        "floway-action://report-rendered-surface?failureKind=port&failureKind=storage",
+        "floway-action://report-rendered-surface?failureKind=port&locale=en&title=ok&message=ok&restartLabel=ok&restartHref=https%3A%2F%2Fexample.test&logsLabel=ok&logsHref=floway-action%3A%2F%2Fopen-logs",
+    ] {
+        assert!(
+            rendered_surface_diagnostic(&url::Url::parse(candidate).unwrap())
+                .unwrap()
+                .is_err()
+        );
+    }
 }
 
 #[test]

@@ -30,6 +30,7 @@ interface DesktopBundleContract {
   };
   readonly dashboard: { readonly assets: readonly BundleFileContract[] };
   readonly migrations: { readonly files: readonly BundleFileContract[] };
+  readonly nativeDependencies: { readonly files: readonly BundleFileContract[] };
   readonly node: {
     readonly architecture: unknown;
     readonly platform: unknown;
@@ -110,7 +111,7 @@ export const verifyPackagedApplication = async (options: {
   ]);
   const contract = JSON.parse(await readFile(contractPath, 'utf8')) as Partial<DesktopBundleContract>;
   if (
-    contract.schemaVersion !== 2
+    contract.schemaVersion !== 3
     || contract.compatibility?.protocolVersion !== DESKTOP_COMPATIBILITY_VERSION
     || contract.compatibility.releaseVersion !== releaseVersion
     || contract.node?.architecture !== expectedArchitecture
@@ -123,12 +124,17 @@ export const verifyPackagedApplication = async (options: {
     || !Array.isArray(contract.migrations?.files)
     || contract.migrations.files.length === 0
     || contract.migrations.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
+    || !Array.isArray(contract.nativeDependencies?.files)
+    || contract.nativeDependencies.files.length === 0
+    || contract.nativeDependencies.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
   ) {
     throw new Error(`Packaged desktop contract does not own ${targetTriple}/Node.js ${packagedNodeVersion}`);
   }
   const dashboardAssets = contract.dashboard.assets;
   const migrations = contract.migrations.files;
+  const nativeDependencies = contract.nativeDependencies.files;
   await validateFileContract(resolve(runtimeRoot, 'apps/web/dist/client'), dashboardAssets, 'Dashboard');
+  await validateFileContract(dependenciesRoot, nativeDependencies, 'native dependency');
 
   const migrationNames = migrations.map(file => file.path);
   const canonicalMigrationsRoot = resolve(repositoryRoot, 'packages/gateway/migrations');
@@ -190,6 +196,10 @@ export const verifyPackagedApplication = async (options: {
   }
   if (loadedKeyringNative !== undefined && !nativeModules.includes(loadedKeyringNative)) {
     throw new Error(`Loaded Keyring native binding was not found in the packaged dependency tree: ${loadedKeyringNative}`);
+  }
+  const contractedNativeModules = nativeDependencies.map(file => resolve(dependenciesRoot, file.path));
+  if (JSON.stringify(nativeModules.sort()) !== JSON.stringify(contractedNativeModules.sort())) {
+    throw new Error('Packaged native dependency inventory differs from its owning bundle contract');
   }
   await Promise.all([
     assertSingleMachOArchitecture(appExecutable, expectedArchitecture),

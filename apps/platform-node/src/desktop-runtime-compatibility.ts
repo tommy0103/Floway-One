@@ -37,7 +37,7 @@ export const loadDesktopRuntimeCompatibility = (
   };
   const protocolVersion = contract.compatibility?.protocolVersion;
   const releaseVersion = contract.compatibility?.releaseVersion;
-  if (contract.schemaVersion !== 2) {
+  if (contract.schemaVersion !== 3) {
     throw new Error(`Floway desktop bundle schema ${String(contract.schemaVersion)} is incompatible with this runtime`);
   }
   if (protocolVersion !== DESKTOP_RUNTIME_PROTOCOL_VERSION) {

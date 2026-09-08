@@ -27,7 +27,7 @@ const writeContract = async (value: unknown): Promise<{ path: string; source: st
 
 test('loads the matching packaged desktop release and returns its exact digest', async () => {
   const { path, source } = await writeContract({
-    schemaVersion: 2,
+    schemaVersion: 3,
     compatibility: { protocolVersion: 1, releaseVersion: '0.1.0' },
   });
 
@@ -44,8 +44,8 @@ test('keeps ordinary server and personal development runtimes free of desktop co
 
 test.each([
   [{ schemaVersion: 1, compatibility: { protocolVersion: 1, releaseVersion: '0.1.0' } }, 'schema 1'],
-  [{ schemaVersion: 2, compatibility: { protocolVersion: 2, releaseVersion: '0.1.0' } }, 'protocol 2'],
-  [{ schemaVersion: 2, compatibility: { protocolVersion: 1, releaseVersion: '0.2.0' } }, 'sidecar 0.1.0'],
+  [{ schemaVersion: 3, compatibility: { protocolVersion: 2, releaseVersion: '0.1.0' } }, 'protocol 2'],
+  [{ schemaVersion: 3, compatibility: { protocolVersion: 1, releaseVersion: '0.2.0' } }, 'sidecar 0.1.0'],
 ])('rejects an incompatible contract while retaining exact values', async (contract, message) => {
   const { path } = await writeContract(contract);
   expect(() => loadDesktopRuntimeCompatibility(path)).toThrow(message);
