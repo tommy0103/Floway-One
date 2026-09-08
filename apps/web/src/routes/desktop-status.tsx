@@ -64,7 +64,9 @@ export default function DesktopStatus() {
           </StatusBadge>
         </div>
       }
-      message={t(failed ? status.failureKey : 'desktop.status.startingDescription')}
+      message={failed
+        ? <>{t(status.failureKey)} {t('desktop.status.detailsInLogs')}</>
+        : t('desktop.status.startingDescription')}
       title={t(failed ? 'desktop.status.failedTitle' : 'desktop.status.startingTitle')}
     >
       {!failed && <ProgressBar aria-label={t('desktop.status.startingBadge')} className="w-full" thickness="large" />}

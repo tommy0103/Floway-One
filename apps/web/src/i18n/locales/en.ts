@@ -42,6 +42,7 @@ const en = {
     desktop: {
       status: {
         attention: 'Needs attention',
+        detailsInLogs: 'Detailed diagnostics are available in the logs.',
         failedTitle: 'Floway could not start the local Gateway',
         failures: {
           asset: 'Dashboard files are missing or do not match this Floway release.',

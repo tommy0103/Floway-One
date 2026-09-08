@@ -44,7 +44,8 @@ test('renders typed recovery information without echoing arbitrary URL detail', 
   renderInApp(<RouterProvider router={router} />);
 
   expect(screen.getByRole('heading', { name: 'Floway could not start the local Gateway' })).toBeTruthy();
-  expect(screen.getByText('The configured local port is unavailable.')).toBeTruthy();
+  expect(screen.getByText(/The configured local port is unavailable.*Detailed diagnostics are available in the logs/).textContent)
+    .toBe('The configured local port is unavailable. Detailed diagnostics are available in the logs.');
   expect(screen.queryByText(/secret stderr/i)).toBeNull();
   expect(screen.getByRole('link', { name: 'Restart Gateway' }).getAttribute('href')).toBe('floway-action://restart');
   expect(screen.getByRole('link', { name: 'Open logs' }).getAttribute('href')).toBe('floway-action://open-logs');

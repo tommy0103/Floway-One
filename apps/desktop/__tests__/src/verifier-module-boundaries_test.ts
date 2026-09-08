@@ -8,7 +8,7 @@ const desktopRoot = resolve(import.meta.dirname, '../..');
 test('packaged verifier orchestrates cohesive test-support modules', async () => {
   const source = await readFile(resolve(desktopRoot, '__tests__/src/packaged-desktop-verifier.ts'), 'utf8');
   expect(source.split('\n').length).toBeLessThan(350);
-  for (const module of ['installed-app', 'package-contract', 'personal-runtime', 'process-lifecycle']) {
+  for (const module of ['installed-app', 'native-accessibility', 'package-contract', 'personal-runtime', 'process-lifecycle']) {
     expect(source).toContain(`./support/${module}.ts`);
   }
   for (const lowLevelBoundary of ['node:sqlite', 'node:net', 'ChildProcessByStdio', 'parseDependencyAssociations']) {
@@ -23,6 +23,22 @@ test('verifier-only output cleanup support lives outside production src', async 
     .rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+test('packaged native observation queries the real window and tray without System Events', async () => {
+  const [probe, lifecycle] = await Promise.all([
+    readFile(resolve(desktopRoot, '__tests__/src/support/native-accessibility.swift'), 'utf8'),
+    readFile(resolve(desktopRoot, '__tests__/src/support/process-lifecycle.ts'), 'utf8'),
+  ]);
+  for (const boundary of [
+    'AXIsProcessTrusted()',
+    'CGWindowListCopyWindowInfo(',
+    'kAXExtrasMenuBarAttribute',
+    'AXUIElementPerformAction(',
+  ]) {
+    expect(probe).toContain(boundary);
+  }
+  expect(lifecycle).not.toContain('System Events');
+});
+
 test('Tauri composition stays thin while runtime recovery has one owning module', async () => {
   const [app, controller] = await Promise.all([
     readFile(resolve(desktopRoot, 'src-tauri/src/app.rs'), 'utf8'),
@@ -32,5 +48,6 @@ test('Tauri composition stays thin while runtime recovery has one owning module'
   expect(app).toContain('crate::runtime_controller::run()');
   expect(controller).toContain('struct DesktopController');
   expect(controller).toContain('fn begin_health_probe(');
-  expect(controller).toContain('fn fail_attempt(');
+  expect(controller).toContain('fn fail_startup_attempt(');
+  expect(controller).toContain('fn fail_runtime_attempt(');
 });

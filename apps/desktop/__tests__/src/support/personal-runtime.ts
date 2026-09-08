@@ -6,8 +6,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
 import type { InstalledAppVerificationContext } from './installed-app.ts';
+import { assertNativeFailureSurface } from './native-accessibility.ts';
 import {
   appEnvironmentWithoutPortOverride,
+  assertNoDirectChildren,
   assertLoopbackPortReleased,
   captureApp,
   PERSONAL_DASHBOARD_PORT,
@@ -78,20 +80,26 @@ export const personalEntrySource = (
 import { createOperatingSystemCredential } from './src/device-master-key.js';
 import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
+import { reportDesktopStartupFailure } from './src/startup-failure.js';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 
-await runNodeEntry({
-  resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
-    dataDir: ${JSON.stringify(dataRoot)},
-    stableUserHome: ${JSON.stringify(dataRoot)},
-  }),
-  createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
-    const credential = await createOperatingSystemCredential(
-      ${JSON.stringify(credentialIdentity)},
-    );
-    return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
-  },
-});
+try {
+  await runNodeEntry({
+    resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
+      dataDir: ${JSON.stringify(dataRoot)},
+      stableUserHome: ${JSON.stringify(dataRoot)},
+    }),
+    createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
+      const credential = await createOperatingSystemCredential(
+        ${JSON.stringify(credentialIdentity)},
+      );
+      return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
+    },
+  });
+} catch (failure) {
+  reportDesktopStartupFailure(failure, 'native-dependency');
+  throw failure;
+}
 ${afterStartup}
 `;
 
@@ -274,6 +282,7 @@ export const assertPersonalRuntime = async (
 };
 
 export const assertUnexpectedSidecarExitSurfacesFailure = async (
+  accessibilityProbe: string,
   context: InstalledAppVerificationContext,
   verificationRoot: string,
 ): Promise<void> => {
@@ -315,7 +324,17 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       if (!captured.includes(fragment)) throw new Error(`Floway shell omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
     await waitForProcessStopped(sidecarPid);
-    await terminateProcessGroup(child);
+    if (child.pid === undefined) throw new Error('Floway production app process has no PID');
+    await assertNativeFailureSurface(accessibilityProbe, child.pid, {
+      forbiddenWindowText: [parentFailure, originalCause],
+      windowTextGroups: [
+        ['Floway could not start the local Gateway', 'Floway 无法启动本机 Gateway'],
+        ['The local Gateway stopped unexpectedly.', '本机 Gateway 意外停止。'],
+        ['Detailed diagnostics are available in the logs.', '详细诊断信息可在日志中查看。'],
+      ],
+    });
+    await assertNoDirectChildren(child.pid);
     await assertLoopbackPortReleased(port);
+    await terminateProcessGroup(child);
   });
 };

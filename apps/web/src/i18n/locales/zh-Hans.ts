@@ -40,6 +40,7 @@ const zhHansCN = {
     desktop: {
       status: {
         attention: '需要处理',
+        detailsInLogs: '详细诊断信息可在日志中查看。',
         failedTitle: 'Floway 无法启动本机 Gateway',
         failures: {
           asset: 'Dashboard 文件缺失，或与当前 Floway 版本不匹配。',

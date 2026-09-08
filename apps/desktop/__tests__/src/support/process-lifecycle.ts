@@ -58,6 +58,13 @@ const directChildPids = async (parentPid: number): Promise<number[]> => {
   }
 };
 
+export const assertNoDirectChildren = async (parentPid: number): Promise<void> => {
+  const children = await directChildPids(parentPid);
+  if (children.length > 0) {
+    throw new Error(`Floway application ${parentPid} still owns sidecars: ${children.join(', ')}`);
+  }
+};
+
 export const waitForDirectChild = async (
   parent: CapturedChild,
   output: () => string,
