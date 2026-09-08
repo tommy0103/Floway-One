@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { FlowayLogo } from '../components/logo';
@@ -54,7 +54,7 @@ export default function DesktopStatus() {
   const failed = status.state === 'failed';
   const surface = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!failed || surface.current === null) return;
     const isPackagedStatus = window.location.protocol === 'tauri:'
       || (window.location.protocol === 'http:' && window.location.host === 'tauri.localhost');
