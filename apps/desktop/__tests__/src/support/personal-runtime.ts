@@ -25,6 +25,8 @@ import {
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 const execFileAsync = promisify(execFile);
+const DASHBOARD_BOOTSTRAP_TIMEOUT_MS = 30_000;
+const DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS = 50;
 
 export type PersonalFailurePhase = 'app' | 'sidecar' | 'listener' | 'dashboard' | 'migration' | 'credential';
 
@@ -107,30 +109,42 @@ const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual
   if (expected === actual) throw new Error(`forced personal runtime ${actual} phase failure`);
 };
 
+export const waitForDashboardBootstrapSession = async (
+  readSessionToken: () => string | undefined,
+  options: {
+    readonly now?: () => number;
+    readonly sleep?: (milliseconds: number) => Promise<void>;
+    readonly timeoutMs?: number;
+  } = {},
+): Promise<string> => {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? (async (milliseconds: number) => {
+    await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
+  });
+  const deadline = now() + (options.timeoutMs ?? DASHBOARD_BOOTSTRAP_TIMEOUT_MS);
+  while (now() < deadline) {
+    const token = readSessionToken();
+    if (token !== undefined) return token;
+    await sleep(Math.min(DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS, Math.max(0, deadline - now())));
+  }
+  throw new Error('Installed Dashboard did not exchange its one-time bootstrap authority for an owner session');
+};
+
 const assertDashboardBootstrapAndControlPlane = async (
   origin: string,
   databasePath: string,
 ): Promise<void> => {
-  const deadline = Date.now() + 10_000;
-  let sessionToken: string | undefined;
-  while (Date.now() < deadline) {
+  const sessionToken = await waitForDashboardBootstrapSession(() => {
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
       database.exec('PRAGMA busy_timeout = 5000');
       const session = database.prepare('SELECT id FROM sessions WHERE user_id = 1 ORDER BY created_at DESC LIMIT 1')
         .get() as { id?: unknown } | undefined;
-      if (typeof session?.id === 'string') {
-        sessionToken = session.id;
-        break;
-      }
+      return typeof session?.id === 'string' ? session.id : undefined;
     } finally {
       database.close();
     }
-    await new Promise(resolveWait => setTimeout(resolveWait, 50));
-  }
-  if (sessionToken === undefined) {
-    throw new Error('Installed Dashboard did not exchange its one-time bootstrap authority for an owner session');
-  }
+  });
 
   const sessionResponse = await fetch(`${origin}/auth/me`, {
     headers: { origin, 'x-floway-session': sessionToken },

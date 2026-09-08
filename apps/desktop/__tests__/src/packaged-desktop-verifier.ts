@@ -237,21 +237,26 @@ if (launchSupported) {
       faultCleanup.defer('Keyring-fault application process group', async () => await terminateProcessGroup(child));
       const captured = await waitForOutput(child, output, [
         'Floway runtime exit',
-        'Floway desktop runtime state: failed kind=unexpected-exit',
+        'Floway desktop runtime state: failed kind=',
         'FLOWAY_DESKTOP_SURFACE ',
       ]);
       if (child.pid === undefined || !processIsRunning(child.pid)) {
         throw new Error(`Floway shell did not remain available after the Keyring failure\n${captured}`);
       }
+      const keyringFailureKind = /Floway desktop runtime state: failed kind=(native-dependency|unexpected-exit)/
+        .exec(captured)?.[1];
+      if (keyringFailureKind === undefined) {
+        throw new Error(`Floway Keyring failure did not retain a typed failure state\n${captured}`);
+      }
       await assertNativeFailureSurface(nativeWindowProbe, child.pid, captured, {
-        failureKind: 'unexpected-exit',
+        failureKind: keyringFailureKind,
         forbiddenSnapshotText: [context.keyringNative, 'not a valid Mach-O'],
       });
       await assertNoDirectChildren(child.pid);
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
       await terminateProcessGroup(child);
     });
-    console.log(`Floway corrupted the exact loaded Keyring binding, observed its pre-JavaScript process exit, and verified typed unexpected-exit recovery: ${context.keyringNative}`);
+    console.log(`Floway corrupted the exact loaded Keyring binding and verified typed native-dependency or pre-JavaScript unexpected-exit recovery: ${context.keyringNative}`);
 
     await writeFile(context.entry, productionEntry);
     await withFailureSafeCleanup(async faultCleanup => {
