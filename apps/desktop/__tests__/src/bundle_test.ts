@@ -96,14 +96,19 @@ describe('desktop bundle preparation', () => {
   });
 
   test('maps the validated runtime and Node sidecar to the installed paths Rust resolves', async () => {
-    const config = JSON.parse(
-      await readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
-    ) as {
-      build: { frontendDist: string };
-      bundle: { externalBin: string[]; resources: Record<string, string> };
-      productName: string;
-      version: string;
-    };
+    const [config, mainCapability] = await Promise.all([
+      readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8').then(JSON.parse) as Promise<{
+        build: { frontendDist: string };
+        bundle: { externalBin: string[]; resources: Record<string, string> };
+        productName: string;
+        version: string;
+      }>,
+      readFile(resolve(desktopRoot, 'src-tauri/capabilities/main.json'), 'utf8').then(JSON.parse) as Promise<{
+        identifier: string;
+        permissions: string[];
+        windows: string[];
+      }>,
+    ]);
     const [desktopManifest, sidecarManifest, dashboardManifest, cargoManifest] = await Promise.all([
       readFile(resolve(desktopRoot, 'package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
       readFile(resolve(desktopRoot, '../platform-node/package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
@@ -120,6 +125,14 @@ describe('desktop bundle preparation', () => {
     expect(config.bundle.resources).toEqual({
       'bundle-inputs/desktop-bundle-contract.json': 'desktop-bundle-contract.json',
       'bundle-inputs/runtime/': 'runtime/',
+    });
+    expect(mainCapability).toMatchObject({
+      identifier: 'main',
+      permissions: [
+        'core:event:allow-listen',
+        'core:event:allow-unlisten',
+      ],
+      windows: ['main'],
     });
   });
 
