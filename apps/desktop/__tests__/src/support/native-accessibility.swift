@@ -89,6 +89,9 @@ guard CommandLine.arguments.count == 2, let pid = pid_t(CommandLine.arguments[1]
     fail("usage: native-accessibility <pid>", code: 64)
 }
 
+// The trust query never raises the operating-system prompt. A verifier must
+// report missing authority rather than waiting behind an invisible consent UI.
+// https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrusted
 guard AXIsProcessTrusted() else {
     fail(
         "macOS Accessibility access is required to inspect the packaged Floway window and tray; grant it to the process running the desktop verifier in System Settings > Privacy & Security > Accessibility",
@@ -102,6 +105,9 @@ guard let applicationWindows = attribute(application, kAXWindowsAttribute as CFS
     fail("the packaged Floway process exposes no native accessibility window", code: 1)
 }
 
+// CoreGraphics observes an actually composited layer-zero window independently
+// from the process and accessibility trees.
+// https://developer.apple.com/documentation/coregraphics/1455137-cgwindowlistcopywindowinfo
 let visibleWindows = (CGWindowListCopyWindowInfo(
     [.optionOnScreenOnly, .excludeDesktopElements],
     kCGNullWindowID
@@ -119,6 +125,9 @@ for window in applicationWindows {
     collect(window, into: &windowRecords)
 }
 
+// The extras menu bar is the accessibility owner of an application's native
+// status item and its menu, distinct from the ordinary application menu bar.
+// https://developer.apple.com/documentation/applicationservices/kaxextrasmenubarattribute
 guard let extrasMenuBar = elementAttribute(application, kAXExtrasMenuBarAttribute as CFString) else {
     fail("the packaged Floway process exposes no native tray menu bar", code: 1)
 }
