@@ -13,7 +13,7 @@ use getrandom::fill;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::webview::{NewWindowResponse, PageLoadEvent, PageLoadPayload};
-use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
 use url::Url;
@@ -39,6 +39,7 @@ const DESKTOP_LOGS_DIR_ENV: &str = "FLOWAY_DESKTOP_LOGS_DIR";
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
 const DESKTOP_RENDERED_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RENDERED_SURFACE ";
+const DESKTOP_STATUS_EVENT: &str = "floway-desktop-status";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -252,6 +253,7 @@ struct DesktopController {
     dashboard_policy: RwLock<Option<DashboardNavigationPolicy>>,
     log: Mutex<Option<BoundedSidecarLog>>,
     logs_dir: PathBuf,
+    failure_kind: Mutex<Option<FailureKind>>,
     pending_failure_surface: Mutex<Option<FailureKind>>,
     status_url: Url,
     supervisor: Arc<PackageProcessSupervisor>,
@@ -268,6 +270,10 @@ impl DesktopController {
         *self
             .dashboard_policy
             .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .failure_kind
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         Some(generation)
     }
@@ -420,6 +426,16 @@ fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
         "Floway desktop runtime state: failed kind={}",
         report.kind.as_str()
     );
+    *controller
+        .failure_kind
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report.kind);
+    if let Err(error) = app.emit(
+        DESKTOP_STATUS_EVENT,
+        serde_json::json!({ "kind": report.kind.as_str(), "state": "failed" }),
+    ) {
+        print_error_chain(&error);
+    }
     *controller
         .pending_failure_surface
         .lock()
@@ -652,6 +668,12 @@ fn start_runtime(app: &AppHandle) {
     if let Err(error) = controller.tray.set_phase(RuntimePhase::Starting) {
         print_error_chain(error.as_ref());
     }
+    if let Err(error) = app.emit(
+        DESKTOP_STATUS_EVENT,
+        serde_json::json!({ "state": "starting" }),
+    ) {
+        print_error_chain(&error);
+    }
     show_status(app, None);
 
     let setup = (|| -> Result<_, Box<dyn Error>> {
@@ -783,6 +805,24 @@ fn report_desktop_rendered_surface(surface: serde_json::Value) -> Result<(), Str
     Ok(())
 }
 
+#[tauri::command]
+fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
+    let controller = app.state::<Arc<DesktopController>>();
+    let phase = controller.phase();
+    let failure_kind = *controller
+        .failure_kind
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    serde_json::json!({
+        "kind": failure_kind.map(FailureKind::as_str),
+        "state": match phase {
+            RuntimePhase::Failed => "failed",
+            RuntimePhase::Ready => "ready",
+            RuntimePhase::Starting => "starting",
+        },
+    })
+}
+
 fn stop_packaged_process(app_handle: &AppHandle) {
     let Some(controller) = app_handle.try_state::<Arc<DesktopController>>() else {
         return;
@@ -800,7 +840,10 @@ fn stop_packaged_process(app_handle: &AppHandle) {
 fn try_run() -> Result<(), Box<dyn Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![report_desktop_rendered_surface])
+        .invoke_handler(tauri::generate_handler![
+            desktop_runtime_status,
+            report_desktop_rendered_surface,
+        ])
         .setup(|app| {
             let app_handle = app.handle().clone();
             // The local status route is bundled with the Dashboard build but
@@ -872,6 +915,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             let controller = Arc::new(DesktopController {
                 attempts: Mutex::new(RuntimeAttemptState::new()),
                 dashboard_policy: RwLock::new(None),
+                failure_kind: Mutex::new(None),
                 log: Mutex::new(None),
                 logs_dir,
                 pending_failure_surface: Mutex::new(None),

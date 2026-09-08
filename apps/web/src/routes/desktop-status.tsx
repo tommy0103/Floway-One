@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { useLayoutEffect, useRef } from 'react';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { FlowayLogo } from '../components/logo';
@@ -32,8 +33,12 @@ export interface DesktopStatusView {
 }
 
 export const parseDesktopStatus = (params: URLSearchParams): DesktopStatusView => {
-  const state = params.get('state') === 'failed' ? 'failed' : 'starting';
-  const candidate = params.get('kind');
+  return parseDesktopStatusValues(params.get('state'), params.get('kind'));
+};
+
+const parseDesktopStatusValues = (stateCandidate: unknown, kindCandidate: unknown): DesktopStatusView => {
+  const state = stateCandidate === 'failed' ? 'failed' : 'starting';
+  const candidate = typeof kindCandidate === 'string' ? kindCandidate : null;
   const failureKind = candidate !== null && isFailureKind(candidate)
     ? candidate
     : 'unknown';
@@ -51,9 +56,30 @@ export function clientLoader() {
 export default function DesktopStatus() {
   const { i18n, t } = useTranslation();
   const [params] = useSearchParams();
-  const status = parseDesktopStatus(params);
+  const [status, setStatus] = useState(() => parseDesktopStatus(params));
   const failed = status.state === 'failed';
   const surface = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void (async () => {
+      unlisten = await listen<{ readonly kind?: unknown; readonly state?: unknown }>(
+        'floway-desktop-status',
+        event => setStatus(parseDesktopStatusValues(event.payload.state, event.payload.kind)),
+      );
+      const current = await invoke<{ readonly kind?: unknown; readonly state?: unknown }>('desktop_runtime_status');
+      if (!disposed) setStatus(parseDesktopStatusValues(current.state, current.kind));
+      else unlisten();
+    })().catch(() => {
+      console.error('Floway could not synchronize the desktop runtime status');
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!failed || surface.current === null) return;
