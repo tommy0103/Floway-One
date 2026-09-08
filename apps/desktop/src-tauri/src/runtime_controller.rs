@@ -301,6 +301,11 @@ fn fail_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: b
     if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed) {
         print_error_chain(error.as_ref());
     }
+    let detail = bounded_detail(&report.chain);
+    eprintln!("Floway desktop runtime failure: {detail}");
+    if let Err(error) = controller.append_log(SidecarStream::Stderr, detail.as_bytes()) {
+        eprintln!("Floway desktop could not persist its runtime failure report: {error}");
+    }
     eprintln!(
         "Floway desktop runtime state: failed kind={}",
         report.kind.as_str()
