@@ -57,6 +57,7 @@ export default function DesktopStatus() {
   const { i18n, t } = useTranslation();
   const [params] = useSearchParams();
   const [status, setStatus] = useState(() => parseDesktopStatus(params));
+  const [ipcReady, setIpcReady] = useState(false);
   const failed = status.state === 'failed';
   const surface = useRef<HTMLDivElement>(null);
 
@@ -70,8 +71,10 @@ export default function DesktopStatus() {
         event => setStatus(parseDesktopStatusValues(event.payload.state, event.payload.kind)),
       );
       const current = await invoke<{ readonly kind?: unknown; readonly state?: unknown }>('desktop_runtime_status');
-      if (!disposed) setStatus(parseDesktopStatusValues(current.state, current.kind));
-      else unlisten();
+      if (!disposed) {
+        setStatus(parseDesktopStatusValues(current.state, current.kind));
+        setIpcReady(true);
+      } else unlisten();
     })().catch(() => {
       console.error('Floway could not synchronize the desktop runtime status');
     });
@@ -82,7 +85,7 @@ export default function DesktopStatus() {
   }, []);
 
   useLayoutEffect(() => {
-    if (!failed || surface.current === null) return;
+    if (!ipcReady || !failed || surface.current === null) return;
     if (!isTauri()) return;
     const title = surface.current.querySelector('h1')?.textContent?.trim();
     const message = surface.current.querySelector('p')?.textContent?.trim();
@@ -104,7 +107,7 @@ export default function DesktopStatus() {
     }).catch(() => {
       console.error('Floway could not report the rendered desktop recovery surface');
     });
-  }, [failed, i18n.resolvedLanguage, status.failureKind]);
+  }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind]);
 
   return (
     <div className="contents" ref={surface}>

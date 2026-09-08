@@ -1,9 +1,28 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+
+const tauri = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(() => false),
+  listen: vi.fn(async () => vi.fn()),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: tauri.invoke,
+  isTauri: tauri.isTauri,
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import DesktopStatus, { parseDesktopStatus } from '../../src/routes/desktop-status.tsx';
 import { renderInApp } from '../render.tsx';
+
+afterEach(() => {
+  tauri.invoke.mockReset();
+  tauri.isTauri.mockReturnValue(false);
+  tauri.listen.mockClear();
+});
 
 test('defaults to a bounded startup state without requiring the sidecar', () => {
   expect(parseDesktopStatus(new URLSearchParams())).toEqual({
@@ -63,4 +82,34 @@ test('renders typed recovery information without echoing arbitrary URL detail', 
   expect(screen.queryByText(/secret stderr/i)).toBeNull();
   expect(screen.getByRole('link', { name: 'Restart Gateway' }).getAttribute('href')).toBe('floway-action://restart');
   expect(screen.getByRole('link', { name: 'Open logs' }).getAttribute('href')).toBe('floway-action://open-logs');
+});
+
+test('reports recovery only after the native IPC state has been reconciled', async () => {
+  let resolveStatus: ((status: { readonly kind: string; readonly state: string }) => void) | undefined;
+  const currentStatus = new Promise<{ readonly kind: string; readonly state: string }>(resolve => {
+    resolveStatus = resolve;
+  });
+  tauri.isTauri.mockReturnValue(true);
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') return await currentStatus;
+    return undefined;
+  });
+  const router = createMemoryRouter([{
+    path: '/desktop-status',
+    element: <DesktopStatus />,
+  }], {
+    initialEntries: ['/desktop-status?state=failed&kind=compatibility'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('desktop_runtime_status'));
+  expect(tauri.invoke).not.toHaveBeenCalledWith('report_desktop_rendered_surface', expect.anything());
+
+  resolveStatus?.({ kind: 'compatibility', state: 'failed' });
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith(
+    'report_desktop_rendered_surface',
+    expect.objectContaining({
+      surface: expect.objectContaining({ failureKind: 'compatibility' }),
+    }),
+  ));
 });
