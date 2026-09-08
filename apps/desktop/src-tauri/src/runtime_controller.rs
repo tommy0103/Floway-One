@@ -252,6 +252,7 @@ struct DesktopController {
     dashboard_policy: RwLock<Option<DashboardNavigationPolicy>>,
     log: Mutex<Option<BoundedSidecarLog>>,
     logs_dir: PathBuf,
+    pending_failure_surface: Mutex<Option<FailureKind>>,
     status_url: Url,
     supervisor: Arc<PackageProcessSupervisor>,
     tray: DesktopTray,
@@ -426,6 +427,10 @@ fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
         "Floway desktop runtime state: failed kind={}",
         report.kind.as_str()
     );
+    *controller
+        .pending_failure_surface
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report.kind);
     show_status(app, Some(&report));
     if stop {
         let supervisor = Arc::clone(&controller.supervisor);
@@ -829,16 +834,18 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 if payload.event() == PageLoadEvent::Finished
                     && is_desktop_status_navigation(payload.url(), false)
                 {
-                    let failure_kind = payload.url().query_pairs().find_map(|(key, value)| {
-                        (key == "kind")
-                            .then(|| FailureKind::from_status(value.as_ref()))
-                            .flatten()
-                    });
-                    if let Some(kind) = failure_kind {
-                        let snapshot_app = page_load_app.clone();
-                        thread::spawn(move || {
-                            emit_failure_surface_snapshot(snapshot_app, kind);
-                        });
+                    if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>() {
+                        let failure_kind = controller
+                            .pending_failure_surface
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .take();
+                        if let Some(kind) = failure_kind {
+                            let snapshot_app = page_load_app.clone();
+                            thread::spawn(move || {
+                                emit_failure_surface_snapshot(snapshot_app, kind);
+                            });
+                        }
                     }
                     if page_load_gate.mark_loaded() {
                         start_runtime(&page_load_app);
@@ -874,6 +881,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 dashboard_policy: RwLock::new(None),
                 log: Mutex::new(None),
                 logs_dir,
+                pending_failure_surface: Mutex::new(None),
                 status_url,
                 supervisor: PackageProcessSupervisor::new(),
                 tray,
