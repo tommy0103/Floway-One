@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createInstalledAppVerificationContext } from './support/installed-app.ts';
-import { assertNativeFailureSurface, compileNativeAccessibilityProbe } from './support/native-accessibility.ts';
+import { assertNativeFailureSurface, compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
 import {
   assertPersonalRuntime,
@@ -84,7 +84,7 @@ if (launchSupported) {
   const isolatedRoot = await mkdtemp(join(await realpath(tmpdir()), 'floway-desktop-installed-'));
   await withFailureSafeCleanup(async cleanup => {
     cleanup.defer('isolated installed application root', async () => await rm(isolatedRoot, { force: true, recursive: true }));
-    const accessibilityProbe = await compileNativeAccessibilityProbe(isolatedRoot);
+    const nativeWindowProbe = await compileNativeWindowProbe(isolatedRoot);
     const installedApp = resolve(isolatedRoot, 'Applications/Floway.app');
     await mkdir(dirname(installedApp), { recursive: true });
     await rename(packaged.appRoot, installedApp);
@@ -115,11 +115,11 @@ if (launchSupported) {
     console.log('Floway normal Tauri application exit terminated and waited for its packaged runtime with no sidecar, listener, credential, or data root remaining');
 
     await assertUnexpectedSidecarExitSurfacesFailure(
-      accessibilityProbe,
+      nativeWindowProbe,
       context,
       resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
     );
-    console.log('Floway production shell kept unrestricted sidecar diagnostics in logs, rendered typed recovery in its native window and tray, and released the sidecar listener before verifier cleanup');
+    console.log('Floway production shell retained unrestricted diagnostics in logs, introspected its applied Tauri window/tray state, exposed a CoreGraphics-visible window, and released the sidecar listener before verifier cleanup');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
@@ -238,20 +238,14 @@ if (launchSupported) {
       const captured = await waitForOutput(child, output, [
         'Floway runtime exit',
         'Floway desktop runtime state: failed kind=native-dependency',
+        'FLOWAY_DESKTOP_SURFACE ',
       ]);
       if (child.pid === undefined || !processIsRunning(child.pid)) {
         throw new Error(`Floway shell did not remain available after the Keyring failure\n${captured}`);
       }
-      await assertNativeFailureSurface(accessibilityProbe, child.pid, {
-        forbiddenWindowText: [context.keyringNative, 'not a valid Mach-O'],
-        windowTextGroups: [
-          ['Floway could not start the local Gateway', 'Floway 无法启动本机 Gateway'],
-          [
-            'A packaged native dependency does not match this computer.',
-            '打包的原生依赖与当前计算机不匹配。',
-          ],
-          ['Detailed diagnostics are available in the logs.', '详细诊断信息可在日志中查看。'],
-        ],
+      await assertNativeFailureSurface(nativeWindowProbe, child.pid, captured, {
+        failureKind: 'native-dependency',
+        forbiddenSnapshotText: [context.keyringNative, 'not a valid Mach-O'],
       });
       await assertNoDirectChildren(child.pid);
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);

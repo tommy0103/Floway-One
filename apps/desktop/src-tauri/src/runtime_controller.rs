@@ -34,7 +34,35 @@ use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
+const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
+const DESKTOP_SURFACE_PROBE_ENV: &str = "FLOWAY_DESKTOP_TEST_SURFACE_PROBE";
+const DESKTOP_SURFACE_RENDERED: &str = "recovery-actions-and-logs-only";
+const DESKTOP_SURFACE_PROBE_SCRIPT: &str = r#"
+(() => {
+  const failure = document.querySelector('[data-desktop-failure-kind]');
+  const diagnostics = document.querySelector('[data-desktop-diagnostics="logs-only"]');
+  const restart = document.querySelector('a[href="floway-action://restart"]');
+  const logs = document.querySelector('a[href="floway-action://open-logs"]');
+  const url = new URL(window.location.href);
+  if (
+    failure instanceof HTMLElement
+    && diagnostics instanceof HTMLElement
+    && restart instanceof HTMLElement
+    && logs instanceof HTMLElement
+    && failure.innerText.trim().length > 0
+    && diagnostics.innerText.trim().length > 0
+    && restart.innerText.trim().length > 0
+    && logs.innerText.trim().length > 0
+    && url.searchParams.get('state') === 'failed'
+    && url.searchParams.get('kind') === failure.dataset.desktopFailureKind
+  ) {
+    url.searchParams.set('surface', 'recovery-actions-and-logs-only');
+    window.history.replaceState(null, '', url);
+  }
+})();
+"#;
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
 const TRAY_RESTART_ID: &str = "runtime-restart";
@@ -126,6 +154,7 @@ fn append_bounded(buffer: &mut String, value: &str) {
 
 struct DesktopTray {
     _icon: TrayIcon<tauri::Wry>,
+    logs: MenuItem<tauri::Wry>,
     messages: &'static DesktopMessages,
     restart: MenuItem<tauri::Wry>,
     status: MenuItem<tauri::Wry>,
@@ -168,6 +197,7 @@ impl DesktopTray {
             .build(app)?;
         Ok(Self {
             _icon: icon,
+            logs,
             messages,
             restart,
             status,
@@ -196,6 +226,25 @@ impl DesktopTray {
         self.restart.set_enabled(restart_enabled)?;
         self._icon.set_tooltip(Some(tooltip))?;
         Ok(())
+    }
+
+    fn diagnostic_snapshot(&self) -> Result<serde_json::Value, Box<dyn Error>> {
+        // These getters read the same native menu items updated by set_phase.
+        // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/menu/normal.rs#L87-L106
+        Ok(serde_json::json!({
+            "logs": {
+                "enabled": self.logs.is_enabled()?,
+                "text": self.logs.text()?,
+            },
+            "restart": {
+                "enabled": self.restart.is_enabled()?,
+                "text": self.restart.text()?,
+            },
+            "status": {
+                "enabled": self.status.is_enabled()?,
+                "text": self.status.text()?,
+            },
+        }))
     }
 }
 
@@ -307,6 +356,93 @@ fn show_status(app: &AppHandle, report: Option<&FailureReport>) {
     }
 }
 
+fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
+    if std::env::var(DESKTOP_SURFACE_PROBE_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = (|| -> Result<serde_json::Value, Box<dyn Error>> {
+                let controller = app.state::<Arc<DesktopController>>();
+                let window = app.get_webview_window("main").ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "Floway main window is unavailable")
+                })?;
+                // The verifier script observes rendered, non-empty failure copy
+                // and recovery links before setting a fixed safe marker on this
+                // history entry. Reading the WebView URL then proves the actual
+                // document reached that state without exposing unrestricted text.
+                // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L1765-L1775
+                window.eval(DESKTOP_SURFACE_PROBE_SCRIPT)?;
+                // Read the actual Tauri window after navigate/show completed, but
+                // serialize only whitelisted fields so bootstrap authority and
+                // unrestricted diagnostics can never enter this production event.
+                // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L1800-L1809
+                // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L2379-L2382
+                let url = window.url()?;
+                let query = url
+                    .query_pairs()
+                    .collect::<std::collections::HashMap<_, _>>();
+                let route = url.path();
+                let state = query.get("state").map(|value| value.as_ref());
+                let failure_kind = query.get("kind").map(|value| value.as_ref());
+                let rendered_surface = query.get("surface").map(|value| value.as_ref());
+                if route.trim_matches('/') != DESKTOP_STATUS_ROUTE
+                    || state != Some("failed")
+                    || failure_kind != Some(kind.as_str())
+                    || rendered_surface != Some(DESKTOP_SURFACE_RENDERED)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Floway failure route has not finished applying",
+                    )
+                    .into());
+                }
+                Ok(serde_json::json!({
+                    "failureKind": kind.as_str(),
+                    "phase": "failed",
+                    "tray": controller.tray.diagnostic_snapshot()?,
+                    "window": {
+                        "failureKind": failure_kind,
+                        "renderedSurface": rendered_surface,
+                        "route": route,
+                        "state": state,
+                        "title": window.title()?,
+                        "visible": window.is_visible()?,
+                    },
+                }))
+            })();
+            match snapshot {
+                Ok(snapshot) => match serde_json::to_string(&snapshot) {
+                    Ok(encoded) if encoded.len() <= MAXIMUM_SURFACE_EVENT_BYTES => {
+                        eprintln!("{DESKTOP_SURFACE_EVENT_PREFIX}{encoded}");
+                        return;
+                    }
+                    Ok(_) => {
+                        print_error_chain(&io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Floway desktop surface diagnostic exceeded its byte bound",
+                        ));
+                        return;
+                    }
+                    Err(error) => {
+                        print_error_chain(&error);
+                        return;
+                    }
+                },
+                Err(error) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(20));
+                    drop(error);
+                }
+                Err(error) => {
+                    print_error_chain(error.as_ref());
+                    return;
+                }
+            }
+        }
+    });
+}
+
 fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
     if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed) {
@@ -322,6 +458,7 @@ fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
         report.kind.as_str()
     );
     show_status(app, Some(&report));
+    emit_failure_surface_snapshot(app.clone(), report.kind);
     if stop {
         let supervisor = Arc::clone(&controller.supervisor);
         thread::spawn(move || {

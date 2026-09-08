@@ -165,6 +165,7 @@ export const reserveNonDefaultLoopbackPort = async (): Promise<number> => await 
 export const appEnvironmentWithoutPortOverride = (): NodeJS.ProcessEnv => {
   const environment = { ...process.env };
   delete environment.PORT;
+  environment.FLOWAY_DESKTOP_TEST_SURFACE_PROBE = '1';
   return environment;
 };
 

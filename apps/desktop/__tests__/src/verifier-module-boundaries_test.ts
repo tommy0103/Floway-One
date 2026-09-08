@@ -8,7 +8,7 @@ const desktopRoot = resolve(import.meta.dirname, '../..');
 test('packaged verifier orchestrates cohesive test-support modules', async () => {
   const source = await readFile(resolve(desktopRoot, '__tests__/src/packaged-desktop-verifier.ts'), 'utf8');
   expect(source.split('\n').length).toBeLessThan(350);
-  for (const module of ['installed-app', 'native-accessibility', 'package-contract', 'personal-runtime', 'process-lifecycle']) {
+  for (const module of ['installed-app', 'native-surface', 'package-contract', 'personal-runtime', 'process-lifecycle']) {
     expect(source).toContain(`./support/${module}.ts`);
   }
   for (const lowLevelBoundary of ['node:sqlite', 'node:net', 'ChildProcessByStdio', 'parseDependencyAssociations']) {
@@ -23,20 +23,43 @@ test('verifier-only output cleanup support lives outside production src', async 
     .rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-test('packaged native observation queries the real window and tray without System Events', async () => {
-  const [probe, lifecycle] = await Promise.all([
-    readFile(resolve(desktopRoot, '__tests__/src/support/native-accessibility.swift'), 'utf8'),
-    readFile(resolve(desktopRoot, '__tests__/src/support/process-lifecycle.ts'), 'utf8'),
+test('packaged native observation combines actual Tauri objects with an external window-server probe', async () => {
+  const [probe, surface, controller] = await Promise.all([
+    readFile(resolve(desktopRoot, '__tests__/src/support/native-window.swift'), 'utf8'),
+    readFile(resolve(desktopRoot, '__tests__/src/support/native-surface.ts'), 'utf8'),
+    readFile(resolve(desktopRoot, 'src-tauri/src/runtime_controller.rs'), 'utf8'),
   ]);
   for (const boundary of [
-    'AXIsProcessTrusted()',
     'CGWindowListCopyWindowInfo(',
-    'kAXExtrasMenuBarAttribute',
-    'AXUIElementPerformAction(',
+    'kCGWindowOwnerPID',
+    'kCGWindowLayer',
   ]) {
     expect(probe).toContain(boundary);
   }
+  for (const forbidden of ['ApplicationServices', 'AXUIElement', 'AXIsProcessTrusted']) {
+    expect(probe).not.toContain(forbidden);
+  }
+  for (const actualObjectRead of [
+    'controller.tray.diagnostic_snapshot()',
+    'window.is_visible()',
+    'window.title()',
+    'window.url()',
+    'window.eval(DESKTOP_SURFACE_PROBE_SCRIPT)',
+  ]) {
+    expect(controller).toContain(actualObjectRead);
+  }
+  expect(surface).toContain('FLOWAY_DESKTOP_SURFACE ');
+  expect(controller).toContain('recovery-actions-and-logs-only');
+  expect(surface).toContain('visibleWindowCount');
+});
+
+test('desktop process helpers avoid System Events automation', async () => {
+  const [lifecycle, surface] = await Promise.all([
+    readFile(resolve(desktopRoot, '__tests__/src/support/process-lifecycle.ts'), 'utf8'),
+    readFile(resolve(desktopRoot, '__tests__/src/support/native-surface.ts'), 'utf8'),
+  ]);
   expect(lifecycle).not.toContain('System Events');
+  expect(surface).not.toContain('System Events');
 });
 
 test('Tauri composition stays thin while runtime recovery has one owning module', async () => {

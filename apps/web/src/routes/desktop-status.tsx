@@ -21,15 +21,20 @@ const failureKeys = {
 } as const satisfies Record<string, TranslationKey>;
 
 export interface DesktopStatusView {
+  readonly failureKind: keyof typeof failureKeys;
   readonly failureKey: (typeof failureKeys)[keyof typeof failureKeys];
   readonly state: 'failed' | 'starting';
 }
 
 export const parseDesktopStatus = (params: URLSearchParams): DesktopStatusView => {
   const state = params.get('state') === 'failed' ? 'failed' : 'starting';
-  const kind = params.get('kind');
+  const candidate = params.get('kind');
+  const failureKind = candidate !== null && candidate in failureKeys
+    ? candidate as keyof typeof failureKeys
+    : 'unknown';
   return {
-    failureKey: failureKeys[kind as keyof typeof failureKeys] ?? failureKeys.unknown,
+    failureKind,
+    failureKey: failureKeys[failureKind],
     state,
   };
 };
@@ -65,7 +70,10 @@ export default function DesktopStatus() {
         </div>
       }
       message={failed
-        ? <>{t(status.failureKey)} {t('desktop.status.detailsInLogs')}</>
+        ? <>
+            <span data-desktop-failure-kind={status.failureKind}>{t(status.failureKey)}</span>{' '}
+            <span data-desktop-diagnostics="logs-only">{t('desktop.status.detailsInLogs')}</span>
+          </>
         : t('desktop.status.startingDescription')}
       title={t(failed ? 'desktop.status.failedTitle' : 'desktop.status.startingTitle')}
     >

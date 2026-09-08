@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
 import type { InstalledAppVerificationContext } from './installed-app.ts';
-import { assertNativeFailureSurface } from './native-accessibility.ts';
+import { assertNativeFailureSurface } from './native-surface.ts';
 import {
   appEnvironmentWithoutPortOverride,
   assertNoDirectChildren,
@@ -282,7 +282,7 @@ export const assertPersonalRuntime = async (
 };
 
 export const assertUnexpectedSidecarExitSurfacesFailure = async (
-  accessibilityProbe: string,
+  nativeWindowProbe: string,
   context: InstalledAppVerificationContext,
   verificationRoot: string,
 ): Promise<void> => {
@@ -315,6 +315,7 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       originalCause,
       'Floway packaged runtime exited unexpectedly',
       'Floway desktop runtime state: failed kind=unexpected-exit',
+      'FLOWAY_DESKTOP_SURFACE ',
     ];
     const captured = await waitForOutput(child, output, expected);
     if (child.pid === undefined || !processIsRunning(child.pid)) {
@@ -325,13 +326,9 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
     }
     await waitForProcessStopped(sidecarPid);
     if (child.pid === undefined) throw new Error('Floway production app process has no PID');
-    await assertNativeFailureSurface(accessibilityProbe, child.pid, {
-      forbiddenWindowText: [parentFailure, originalCause],
-      windowTextGroups: [
-        ['Floway could not start the local Gateway', 'Floway 无法启动本机 Gateway'],
-        ['The local Gateway stopped unexpectedly.', '本机 Gateway 意外停止。'],
-        ['Detailed diagnostics are available in the logs.', '详细诊断信息可在日志中查看。'],
-      ],
+    await assertNativeFailureSurface(nativeWindowProbe, child.pid, captured, {
+      failureKind: 'unexpected-exit',
+      forbiddenSnapshotText: [parentFailure, originalCause],
     });
     await assertNoDirectChildren(child.pid);
     await assertLoopbackPortReleased(port);
