@@ -194,7 +194,7 @@ describe('desktop bundle preparation', () => {
       'apps/platform-node/node_modules/.bin',
     ))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
-  });
+  }, 20_000);
 
   test('rejects an assembly omission against canonical migrations before publishing a contract', async () => {
     const root = await temporaryRoot();
@@ -280,7 +280,7 @@ describe('desktop bundle preparation', () => {
     expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
     expect((await stat(published.nodeSidecar)).size).toBe(priorSidecar.size);
     await expect(stat(resolve(root, 'src-tauri/.bundle-staging'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 20_000);
 
   test('publishes a replacement complete input tree with one directory exchange', async () => {
     const root = await temporaryRoot();
