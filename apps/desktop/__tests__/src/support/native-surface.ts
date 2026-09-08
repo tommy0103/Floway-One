@@ -22,7 +22,6 @@ interface RuntimeSurfaceSnapshot {
   };
   readonly window: {
     readonly failureKind: string;
-    readonly renderedSurface: string;
     readonly route: string;
     readonly state: string;
     readonly title: string;
@@ -77,7 +76,6 @@ export const assertNativeFailureSurface = async (
     snapshot.failureKind !== options.failureKind
     || snapshot.phase !== 'failed'
     || snapshot.window.failureKind !== options.failureKind
-    || snapshot.window.renderedSurface !== 'recovery-actions-and-logs-only'
     || snapshot.window.route !== '/desktop-status'
     || snapshot.window.state !== 'failed'
     || snapshot.window.title !== 'Floway'

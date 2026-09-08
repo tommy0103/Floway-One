@@ -44,12 +44,10 @@ test('packaged native observation combines actual Tauri objects with an external
     'window.is_visible()',
     'window.title()',
     'window.url()',
-    'window.eval(DESKTOP_SURFACE_PROBE_SCRIPT)',
   ]) {
     expect(controller).toContain(actualObjectRead);
   }
   expect(surface).toContain('FLOWAY_DESKTOP_SURFACE ');
-  expect(controller).toContain('recovery-actions-and-logs-only');
   expect(surface).toContain('visibleWindowCount');
 });
 

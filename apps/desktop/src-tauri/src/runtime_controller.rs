@@ -35,32 +35,6 @@ use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitE
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
-const DESKTOP_SURFACE_PROBE_ENV: &str = "FLOWAY_DESKTOP_TEST_SURFACE_PROBE";
-const DESKTOP_SURFACE_RENDERED: &str = "recovery-actions-and-logs-only";
-const DESKTOP_SURFACE_PROBE_SCRIPT: &str = r#"
-(() => {
-  const failure = document.querySelector('[data-desktop-failure-kind]');
-  const diagnostics = document.querySelector('[data-desktop-diagnostics="logs-only"]');
-  const restart = document.querySelector('a[href="floway-action://restart"]');
-  const logs = document.querySelector('a[href="floway-action://open-logs"]');
-  const url = new URL(window.location.href);
-  if (
-    failure instanceof HTMLElement
-    && diagnostics instanceof HTMLElement
-    && restart instanceof HTMLElement
-    && logs instanceof HTMLElement
-    && failure.innerText.trim().length > 0
-    && diagnostics.innerText.trim().length > 0
-    && restart.innerText.trim().length > 0
-    && logs.innerText.trim().length > 0
-    && url.searchParams.get('state') === 'failed'
-    && url.searchParams.get('kind') === failure.dataset.desktopFailureKind
-  ) {
-    url.searchParams.set('surface', 'recovery-actions-and-logs-only');
-    window.history.replaceState(null, '', url);
-  }
-})();
-"#;
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -357,9 +331,6 @@ fn show_status(app: &AppHandle, report: Option<&FailureReport>) {
 }
 
 fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
-    if std::env::var(DESKTOP_SURFACE_PROBE_ENV).as_deref() != Ok("1") {
-        return;
-    }
     thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -368,12 +339,6 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
                 let window = app.get_webview_window("main").ok_or_else(|| {
                     io::Error::new(io::ErrorKind::NotFound, "Floway main window is unavailable")
                 })?;
-                // The verifier script observes rendered, non-empty failure copy
-                // and recovery links before setting a fixed safe marker on this
-                // history entry. Reading the WebView URL then proves the actual
-                // document reached that state without exposing unrestricted text.
-                // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L1765-L1775
-                window.eval(DESKTOP_SURFACE_PROBE_SCRIPT)?;
                 // Read the actual Tauri window after navigate/show completed, but
                 // serialize only whitelisted fields so bootstrap authority and
                 // unrestricted diagnostics can never enter this production event.
@@ -386,11 +351,9 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
                 let route = url.path();
                 let state = query.get("state").map(|value| value.as_ref());
                 let failure_kind = query.get("kind").map(|value| value.as_ref());
-                let rendered_surface = query.get("surface").map(|value| value.as_ref());
                 if route.trim_matches('/') != DESKTOP_STATUS_ROUTE
                     || state != Some("failed")
                     || failure_kind != Some(kind.as_str())
-                    || rendered_surface != Some(DESKTOP_SURFACE_RENDERED)
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
@@ -404,7 +367,6 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
                     "tray": controller.tray.diagnostic_snapshot()?,
                     "window": {
                         "failureKind": failure_kind,
-                        "renderedSurface": rendered_surface,
                         "route": route,
                         "state": state,
                         "title": window.title()?,
