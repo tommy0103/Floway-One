@@ -360,22 +360,21 @@ fn show_status(app: &AppHandle, report: Option<&FailureReport>) {
     }
 }
 
-fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind) {
+fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: Url) {
     let snapshot = (|| -> Result<serde_json::Value, Box<dyn Error>> {
         let controller = app.state::<Arc<DesktopController>>();
         let window = app.get_webview_window("main").ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "Floway main window is unavailable")
         })?;
-        // Read the actual Tauri window after its finished-load event, but
-        // serialize only whitelisted fields so bootstrap authority and
-        // unrestricted diagnostics can never enter this production event.
-        // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L1800-L1809
+        // Combine the actual Tauri finished-load URL with the live window and
+        // menu objects, but serialize only whitelisted fields so bootstrap
+        // authority and unrestricted diagnostics never enter this event.
+        // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/mod.rs#L313-L336
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L2379-L2382
-        let url = window.url()?;
-        let query = url
+        let query = loaded_url
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
-        let route = url.path();
+        let route = loaded_url.path();
         let state = query.get("state").map(|value| value.as_ref());
         let failure_kind = query.get("kind").map(|value| value.as_ref());
         if route.trim_matches('/') != DESKTOP_STATUS_ROUTE
@@ -842,8 +841,9 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                             .take();
                         if let Some(kind) = failure_kind {
                             let snapshot_app = page_load_app.clone();
+                            let loaded_url = payload.url().clone();
                             thread::spawn(move || {
-                                emit_failure_surface_snapshot(snapshot_app, kind);
+                                emit_failure_surface_snapshot(snapshot_app, kind, loaded_url);
                             });
                         }
                     }

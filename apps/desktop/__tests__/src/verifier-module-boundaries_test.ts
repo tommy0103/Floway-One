@@ -43,7 +43,7 @@ test('packaged native observation combines actual Tauri objects with an external
     'controller.tray.diagnostic_snapshot()',
     'window.is_visible()',
     'window.title()',
-    'window.url()',
+    'payload.url()',
   ]) {
     expect(controller).toContain(actualObjectRead);
   }
@@ -76,5 +76,5 @@ test('Tauri composition stays thin while runtime recovery has one owning module'
   expect(controller).toContain('struct DesktopController');
   expect(controller).toContain('fn begin_health_probe(');
   expect(controller).toContain('fn fail_startup_attempt(');
-  expect(controller).toContain('fn fail_runtime_attempt(');
+  expect(controller).toContain('fn fail_current_attempt(');
 });
