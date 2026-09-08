@@ -35,6 +35,10 @@ export const parseDesktopStatus = (params: URLSearchParams): DesktopStatusView =
   };
 };
 
+export function clientLoader() {
+  return null;
+}
+
 export default function DesktopStatus() {
   const { t } = useTranslation();
   const [params] = useSearchParams();
