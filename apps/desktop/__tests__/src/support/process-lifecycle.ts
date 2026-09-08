@@ -205,12 +205,12 @@ export const observeProductionApp = async (
 ): Promise<string> => await withFailureSafeCleanup(async cleanup => {
   const { child, output } = captureApp(executable, environment);
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
-  await waitForOutput(child, output, expectedFragments);
-  await waitForChildExit(child, 5_000);
-  if (child.exitCode === 0) {
-    throw new Error(`Floway production app unexpectedly succeeded after fault injection\n${output()}`);
+  const captured = await waitForOutput(child, output, expectedFragments);
+  if (child.pid === undefined || !processIsRunning(child.pid)) {
+    throw new Error(`Floway production app did not retain its visible failure surface\n${captured}`);
   }
-  return output();
+  await terminateProcessGroup(child);
+  return captured;
 });
 
 export const observeSetupFailureWithoutSidecar = async (
@@ -221,22 +221,27 @@ export const observeSetupFailureWithoutSidecar = async (
   cleanup.defer('setup-fault application process group', async () => await terminateProcessGroup(child));
   const observedChildren = new Set<number>();
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+  let captured = '';
+  while (Date.now() < deadline) {
     if (child.pid !== undefined) {
       for (const pid of await directChildPids(child.pid)) observedChildren.add(pid);
     }
+    captured = output();
+    if (expectedFragments.every(fragment => captured.includes(fragment))) break;
+    if (child.exitCode !== null || child.signalCode !== null) break;
     await new Promise(resolveWait => setTimeout(resolveWait, 10));
   }
-  await waitForChildExit(child, 1_000);
-  if (child.exitCode === 0) throw new Error(`Floway production setup unexpectedly succeeded\n${output()}`);
+  if (child.pid === undefined || !processIsRunning(child.pid)) {
+    throw new Error(`Floway production setup did not retain its visible failure surface\n${output()}`);
+  }
   if (observedChildren.size > 0) {
     throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedChildren].join(', ')}`);
   }
-  const captured = output();
   for (const fragment of expectedFragments) {
     if (!captured.includes(fragment)) {
       throw new Error(`Floway production setup omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
   }
+  await terminateProcessGroup(child);
   return captured;
 });

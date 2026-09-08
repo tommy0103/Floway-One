@@ -11,6 +11,7 @@ import {
   assertLoopbackPortReleased,
   captureApp,
   PERSONAL_DASHBOARD_PORT,
+  processIsRunning,
   requestNormalApplicationExit,
   terminateProcessGroup,
   type CapturedChild,
@@ -272,7 +273,7 @@ export const assertPersonalRuntime = async (
   });
 };
 
-export const assertUnexpectedSidecarExitClosesShell = async (
+export const assertUnexpectedSidecarExitSurfacesFailure = async (
   context: InstalledAppVerificationContext,
   verificationRoot: string,
 ): Promise<void> => {
@@ -300,15 +301,21 @@ export const assertUnexpectedSidecarExitClosesShell = async (
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
     const sidecarPid = await waitForDirectChild(child, output);
     await waitForHealthyRuntime(child, output, origin);
-    await waitForChildExit(child, 10_000);
-    if (child.exitCode !== 1) {
-      throw new Error(`Floway shell did not fail after its personal runtime exited: ${child.exitCode ?? child.signalCode}\n${output()}`);
+    const expected = [
+      parentFailure,
+      originalCause,
+      'Floway packaged runtime exited unexpectedly',
+      'Floway desktop runtime state: failed kind=unexpected-exit',
+    ];
+    const captured = await waitForOutput(child, output, expected);
+    if (child.pid === undefined || !processIsRunning(child.pid)) {
+      throw new Error(`Floway shell did not remain available after its runtime exited\n${captured}`);
     }
-    const captured = output();
-    for (const fragment of [parentFailure, originalCause, 'Floway packaged runtime exited unexpectedly']) {
+    for (const fragment of expected) {
       if (!captured.includes(fragment)) throw new Error(`Floway shell omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
     await waitForProcessStopped(sidecarPid);
+    await terminateProcessGroup(child);
     await assertLoopbackPortReleased(port);
   });
 };

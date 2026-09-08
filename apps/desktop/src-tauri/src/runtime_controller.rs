@@ -301,6 +301,10 @@ fn fail_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: b
     if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed) {
         print_error_chain(error.as_ref());
     }
+    eprintln!(
+        "Floway desktop runtime state: failed kind={}",
+        report.kind.as_str()
+    );
     show_status(app, Some(&report));
     if stop {
         let supervisor = Arc::clone(&controller.supervisor);

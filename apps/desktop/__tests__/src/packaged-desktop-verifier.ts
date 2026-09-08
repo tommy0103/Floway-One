@@ -8,7 +8,7 @@ import { createInstalledAppVerificationContext } from './support/installed-app.t
 import { verifyPackagedApplication } from './support/package-contract.ts';
 import {
   assertPersonalRuntime,
-  assertUnexpectedSidecarExitClosesShell,
+  assertUnexpectedSidecarExitSurfacesFailure,
   errorChainIncludes,
   PERSONAL_FAILURE_PHASES,
   personalEntrySource,
@@ -111,11 +111,11 @@ if (launchSupported) {
     console.log('Floway production app completed the canonical migration set, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
     console.log('Floway normal Tauri application exit terminated and waited for its packaged runtime with no sidecar, listener, credential, or data root remaining');
 
-    await assertUnexpectedSidecarExitClosesShell(
+    await assertUnexpectedSidecarExitSurfacesFailure(
       context,
       resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
     );
-    console.log('Floway production shell surfaced the original sidecar failure, exited non-zero, and left no listener or process');
+    console.log('Floway production shell surfaced the original sidecar failure while remaining available, then verifier cleanup left no listener or process');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
