@@ -61,6 +61,7 @@ export const assertPortAndStorageFailureSurfaces = async (
     expectedFragments: ['Permission denied'],
     failureKind: 'storage',
     nativeWindowProbe,
+    sidecarExecutable: context.node,
     sidecarMustNotStart: true,
   });
 });

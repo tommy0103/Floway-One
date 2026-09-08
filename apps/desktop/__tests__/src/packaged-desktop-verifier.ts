@@ -143,6 +143,7 @@ if (launchSupported) {
         failureKind: 'asset',
         nativeWindowProbe,
         persistedLogFragments: expected,
+        sidecarExecutable: context.node,
         sidecarMustNotStart: true,
       });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
@@ -164,6 +165,7 @@ if (launchSupported) {
         failureKind: 'asset',
         nativeWindowProbe,
         persistedLogFragments: expected,
+        sidecarExecutable: context.node,
         sidecarMustNotStart: true,
       });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
@@ -194,6 +196,7 @@ if (launchSupported) {
         failureKind: 'compatibility',
         nativeWindowProbe,
         persistedLogFragments: expected,
+        sidecarExecutable: context.node,
         sidecarMustNotStart: true,
       });
     });
@@ -240,6 +243,7 @@ if (launchSupported) {
         forbiddenSnapshotText: expected,
         nativeWindowProbe,
         persistedLogFragments: expected,
+        sidecarExecutable: context.node,
         sidecarMustNotStart: true,
       });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);

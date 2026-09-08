@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { once } from 'node:events';
 import { access, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
@@ -55,6 +55,21 @@ const waitForProcessGroupStopped = async (groupId: number): Promise<void> => {
 const directChildPids = async (parentPid: number): Promise<number[]> => {
   try {
     const { stdout } = await execFileAsync('pgrep', ['-P', String(parentPid)]);
+    return stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException & { code?: number }).code === 1) return [];
+    throw error;
+  }
+};
+
+const directSidecarPids = async (parentPid: number, sidecarExecutable: string): Promise<number[]> => {
+  try {
+    const { stdout } = await execFileAsync('pgrep', [
+      '-P',
+      String(parentPid),
+      '-f',
+      basename(sidecarExecutable),
+    ]);
     return stdout.trim().split(/\s+/).filter(Boolean).map(Number);
   } catch (error) {
     if ((error as NodeJS.ErrnoException & { code?: number }).code === 1) return [];
@@ -244,6 +259,7 @@ export const observePackagedFailureSurface = async (options: {
   readonly forbiddenSnapshotText?: readonly string[];
   readonly nativeWindowProbe: string;
   readonly persistedLogFragments?: readonly string[];
+  readonly sidecarExecutable?: string;
   readonly sidecarMustNotStart?: boolean;
 }): Promise<string> => await withFailureSafeCleanup(async cleanup => {
   await mkdir(options.applicationHome, { recursive: true });
@@ -261,7 +277,7 @@ export const observePackagedFailureSurface = async (options: {
     appEnvironmentWithoutPortOverride(options.applicationHome),
   );
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
-  const observedChildren = new Set<number>();
+  const observedSidecars = new Set<number>();
   let captured = '';
   const failureEvidence = [
     ...options.expectedFragments,
@@ -273,8 +289,8 @@ export const observePackagedFailureSurface = async (options: {
   ];
   const observeUntil = async (deadline: number, expected: readonly string[]): Promise<void> => {
     while (Date.now() < deadline) {
-      if (options.sidecarMustNotStart && child.pid !== undefined) {
-        for (const pid of await directChildPids(child.pid)) observedChildren.add(pid);
+      if (options.sidecarMustNotStart && options.sidecarExecutable !== undefined && child.pid !== undefined) {
+        for (const pid of await directSidecarPids(child.pid, options.sidecarExecutable)) observedSidecars.add(pid);
       }
       captured = output();
       if (expected.every(fragment => captured.includes(fragment))) return;
@@ -294,8 +310,11 @@ export const observePackagedFailureSurface = async (options: {
   if (child.pid === undefined || !processIsRunning(child.pid)) {
     throw new Error(`Floway production app did not retain its visible failure surface\n${output()}`);
   }
-  if (options.sidecarMustNotStart && observedChildren.size > 0) {
-    throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedChildren].join(', ')}`);
+  if (options.sidecarMustNotStart && options.sidecarExecutable === undefined) {
+    throw new Error('Floway no-sidecar verification omitted the packaged sidecar executable identity');
+  }
+  if (observedSidecars.size > 0) {
+    throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedSidecars].join(', ')}`);
   }
   await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
     failureKind: options.failureKind,
