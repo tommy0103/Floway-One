@@ -28,7 +28,7 @@ use crate::navigation::{
 };
 use crate::runtime_status::{
     FailureKind, FailureReport, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
-    STARTUP_TIMEOUT, parse_sidecar_failure, probe_compatible_runtime,
+    STARTUP_TIMEOUT, SidecarFailureDecoder, probe_compatible_runtime,
 };
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
@@ -607,6 +607,7 @@ fn monitor_runtime(
         let mut readiness_probe_started = false;
         let mut runtime_stdout = String::new();
         let mut structured_failure = None;
+        let mut structured_failure_decoder = SidecarFailureDecoder::default();
         let mut command_error = None;
         while let Some(event) = events.recv().await {
             let controller = app.state::<Arc<DesktopController>>().inner().clone();
@@ -650,9 +651,8 @@ fn monitor_runtime(
                         );
                         continue;
                     }
-                    structured_failure = output
-                        .lines()
-                        .find_map(parse_sidecar_failure)
+                    structured_failure = structured_failure_decoder
+                        .push(&bytes)
                         .or(structured_failure);
                 }
                 CommandEvent::Error(error) => {
@@ -665,6 +665,8 @@ fn monitor_runtime(
                         payload.code, payload.signal
                     );
                     if controller.supervisor.record_termination() {
+                        structured_failure =
+                            structured_failure_decoder.finish().or(structured_failure);
                         let report = if controller.phase() == RuntimePhase::Starting {
                             structured_failure
                                 .unwrap_or_else(|| unexpected_exit_report(payload, command_error))

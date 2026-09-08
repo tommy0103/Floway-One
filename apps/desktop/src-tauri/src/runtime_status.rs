@@ -10,6 +10,7 @@ use url::Url;
 use crate::bundle_contract::RuntimeCompatibility;
 
 pub const DESKTOP_FAILURE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_FAILURE ";
+const MAXIMUM_FAILURE_EVENT_BYTES: usize = 256 * 1024;
 const DESKTOP_HEALTH_PATH: &str = "/api/desktop/health";
 const HEALTH_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAXIMUM_HEALTH_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -74,6 +75,43 @@ pub enum RuntimePhase {
 pub struct RuntimeAttemptState {
     generation: u64,
     phase: RuntimePhase,
+}
+
+#[derive(Default)]
+pub struct SidecarFailureDecoder {
+    pending: Vec<u8>,
+}
+
+impl SidecarFailureDecoder {
+    pub fn push(&mut self, bytes: &[u8]) -> Option<FailureReport> {
+        self.pending.extend_from_slice(bytes);
+        if self.pending.len() > MAXIMUM_FAILURE_EVENT_BYTES {
+            let retained = self
+                .pending
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index.saturating_add(1));
+            self.pending.drain(..retained);
+            if self.pending.len() > MAXIMUM_FAILURE_EVENT_BYTES {
+                self.pending.clear();
+            }
+        }
+
+        let mut report = None;
+        while let Some(line_end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line = self.pending.drain(..=line_end).collect::<Vec<_>>();
+            report = parse_sidecar_failure(&String::from_utf8_lossy(&line)).or(report);
+        }
+        report
+    }
+
+    pub fn finish(&mut self) -> Option<FailureReport> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let line = std::mem::take(&mut self.pending);
+        parse_sidecar_failure(&String::from_utf8_lossy(&line))
+    }
 }
 
 impl RuntimeAttemptState {

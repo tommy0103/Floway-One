@@ -8,7 +8,7 @@ mod runtime_status;
 use bundle_contract::RuntimeCompatibility;
 use runtime_status::{
     FailureKind, RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT,
-    parse_sidecar_failure, validate_health_response_for_test,
+    SidecarFailureDecoder, parse_sidecar_failure, validate_health_response_for_test,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -80,6 +80,22 @@ fn parses_a_structured_sidecar_failure_without_flattening_its_chain() {
         ["outer migration context", "original sqlite cause"]
     );
     assert!(parse_sidecar_failure("ordinary stderr").is_none());
+}
+
+#[test]
+fn decodes_a_structured_failure_split_across_stderr_events() {
+    let mut decoder = SidecarFailureDecoder::default();
+    assert!(
+        decoder
+            .push(b"ordinary stderr\nFLOWAY_DESKTOP_FAILURE {\"kind\":\"native-")
+            .is_none()
+    );
+    let report = decoder
+        .push(b"dependency\",\"chain\":[\"outer context\",\"original cause\"]}\ntrailing stderr")
+        .expect("the completed structured event must decode");
+    assert_eq!(report.kind, FailureKind::NativeDependency);
+    assert_eq!(report.chain, ["outer context", "original cause"]);
+    assert!(decoder.finish().is_none());
 }
 
 #[test]
