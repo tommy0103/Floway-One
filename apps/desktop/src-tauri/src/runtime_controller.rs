@@ -272,11 +272,15 @@ impl DesktopController {
             .is_starting(generation)
     }
 
-    fn mark_ready(&self, generation: u64) -> bool {
+    fn commit_ready(
+        &self,
+        generation: u64,
+        effects: impl FnOnce() -> Result<(), Box<dyn Error>>,
+    ) -> Result<bool, Box<dyn Error>> {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_ready(generation)
+            .commit_ready(generation, |_attempt| effects())
     }
 
     fn mark_startup_failed(&self, generation: u64) -> bool {
@@ -291,6 +295,13 @@ impl DesktopController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .mark_runtime_failed(generation)
+    }
+
+    fn mark_failed(&self, generation: u64) -> bool {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .mark_failed(generation)
     }
 
     fn phase(&self) -> RuntimePhase {
@@ -466,25 +477,17 @@ fn fail_runtime_attempt(app: &AppHandle, generation: u64, report: FailureReport,
 
 fn fail_current_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
-    let transitioned = match controller.phase() {
-        RuntimePhase::Starting => controller.mark_startup_failed(generation),
-        RuntimePhase::Ready => controller.mark_runtime_failed(generation),
-        RuntimePhase::Failed => false,
-    };
-    if transitioned {
+    if controller.mark_failed(generation) {
         publish_failure(app, report, stop);
     }
 }
 
 fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_token: &str) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if !controller.mark_ready(generation) {
-        return;
-    }
     let policy = match DashboardNavigationPolicy::new(origin, bootstrap_token) {
         Ok(policy) => policy,
         Err(error) => {
-            fail_runtime_attempt(
+            fail_startup_attempt(
                 app,
                 generation,
                 FailureReport::from_error(FailureKind::Compatibility, error.as_ref()),
@@ -494,27 +497,37 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
         }
     };
     let dashboard_url = policy.bootstrap_url().clone();
-    *controller
-        .dashboard_policy
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(policy);
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Ready) {
-        print_error_chain(error.as_ref());
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        if let Err(error) = window
-            .navigate(dashboard_url)
-            .and_then(|()| window.set_title("Floway"))
-            .and_then(|()| window.show())
-            .and_then(|()| window.set_focus())
-        {
-            fail_runtime_attempt(
-                app,
-                generation,
-                FailureReport::from_error(FailureKind::Asset, &error),
-                true,
-            );
+    let ready = controller.commit_ready(generation, || {
+        let effects = (|| -> Result<(), Box<dyn Error>> {
+            *controller
+                .dashboard_policy
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(policy);
+            controller.tray.set_phase(RuntimePhase::Ready)?;
+            if let Some(window) = app.get_webview_window("main") {
+                window
+                    .navigate(dashboard_url)
+                    .and_then(|()| window.set_title("Floway"))
+                    .and_then(|()| window.show())
+                    .and_then(|()| window.set_focus())?;
+            }
+            Ok(())
+        })();
+        if effects.is_err() {
+            *controller
+                .dashboard_policy
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         }
+        effects
+    });
+    if let Err(error) = ready {
+        fail_startup_attempt(
+            app,
+            generation,
+            FailureReport::from_error(FailureKind::Asset, error.as_ref()),
+            true,
+        );
     }
 }
 

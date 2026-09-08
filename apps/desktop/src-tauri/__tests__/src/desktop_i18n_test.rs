@@ -5,7 +5,14 @@ use desktop_i18n::{DesktopLocale, locale_from_identifier, messages_for};
 
 #[test]
 fn selects_simplified_chinese_without_mislabeling_traditional_chinese() {
-    for locale in ["zh", "zh-CN", "zh_Hans_CN", "zh-SG"] {
+    for locale in [
+        "zh",
+        "zh-CN",
+        "zh-Hans",
+        "zh-Hans-CN",
+        "zh_Hans_CN",
+        "zh-SG",
+    ] {
         assert_eq!(locale_from_identifier(Some(locale)), DesktopLocale::ZhHans);
     }
     for locale in [None, Some("en-US"), Some("zh-Hant"), Some("zh-TW")] {

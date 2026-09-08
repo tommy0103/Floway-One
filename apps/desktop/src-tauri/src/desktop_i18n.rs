@@ -44,6 +44,7 @@ pub fn locale_from_identifier(identifier: Option<&str>) -> DesktopLocale {
         .replace('_', "-")
         .to_ascii_lowercase();
     if normalized == "zh"
+        || normalized == "zh-hans"
         || normalized.starts_with("zh-hans-")
         || normalized.starts_with("zh-cn")
         || normalized.starts_with("zh-sg")

@@ -36,6 +36,16 @@ test('maps every shell failure code to typed localized recovery copy', () => {
   }
 });
 
+test('rejects inherited and malformed failure kinds at the URL boundary', () => {
+  for (const kind of ['constructor', 'toString', '__proto__', '', 'PORT']) {
+    expect(parseDesktopStatus(new URLSearchParams({ kind, state: 'failed' }))).toEqual({
+      failureKind: 'unknown',
+      failureKey: 'desktop.status.failures.unknown',
+      state: 'failed',
+    });
+  }
+});
+
 test('renders typed recovery information without echoing arbitrary URL detail', () => {
   const router = createMemoryRouter([{
     path: '/desktop-status',

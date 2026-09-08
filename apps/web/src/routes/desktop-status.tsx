@@ -20,6 +20,9 @@ const failureKeys = {
   unknown: 'desktop.status.failures.unknown',
 } as const satisfies Record<string, TranslationKey>;
 
+const isFailureKind = (candidate: string): candidate is keyof typeof failureKeys =>
+  Object.hasOwn(failureKeys, candidate);
+
 export interface DesktopStatusView {
   readonly failureKind: keyof typeof failureKeys;
   readonly failureKey: (typeof failureKeys)[keyof typeof failureKeys];
@@ -29,8 +32,8 @@ export interface DesktopStatusView {
 export const parseDesktopStatus = (params: URLSearchParams): DesktopStatusView => {
   const state = params.get('state') === 'failed' ? 'failed' : 'starting';
   const candidate = params.get('kind');
-  const failureKind = candidate !== null && candidate in failureKeys
-    ? candidate as keyof typeof failureKeys
+  const failureKind = candidate !== null && isFailureKind(candidate)
+    ? candidate
     : 'unknown';
   return {
     failureKind,

@@ -11,6 +11,7 @@ use runtime_status::{
     STARTUP_TIMEOUT, SidecarFailureDecoder, parse_sidecar_failure,
     validate_health_response_for_test,
 };
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -126,6 +127,76 @@ fn a_ready_attempt_cannot_time_out_after_its_deadline() {
 
     assert!(!state.mark_startup_failed(generation));
     assert_eq!(state.phase(), RuntimePhase::Ready);
+}
+
+#[test]
+fn ready_effects_finish_before_the_attempt_can_become_ready() {
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+    let mut effects_finished = false;
+
+    assert!(
+        state
+            .commit_ready(generation, |observed| {
+                assert_eq!(observed.phase(), RuntimePhase::Starting);
+                effects_finished = true;
+                Ok::<(), ()>(())
+            })
+            .expect("ready effects must succeed")
+    );
+
+    assert!(effects_finished);
+    assert_eq!(state.phase(), RuntimePhase::Ready);
+}
+
+#[test]
+fn a_failed_attempt_rejects_all_late_ready_effects() {
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+    assert!(state.mark_startup_failed(generation));
+    let mut effects_ran = false;
+
+    assert!(
+        !state
+            .commit_ready(generation, |_observed| {
+                effects_ran = true;
+                Ok::<(), ()>(())
+            })
+            .expect("rejected ready effects must not fail")
+    );
+
+    assert!(!effects_ran);
+    assert_eq!(state.phase(), RuntimePhase::Failed);
+}
+
+#[test]
+fn termination_waiting_on_ready_effects_applies_failed_last() {
+    let state = Arc::new(Mutex::new(RuntimeAttemptState::new()));
+    let generation = state.lock().unwrap().begin().expect("attempt must begin");
+    let (effects_started_tx, effects_started_rx) = mpsc::channel();
+    let (finish_effects_tx, finish_effects_rx) = mpsc::channel();
+
+    let ready_state = Arc::clone(&state);
+    let ready = thread::spawn(move || {
+        ready_state
+            .lock()
+            .unwrap()
+            .commit_ready(generation, |_observed| {
+                effects_started_tx.send(()).unwrap();
+                finish_effects_rx.recv().unwrap();
+                Ok::<(), ()>(())
+            })
+            .unwrap()
+    });
+    effects_started_rx.recv().unwrap();
+
+    let failed_state = Arc::clone(&state);
+    let failed = thread::spawn(move || failed_state.lock().unwrap().mark_failed(generation));
+    finish_effects_tx.send(()).unwrap();
+
+    assert!(ready.join().unwrap());
+    assert!(failed.join().unwrap());
+    assert_eq!(state.lock().unwrap().phase(), RuntimePhase::Failed);
 }
 
 #[test]
