@@ -796,10 +796,21 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
 
 #[tauri::command]
 fn report_desktop_rendered_surface(surface: serde_json::Value) -> Result<(), String> {
-    let diagnostic = rendered_surface_diagnostic(&surface).map_err(|error| error.to_string())?;
-    let encoded = serde_json::to_string(&diagnostic).map_err(|error| error.to_string())?;
+    let diagnostic = rendered_surface_diagnostic(&surface).map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    let encoded = serde_json::to_string(&diagnostic).map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
     if encoded.len() > MAXIMUM_SURFACE_EVENT_BYTES {
-        return Err("Floway rendered failure diagnostic exceeded its byte bound".to_owned());
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway rendered failure diagnostic exceeded its byte bound",
+        );
+        print_error_chain(&error);
+        return Err(error.to_string());
     }
     eprintln!("{DESKTOP_RENDERED_SURFACE_EVENT_PREFIX}{encoded}");
     Ok(())
