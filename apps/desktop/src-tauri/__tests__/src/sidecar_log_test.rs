@@ -3,16 +3,16 @@
 mod sidecar_log;
 
 use std::fs::{metadata, read, read_to_string, remove_dir_all};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sidecar_log::{BoundedSidecarLog, SidecarStream};
 
+static NEXT_TEMPORARY_ROOT: AtomicU64 = AtomicU64::new(0);
+
 fn temporary_root() -> std::path::PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock must follow the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("floway-sidecar-log-{nonce}"));
+    let nonce = NEXT_TEMPORARY_ROOT.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("floway-sidecar-log-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&root).expect("fixture directory must be writable");
     root
 }
