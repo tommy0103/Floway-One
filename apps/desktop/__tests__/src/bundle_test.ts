@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { exchangeDirectoriesAtomically } from '../../src/atomic-directory.ts';
 import { assertPackagedRuntime, prepareDesktopBundle } from '../../src/bundle.ts';
 import { compilePackagedRuntime } from '../../src/packaged-runtime.ts';
-import { targetTripleForHost } from '../../src/release-contract.ts';
+import { readDesktopReleaseVersion, targetTripleForHost } from '../../src/release-contract.ts';
 
 const roots = new Set<string>();
 const desktopRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -70,6 +70,27 @@ const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
 };
 
 describe('desktop bundle preparation', () => {
+  test('rejects any release version drift between shell, sidecar, and Dashboard', async () => {
+    const root = await temporaryRoot();
+    const testDesktopRoot = resolve(root, 'apps/desktop');
+    await Promise.all([
+      mkdir(resolve(testDesktopRoot, 'src-tauri'), { recursive: true }),
+      mkdir(resolve(root, 'apps/platform-node'), { recursive: true }),
+      mkdir(resolve(root, 'apps/web'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(resolve(testDesktopRoot, 'package.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(root, 'apps/platform-node/package.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(root, 'apps/web/package.json'), '{"version":"0.2.0"}'),
+      writeFile(resolve(testDesktopRoot, 'src-tauri/tauri.conf.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(testDesktopRoot, 'src-tauri/Cargo.toml'), '[package]\nversion = "0.1.0"\n'),
+    ]);
+
+    await expect(readDesktopReleaseVersion(testDesktopRoot)).rejects.toThrow(
+      'Desktop shell, sidecar, Dashboard, Tauri configuration, and Cargo release versions must match exactly',
+    );
+  });
+
   test('maps the validated runtime and Node sidecar to the installed paths Rust resolves', async () => {
     const config = JSON.parse(
       await readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8'),

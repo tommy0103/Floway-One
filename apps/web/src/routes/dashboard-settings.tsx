@@ -10,6 +10,7 @@ import { useDashboardOutletContext } from './dashboard';
 import { requireDashboardSession } from './guards';
 import { changeOwnPassword } from '../api/auth';
 import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Input } from '../components/ui/fluent-form-controls';
 import { PANEL_STACK_CLASS } from '../components/ui/layout';
@@ -28,7 +29,12 @@ const {
 
 export async function clientLoader() {
   requireDashboardSession();
-  return { desktop: await loadDesktopRuntimeStatus() };
+  const runtime = await loadRuntimeInfo();
+  return {
+    desktop: runtime.profile.capabilities.desktopIntegration
+      ? await loadDesktopRuntimeStatus()
+      : null,
+  };
 }
 
 const passwordSchema = z

@@ -13,6 +13,7 @@ pub const DESKTOP_FAILURE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_FAILURE ";
 const DESKTOP_HEALTH_PATH: &str = "/api/desktop/health";
 const HEALTH_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAXIMUM_HEALTH_RESPONSE_BYTES: u64 = 64 * 1024;
+pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailureKind {

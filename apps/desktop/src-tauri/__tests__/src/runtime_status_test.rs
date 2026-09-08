@@ -7,8 +7,8 @@ mod runtime_status;
 
 use bundle_contract::RuntimeCompatibility;
 use runtime_status::{
-    FailureKind, RuntimeAttemptState, RuntimeHealthError, RuntimePhase, parse_sidecar_failure,
-    validate_health_response_for_test,
+    FailureKind, RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT,
+    parse_sidecar_failure, validate_health_response_for_test,
 };
 
 fn expected() -> RuntimeCompatibility {
@@ -95,4 +95,9 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     assert!(!state.mark_failed(first));
     assert!(state.mark_failed(second));
     assert_eq!(state.phase(), RuntimePhase::Failed);
+}
+
+#[test]
+fn startup_deadline_is_finite_and_user_visible() {
+    assert_eq!(STARTUP_TIMEOUT.as_secs(), 30);
 }

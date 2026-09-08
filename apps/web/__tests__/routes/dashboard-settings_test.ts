@@ -20,23 +20,50 @@ const authenticate = () => {
 
 test('loads packaged runtime status for the desktop settings surface', async () => {
   authenticate();
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({
-    compatibility: {
-      contractDigest: 'a'.repeat(64),
-      protocolVersion: 1,
-      releaseVersion: '0.1.0',
-    },
-    service: 'floway',
-    status: 'ok',
-  })));
+  const requests: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input), 'http://localhost').pathname;
+    requests.push(path);
+    if (path === '/api/runtime-info') return Response.json({
+      kind: 'node',
+      profile: {
+        capabilities: { desktopIntegration: true, remoteAccess: false, userManagement: false },
+        mode: 'personal',
+      },
+      runtimeLocation: 'LOCAL',
+    });
+    return Response.json({
+      compatibility: {
+        contractDigest: 'a'.repeat(64),
+        protocolVersion: 1,
+        releaseVersion: '0.1.0',
+      },
+      service: 'floway',
+      status: 'ok',
+    });
+  }));
 
   await expect(clientLoader()).resolves.toMatchObject({
     desktop: { compatibility: { releaseVersion: '0.1.0' } },
   });
+  expect(requests).toEqual(['/api/runtime-info', '/api/desktop/health']);
 });
 
 test('preserves the server settings surface when no desktop runtime is present', async () => {
   authenticate();
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+  const requests: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input), 'http://localhost').pathname;
+    requests.push(path);
+    return Response.json({
+      kind: 'node',
+      profile: {
+        capabilities: { desktopIntegration: false, remoteAccess: true, userManagement: true },
+        mode: 'server',
+      },
+      runtimeLocation: 'LOCAL',
+    });
+  }));
   await expect(clientLoader()).resolves.toEqual({ desktop: null });
+  expect(requests).toEqual(['/api/runtime-info']);
 });

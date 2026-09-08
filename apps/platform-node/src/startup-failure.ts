@@ -79,6 +79,12 @@ export const reportDesktopStartupFailure = (
   fallback?: DesktopFailureKind,
 ): boolean => {
   if (process.env.FLOWAY_DESKTOP_CONTRACT === undefined) return false;
-  process.stderr.write(`${DESKTOP_FAILURE_EVENT_PREFIX}${JSON.stringify(desktopFailureEvent(failure, fallback))}\n`);
-  return true;
+  try {
+    process.stderr.write(`${DESKTOP_FAILURE_EVENT_PREFIX}${JSON.stringify(desktopFailureEvent(failure, fallback))}\n`);
+    return true;
+  } catch {
+    // The caller still rethrows the original startup failure. Reporting must
+    // never replace the error chain it is intended to preserve.
+    return false;
+  }
 };

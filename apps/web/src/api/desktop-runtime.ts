@@ -18,7 +18,12 @@ export type DesktopRuntimeStatus = z.infer<typeof desktopRuntimeStatusSchema>;
 export const loadDesktopRuntimeStatus = async (
   signal?: AbortSignal,
 ): Promise<DesktopRuntimeStatus | null> => {
-  const response = await fetch('/api/desktop/health', { signal });
+  let response: Response;
+  try {
+    response = await fetch('/api/desktop/health', { signal });
+  } catch (cause) {
+    throw new LocalizedError('common.errors.desktopRuntimeUnavailable', { cause });
+  }
   if (response.status === 404) return null;
   if (!response.ok) {
     throw new LocalizedError('common.errors.desktopRuntimeUnavailable', {

@@ -27,7 +27,7 @@ use crate::navigation::{
 };
 use crate::runtime_status::{
     FailureKind, FailureReport, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
-    parse_sidecar_failure, probe_compatible_runtime,
+    STARTUP_TIMEOUT, parse_sidecar_failure, probe_compatible_runtime,
 };
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
@@ -36,7 +36,6 @@ const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_STATUS_DETAIL_BYTES: usize = 16 * 1024;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
 const TRAY_RESTART_ID: &str = "runtime-restart";
 
