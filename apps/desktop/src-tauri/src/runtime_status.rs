@@ -101,8 +101,16 @@ impl RuntimeAttemptState {
         true
     }
 
-    pub fn mark_failed(&mut self, generation: u64) -> bool {
-        if self.generation != generation || self.phase == RuntimePhase::Failed {
+    pub fn mark_startup_failed(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.phase != RuntimePhase::Starting {
+            return false;
+        }
+        self.phase = RuntimePhase::Failed;
+        true
+    }
+
+    pub fn mark_runtime_failed(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.phase != RuntimePhase::Ready {
             return false;
         }
         self.phase = RuntimePhase::Failed;

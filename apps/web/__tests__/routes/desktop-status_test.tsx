@@ -7,7 +7,6 @@ import { renderInApp } from '../render.tsx';
 
 test('defaults to a bounded startup state without requiring the sidecar', () => {
   expect(parseDesktopStatus(new URLSearchParams())).toEqual({
-    detail: null,
     failureKey: 'desktop.status.failures.unknown',
     state: 'starting',
   });
@@ -29,25 +28,24 @@ test('maps every shell failure code to typed localized recovery copy', () => {
       kind,
       state: 'failed',
     }))).toEqual({
-      detail: 'outer context\n\ncaused by: original cause',
       failureKey,
       state: 'failed',
     });
   }
 });
 
-test('renders a readable failure chain with restart and log recovery actions', () => {
+test('renders typed recovery information without echoing arbitrary URL detail', () => {
   const router = createMemoryRouter([{
     path: '/desktop-status',
     element: <DesktopStatus />,
   }], {
-    initialEntries: ['/desktop-status?state=failed&kind=port&detail=listen%20failed%0Acaused%20by%3A%20EADDRINUSE'],
+    initialEntries: ['/desktop-status?state=failed&kind=port&detail=secret%20stderr%20must%20not%20render'],
   });
   renderInApp(<RouterProvider router={router} />);
 
   expect(screen.getByRole('heading', { name: 'Floway could not start the local Gateway' })).toBeTruthy();
   expect(screen.getByText('The configured local port is unavailable.')).toBeTruthy();
-  expect(screen.getByText(/EADDRINUSE/)).toBeTruthy();
+  expect(screen.queryByText(/secret stderr/i)).toBeNull();
   expect(screen.getByRole('link', { name: 'Restart Gateway' }).getAttribute('href')).toBe('floway-action://restart');
   expect(screen.getByRole('link', { name: 'Open logs' }).getAttribute('href')).toBe('floway-action://open-logs');
 });

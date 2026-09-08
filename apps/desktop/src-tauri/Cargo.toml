@@ -36,10 +36,15 @@ path = "__tests__/src/runtime_status_test.rs"
 name = "sidecar_log"
 path = "__tests__/src/sidecar_log_test.rs"
 
+[[test]]
+name = "desktop_i18n"
+path = "__tests__/src/desktop_i18n_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
   "dep:getrandom",
+  "dep:sys-locale",
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
@@ -50,6 +55,8 @@ desktop = [
 getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
 # https://github.com/serde-rs/json/releases/tag/v1.0.151
 serde_json = { version = "=1.0.151" }
+# https://github.com/1Password/sys-locale/releases/tag/v0.3.2
+sys-locale = { version = "=0.3.2", optional = true }
 # https://github.com/RustCrypto/hashes/releases/tag/sha2-v0.10.9
 sha2 = { version = "=0.10.9" }
 # https://github.com/servo/rust-url/blob/v2.5.8/percent_encoding/Cargo.toml#L12-L13

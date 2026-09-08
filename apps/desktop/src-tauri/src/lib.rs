@@ -1,4 +1,6 @@
 mod bundle_contract;
+#[cfg(feature = "desktop")]
+mod desktop_i18n;
 mod navigation;
 #[cfg(feature = "desktop")]
 mod runtime_status;

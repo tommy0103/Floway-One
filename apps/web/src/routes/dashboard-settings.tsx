@@ -13,7 +13,7 @@ import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
 import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Input } from '../components/ui/fluent-form-controls';
-import { PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS, STATUS_HEADER_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { useOutcomeToasts } from '../components/ui/outcome-toast';
 import { Panel } from '../components/ui/panel';
@@ -130,12 +130,12 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
         title={t('dashboard.nav.settings')}
       />
 
-      {loaderData.desktop && <Panel className={`${PANEL_STACK_CLASS} mb-4 w-full max-w-[640px]`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {loaderData.desktop && <Panel className={`${PANEL_STACK_CLASS} w-full`}>
+        <div className={STATUS_HEADER_CLASS}>
           <SectionHeader level={2} title={t('dashboard.settings.desktop.title')} />
           <StatusBadge tone="success">{t('dashboard.settings.desktop.running')}</StatusBadge>
         </div>
-        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+        <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
           <dt className="text-fui-fg2">{t('dashboard.settings.desktop.version')}</dt>
           <dd className="m-0 font-mono">{loaderData.desktop.compatibility.releaseVersion}</dd>
           <dt className="text-fui-fg2">{t('dashboard.settings.desktop.protocol')}</dt>

@@ -20,6 +20,7 @@ use url::Url;
 
 use crate::NODE_SIDECAR_NAME;
 use crate::bundle_contract::{BundleResourceError, RuntimeBundle, resolve_runtime_bundle};
+use crate::desktop_i18n::{DesktopMessages, system_messages};
 use crate::navigation::{
     DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, desktop_action, enforce_dashboard_navigation,
@@ -34,7 +35,6 @@ use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitE
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
-const MAXIMUM_STATUS_DETAIL_BYTES: usize = 16 * 1024;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
 const TRAY_RESTART_ID: &str = "runtime-restart";
@@ -113,18 +113,6 @@ fn classify_setup_failure(error: &(dyn Error + 'static)) -> FailureKind {
     }
 }
 
-fn bounded_detail(chain: &[String]) -> String {
-    let detail = chain.join("\n\ncaused by: ");
-    if detail.len() <= MAXIMUM_STATUS_DETAIL_BYTES {
-        return detail;
-    }
-    let mut boundary = MAXIMUM_STATUS_DETAIL_BYTES;
-    while !detail.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    format!("{}\n\n[diagnostic output truncated]", &detail[..boundary])
-}
-
 fn append_bounded(buffer: &mut String, value: &str) {
     buffer.push_str(value);
     if buffer.len() > MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES {
@@ -138,29 +126,36 @@ fn append_bounded(buffer: &mut String, value: &str) {
 
 struct DesktopTray {
     _icon: TrayIcon<tauri::Wry>,
+    messages: &'static DesktopMessages,
     restart: MenuItem<tauri::Wry>,
     status: MenuItem<tauri::Wry>,
 }
 
 impl DesktopTray {
     fn build(app: &AppHandle) -> Result<Self, Box<dyn Error>> {
+        let messages = system_messages();
         let status = MenuItem::with_id(
             app,
             "runtime-status",
-            "Gateway: Starting",
+            messages.status_starting,
             false,
             None::<&str>,
         )?;
-        let restart =
-            MenuItem::with_id(app, TRAY_RESTART_ID, "Restart Gateway", false, None::<&str>)?;
-        let logs = MenuItem::with_id(app, TRAY_LOGS_ID, "Open Logs", true, None::<&str>)?;
+        let restart = MenuItem::with_id(
+            app,
+            TRAY_RESTART_ID,
+            messages.restart_gateway,
+            false,
+            None::<&str>,
+        )?;
+        let logs = MenuItem::with_id(app, TRAY_LOGS_ID, messages.open_logs, true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&status, &restart, &logs])?;
         // Tauri's tray builder owns native menu callbacks and supports runtime
         // tooltip updates on every desktop target.
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/tray/mod.rs#L203-L378
         let mut builder = TrayIconBuilder::with_id("floway-runtime")
             .menu(&menu)
-            .tooltip("Floway: Starting");
+            .tooltip(messages.tooltip_starting);
         if let Some(icon) = app.default_window_icon() {
             builder = builder.icon(icon.clone());
         }
@@ -173,6 +168,7 @@ impl DesktopTray {
             .build(app)?;
         Ok(Self {
             _icon: icon,
+            messages,
             restart,
             status,
         })
@@ -180,9 +176,21 @@ impl DesktopTray {
 
     fn set_phase(&self, phase: RuntimePhase) -> Result<(), Box<dyn Error>> {
         let (label, tooltip, restart_enabled) = match phase {
-            RuntimePhase::Starting => ("Gateway: Starting", "Floway: Starting", false),
-            RuntimePhase::Ready => ("Gateway: Running", "Floway: Running", false),
-            RuntimePhase::Failed => ("Gateway: Needs attention", "Floway: Needs attention", true),
+            RuntimePhase::Starting => (
+                self.messages.status_starting,
+                self.messages.tooltip_starting,
+                false,
+            ),
+            RuntimePhase::Ready => (
+                self.messages.status_running,
+                self.messages.tooltip_running,
+                false,
+            ),
+            RuntimePhase::Failed => (
+                self.messages.status_needs_attention,
+                self.messages.tooltip_needs_attention,
+                true,
+            ),
         };
         self.status.set_text(label)?;
         self.restart.set_enabled(restart_enabled)?;
@@ -229,11 +237,18 @@ impl DesktopController {
             .mark_ready(generation)
     }
 
-    fn mark_failed(&self, generation: u64) -> bool {
+    fn mark_startup_failed(&self, generation: u64) -> bool {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_failed(generation)
+            .mark_startup_failed(generation)
+    }
+
+    fn mark_runtime_failed(&self, generation: u64) -> bool {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .mark_runtime_failed(generation)
     }
 
     fn phase(&self) -> RuntimePhase {
@@ -274,7 +289,6 @@ fn status_url(controller: &DesktopController, report: Option<&FailureReport>) ->
         );
         if let Some(report) = report {
             query.append_pair("kind", report.kind.as_str());
-            query.append_pair("detail", &bounded_detail(&report.chain));
         }
     }
     url
@@ -293,15 +307,12 @@ fn show_status(app: &AppHandle, report: Option<&FailureReport>) {
     }
 }
 
-fn fail_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
+fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if !controller.mark_failed(generation) {
-        return;
-    }
     if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed) {
         print_error_chain(error.as_ref());
     }
-    let detail = bounded_detail(&report.chain);
+    let detail = report.chain.join("\n\ncaused by: ");
     eprintln!("Floway desktop runtime failure: {detail}");
     if let Err(error) = controller.append_log(SidecarStream::Stderr, detail.as_bytes()) {
         eprintln!("Floway desktop could not persist its runtime failure report: {error}");
@@ -321,6 +332,32 @@ fn fail_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: b
     }
 }
 
+fn fail_startup_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
+    let controller = app.state::<Arc<DesktopController>>();
+    if controller.mark_startup_failed(generation) {
+        publish_failure(app, report, stop);
+    }
+}
+
+fn fail_runtime_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
+    let controller = app.state::<Arc<DesktopController>>();
+    if controller.mark_runtime_failed(generation) {
+        publish_failure(app, report, stop);
+    }
+}
+
+fn fail_current_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
+    let controller = app.state::<Arc<DesktopController>>();
+    let transitioned = match controller.phase() {
+        RuntimePhase::Starting => controller.mark_startup_failed(generation),
+        RuntimePhase::Ready => controller.mark_runtime_failed(generation),
+        RuntimePhase::Failed => false,
+    };
+    if transitioned {
+        publish_failure(app, report, stop);
+    }
+}
+
 fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_token: &str) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
     if !controller.mark_ready(generation) {
@@ -329,7 +366,7 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
     let policy = match DashboardNavigationPolicy::new(origin, bootstrap_token) {
         Ok(policy) => policy,
         Err(error) => {
-            fail_attempt(
+            fail_runtime_attempt(
                 app,
                 generation,
                 FailureReport::from_error(FailureKind::Compatibility, error.as_ref()),
@@ -353,7 +390,7 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
             .and_then(|()| window.show())
             .and_then(|()| window.set_focus())
         {
-            fail_attempt(
+            fail_runtime_attempt(
                 app,
                 generation,
                 FailureReport::from_error(FailureKind::Asset, &error),
@@ -384,7 +421,7 @@ fn begin_health_probe(
                 }
                 Err(RuntimeHealthError::Incompatible(message)) => {
                     let error = io::Error::new(io::ErrorKind::InvalidData, message);
-                    fail_attempt(
+                    fail_startup_attempt(
                         &app,
                         generation,
                         FailureReport::from_error(FailureKind::Compatibility, &error),
@@ -396,7 +433,7 @@ fn begin_health_probe(
                     thread::sleep(READINESS_POLL_INTERVAL);
                 }
                 Err(error) => {
-                    fail_attempt(
+                    fail_startup_attempt(
                         &app,
                         generation,
                         FailureReport::from_error(FailureKind::Timeout, &error),
@@ -412,14 +449,11 @@ fn begin_health_probe(
 fn unexpected_exit_report(
     payload: TerminatedPayload,
     command_error: Option<io::Error>,
-    recent_stderr: &str,
 ) -> FailureReport {
-    let stderr_error = (!recent_stderr.trim().is_empty())
-        .then(|| io::Error::other(recent_stderr.trim().to_owned()));
     let error = UnexpectedSidecarExitError {
         code: payload.code,
         signal: payload.signal,
-        source: command_error.or(stderr_error),
+        source: command_error,
     };
     FailureReport::from_error(FailureKind::UnexpectedExit, &error)
 }
@@ -435,7 +469,6 @@ fn monitor_runtime(
     tauri::async_runtime::spawn(async move {
         let mut readiness_probe_started = false;
         let mut runtime_stdout = String::new();
-        let mut recent_stderr = String::new();
         let mut structured_failure = None;
         let mut command_error = None;
         while let Some(event) = events.recv().await {
@@ -445,7 +478,7 @@ fn monitor_runtime(
                     let output = String::from_utf8_lossy(&bytes);
                     eprintln!("[Floway runtime stdout] {output}");
                     if let Err(error) = controller.append_log(SidecarStream::Stdout, &bytes) {
-                        fail_attempt(
+                        fail_current_attempt(
                             &app,
                             generation,
                             FailureReport::from_error(FailureKind::Storage, &error),
@@ -472,7 +505,7 @@ fn monitor_runtime(
                     let output = String::from_utf8_lossy(&bytes);
                     eprintln!("[Floway runtime stderr] {output}");
                     if let Err(error) = controller.append_log(SidecarStream::Stderr, &bytes) {
-                        fail_attempt(
+                        fail_current_attempt(
                             &app,
                             generation,
                             FailureReport::from_error(FailureKind::Storage, &error),
@@ -480,7 +513,6 @@ fn monitor_runtime(
                         );
                         continue;
                     }
-                    append_bounded(&mut recent_stderr, &output);
                     structured_failure = output
                         .lines()
                         .find_map(parse_sidecar_failure)
@@ -497,13 +529,12 @@ fn monitor_runtime(
                     );
                     if controller.supervisor.record_termination() {
                         let report = if controller.phase() == RuntimePhase::Starting {
-                            structured_failure.unwrap_or_else(|| {
-                                unexpected_exit_report(payload, command_error, &recent_stderr)
-                            })
+                            structured_failure
+                                .unwrap_or_else(|| unexpected_exit_report(payload, command_error))
                         } else {
-                            unexpected_exit_report(payload, command_error, &recent_stderr)
+                            unexpected_exit_report(payload, command_error)
                         };
-                        fail_attempt(&app, generation, report, false);
+                        fail_current_attempt(&app, generation, report, false);
                     }
                     return;
                 }
@@ -560,7 +591,7 @@ fn start_runtime(app: &AppHandle) {
                     io::ErrorKind::TimedOut,
                     "Floway runtime did not become healthy within 30 seconds",
                 );
-                fail_attempt(
+                fail_startup_attempt(
                     &timeout_app,
                     generation,
                     FailureReport::from_error(FailureKind::Timeout, &error),
@@ -579,7 +610,7 @@ fn start_runtime(app: &AppHandle) {
         Err(error) => {
             let kind = classify_setup_failure(error.as_ref());
             print_error_chain(error.as_ref());
-            fail_attempt(
+            fail_startup_attempt(
                 app,
                 generation,
                 FailureReport::from_error(kind, error.as_ref()),
@@ -700,7 +731,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 let generation = controller
                     .begin_attempt()
                     .expect("the initial desktop runtime attempt must begin");
-                fail_attempt(
+                fail_startup_attempt(
                     &app_handle,
                     generation,
                     FailureReport::from_error(FailureKind::Storage, &error),

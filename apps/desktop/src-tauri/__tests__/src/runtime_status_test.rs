@@ -10,6 +10,8 @@ use runtime_status::{
     FailureKind, RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT,
     parse_sidecar_failure, validate_health_response_for_test,
 };
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn expected() -> RuntimeCompatibility {
     RuntimeCompatibility {
@@ -84,7 +86,7 @@ fn parses_a_structured_sidecar_failure_without_flattening_its_chain() {
 fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("first attempt must begin");
-    assert!(state.mark_failed(first));
+    assert!(state.mark_startup_failed(first));
     let second = state.begin().expect("failed runtime may restart");
 
     assert_ne!(first, second);
@@ -92,8 +94,30 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     assert!(state.is_starting(second));
     assert!(state.mark_ready(second));
     assert_eq!(state.phase(), RuntimePhase::Ready);
-    assert!(!state.mark_failed(first));
-    assert!(state.mark_failed(second));
+    assert!(!state.mark_startup_failed(first));
+    assert!(state.mark_runtime_failed(second));
+    assert_eq!(state.phase(), RuntimePhase::Failed);
+}
+
+#[test]
+fn a_ready_attempt_cannot_time_out_after_its_deadline() {
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+    let deadline = Instant::now() + Duration::from_millis(1);
+    assert!(state.mark_ready(generation));
+    thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1));
+
+    assert!(!state.mark_startup_failed(generation));
+    assert_eq!(state.phase(), RuntimePhase::Ready);
+}
+
+#[test]
+fn only_the_matching_starting_attempt_can_time_out() {
+    let mut state = RuntimeAttemptState::new();
+    let first = state.begin().expect("attempt must begin");
+    assert!(!state.mark_startup_failed(first.saturating_add(1)));
+    assert!(state.is_starting(first));
+    assert!(state.mark_startup_failed(first));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 

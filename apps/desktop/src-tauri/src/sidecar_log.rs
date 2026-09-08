@@ -42,22 +42,40 @@ impl BoundedSidecarLog {
 
     pub fn append(&mut self, stream: SidecarStream, bytes: &[u8]) -> io::Result<()> {
         let prefix = format!("[{}] ", stream.label());
-        let required = prefix.len().saturating_add(bytes.len()) as u64;
+        let mut record =
+            Vec::with_capacity(prefix.len().saturating_add(bytes.len()).saturating_add(1));
+        record.extend_from_slice(prefix.as_bytes());
+        let text = String::from_utf8_lossy(bytes);
+        let newline_bytes = usize::from(!text.ends_with('\n'));
+        let maximum_record_bytes = usize::try_from(self.max_bytes).unwrap_or(usize::MAX);
+        let available = maximum_record_bytes
+            .saturating_sub(record.len())
+            .saturating_sub(newline_bytes);
+        let mut boundary = text.len().min(available);
+        while !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        record.extend_from_slice(text[..boundary].as_bytes());
+        if newline_bytes == 1 && record.len() < maximum_record_bytes {
+            record.push(b'\n');
+        }
+        record.truncate(maximum_record_bytes);
+
+        let required = record.len() as u64;
         let current = fs::metadata(&self.path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        if current.saturating_add(required) > self.max_bytes {
+        if current > 0 && current.saturating_add(required) > self.max_bytes {
             self.rotate()?;
+        }
+        if record.is_empty() {
+            return Ok(());
         }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        file.write_all(prefix.as_bytes())?;
-        file.write_all(bytes)?;
-        if !bytes.ends_with(b"\n") {
-            file.write_all(b"\n")?;
-        }
+        file.write_all(&record)?;
         file.flush()
     }
 

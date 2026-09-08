@@ -2,7 +2,7 @@
 #[path = "../../src/sidecar_log.rs"]
 mod sidecar_log;
 
-use std::fs::{read_to_string, remove_dir_all};
+use std::fs::{metadata, read, read_to_string, remove_dir_all};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sidecar_log::{BoundedSidecarLog, SidecarStream};
@@ -46,6 +46,31 @@ fn captures_both_streams_and_rotates_with_a_fixed_file_bound() {
         "[stdout] ready\n[stderr] first failure\n",
     );
     assert!(!log.path().with_extension("log.3").exists());
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn truncates_one_oversized_event_to_the_exact_byte_bound_without_splitting_utf8() {
+    let root = temporary_root();
+    let mut log = BoundedSidecarLog::open_for_test(&root, 24, 2).expect("log must open");
+
+    log.append(SidecarStream::Stderr, "故障原因🙂故障原因🙂".as_bytes())
+        .expect("oversized stderr must be bounded");
+
+    let bytes = read(log.path()).expect("active log must be readable");
+    assert!(bytes.len() <= 24);
+    assert_eq!(
+        metadata(log.path()).expect("log metadata must exist").len(),
+        bytes.len() as u64
+    );
+    assert!(std::str::from_utf8(&bytes).is_ok());
+    assert!(
+        read_to_string(log.path())
+            .expect("bounded log must be UTF-8")
+            .starts_with("[stderr] ")
+    );
+    assert!(!log.path().with_extension("log.1").exists());
 
     remove_dir_all(root).expect("fixture cleanup must succeed");
 }
