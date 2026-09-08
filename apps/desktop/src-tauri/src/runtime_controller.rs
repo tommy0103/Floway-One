@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use getrandom::fill;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PageLoadEvent, PageLoadPayload};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
@@ -24,16 +24,17 @@ use crate::desktop_i18n::{DesktopMessages, system_messages};
 use crate::navigation::{
     DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, desktop_action, enforce_dashboard_navigation,
-    is_desktop_status_navigation, ready_dashboard_origin,
+    is_desktop_status_navigation, ready_dashboard_origin, sanitized_page_load_diagnostic,
 };
 use crate::runtime_status::{
-    FailureKind, FailureReport, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
-    STARTUP_TIMEOUT, SidecarFailureDecoder, probe_compatible_runtime,
+    FailureKind, FailureReport, InitialStatusLoadGate, RuntimeAttemptState, RuntimeHealthError,
+    RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder, probe_compatible_runtime,
 };
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
+const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
@@ -123,6 +124,24 @@ fn append_bounded(buffer: &mut String, value: &str) {
             boundary += 1;
         }
         buffer.drain(..boundary);
+    }
+}
+
+fn emit_page_load_diagnostic(payload: &PageLoadPayload<'_>) {
+    let event = match payload.event() {
+        PageLoadEvent::Started => "started",
+        PageLoadEvent::Finished => "finished",
+    };
+    let diagnostic = sanitized_page_load_diagnostic(payload.url(), event);
+    match serde_json::to_string(&diagnostic) {
+        Ok(encoded) if encoded.len() <= MAXIMUM_SURFACE_EVENT_BYTES => {
+            eprintln!("{DESKTOP_PAGE_LOAD_EVENT_PREFIX}{encoded}");
+        }
+        Ok(_) => print_error_chain(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway desktop page-load diagnostic exceeded its byte bound",
+        )),
+        Err(error) => print_error_chain(&error),
     }
 }
 
@@ -797,6 +816,9 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L57-L111
             let navigation_app = app_handle.clone();
             let new_window_app = app_handle.clone();
+            let initial_status_load_gate = Arc::new(InitialStatusLoadGate::default());
+            let page_load_gate = Arc::clone(&initial_status_load_gate);
+            let page_load_app = app_handle.clone();
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -806,6 +828,15 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             .on_new_window(move |candidate, _features| {
                 handle_navigation(&new_window_app, &candidate, true);
                 NewWindowResponse::Deny
+            })
+            .on_page_load(move |_window, payload| {
+                emit_page_load_diagnostic(&payload);
+                if payload.event() == PageLoadEvent::Finished
+                    && is_desktop_status_navigation(payload.url(), false)
+                    && page_load_gate.mark_loaded()
+                {
+                    start_runtime(&page_load_app);
+                }
             })
             .title("Floway")
             .inner_size(720.0, 560.0)
@@ -838,8 +869,31 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                     FailureReport::from_error(FailureKind::Storage, &error),
                     false,
                 );
-            } else {
+            } else if initial_status_load_gate.arm() {
                 start_runtime(&app_handle);
+            } else {
+                let timeout_gate = Arc::clone(&initial_status_load_gate);
+                let timeout_app = app_handle.clone();
+                thread::spawn(move || {
+                    thread::sleep(STARTUP_TIMEOUT);
+                    if !timeout_gate.time_out() {
+                        return;
+                    }
+                    let controller = timeout_app.state::<Arc<DesktopController>>();
+                    let generation = controller
+                        .begin_attempt()
+                        .expect("the initial desktop status timeout must begin an attempt");
+                    let error = io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Floway initial status document did not finish loading within 30 seconds",
+                    );
+                    fail_startup_attempt(
+                        &timeout_app,
+                        generation,
+                        FailureReport::from_error(FailureKind::Asset, &error),
+                        false,
+                    );
+                });
             }
             Ok(())
         })

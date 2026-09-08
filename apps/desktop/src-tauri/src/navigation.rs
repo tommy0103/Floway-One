@@ -2,6 +2,7 @@ use std::error::Error;
 use std::io;
 
 use percent_encoding::percent_decode_str;
+use serde_json::{Value, json};
 use url::Url;
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
@@ -34,6 +35,26 @@ pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {
     }
     (candidate.scheme() == "tauri" && candidate.host_str() == Some("localhost"))
         || (candidate.scheme() == "http" && candidate.host_str() == Some("tauri.localhost"))
+}
+
+pub fn sanitized_page_load_diagnostic(url: &Url, event: &str) -> Value {
+    let bootstrap_authority = url.fragment().is_some_and(|fragment| {
+        url::form_urlencoded::parse(fragment.as_bytes())
+            .any(|(key, _value)| key == PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY)
+    });
+    let surface = if is_desktop_status_navigation(url, false) {
+        "desktop-status"
+    } else if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") {
+        "dashboard"
+    } else {
+        "other"
+    };
+    json!({
+        "bootstrapAuthority": bootstrap_authority,
+        "event": event,
+        "route": url.path(),
+        "surface": surface,
+    })
 }
 
 fn has_valid_percent_encoding(value: &str) -> bool {

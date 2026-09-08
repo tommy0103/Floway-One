@@ -1,6 +1,9 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
-import { initPersonalDashboardBootstrap } from '../../../src/control-plane/auth/personal-bootstrap.ts';
+import {
+  initPersonalDashboardBootstrap,
+  PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX,
+} from '../../../src/control-plane/auth/personal-bootstrap.ts';
 import { getRepo } from '../../../src/repo/index.ts';
 import { requestApp, setupAppTest } from '../../test-utils/app.ts';
 import { initRuntimeProfile } from '@floway-dev/platform';
@@ -38,6 +41,7 @@ test('exchanges the personal bootstrap authority once without reaching the acces
   const { repo } = await setupAppTest();
   initialize();
   const accessLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  const lifecycleLog = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
   const response = await exchange();
   assertEquals(response.status, 200);
@@ -48,6 +52,9 @@ test('exchanges the personal bootstrap authority once without reaching the acces
   assertEquals(body.user.isAdmin, true);
   expect(await repo.sessions.getByIdAndTouch(body.token)).not.toBeNull();
   expect(accessLog).not.toHaveBeenCalled();
+  expect(lifecycleLog).toHaveBeenCalledWith(
+    `${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"completed"}`,
+  );
 
   const replay = await exchange();
   assertEquals(replay.status, 401);
@@ -67,6 +74,7 @@ test('rejects foreign and missing origins without consuming the valid authority'
 test('rejects expired and mismatched authorities without issuing sessions', async () => {
   const { repo } = await setupAppTest();
   const createSession = vi.spyOn(repo.sessions, 'create');
+  const lifecycleLog = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   initialize(Date.now() - 1);
 
   assertEquals((await exchange()).status, 401);
@@ -77,6 +85,10 @@ test('rejects expired and mismatched authorities without issuing sessions', asyn
   expect(createSession).not.toHaveBeenCalled();
   assertEquals((await exchange()).status, 200);
   expect(createSession).toHaveBeenCalledTimes(1);
+  expect(lifecycleLog).toHaveBeenCalledWith(
+    `${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"rejected"}`,
+  );
+  expect(lifecycleLog.mock.calls.flat().join('\n')).not.toContain(TOKEN);
 });
 
 test('two concurrent HTTP exchanges create exactly one durable owner session', async () => {
@@ -137,6 +149,7 @@ test('seals a failed exchange while retaining the redacted internal error chain'
   expect(raw).not.toContain(TOKEN);
 
   const logged = diagnostics.join('\n');
+  expect(logged).toContain(`${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"failed"}`);
   expect(logged).toContain('outer session failure');
   expect(logged).toContain('inner persistence failure [bootstrap-token]');
   expect(logged).not.toContain(TOKEN);

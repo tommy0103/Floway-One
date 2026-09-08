@@ -3,6 +3,7 @@ use floway_desktop::{
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
     PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
     enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
+    sanitized_page_load_diagnostic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,24 @@ fn owns_bootstrap_and_ready_protocol_constants() {
         ready_dashboard_origin("migration complete\nFloway listening on http://127.0.0.1:9217\n"),
         Some("http://127.0.0.1:9217")
     );
+}
+
+#[test]
+fn page_load_diagnostics_expose_state_without_bootstrap_authority() {
+    let token = "34".repeat(32);
+    let url = url::Url::parse(&format!("http://127.0.0.1:8788/#floway-bootstrap={token}")).unwrap();
+    let diagnostic = sanitized_page_load_diagnostic(&url, "finished");
+
+    assert_eq!(
+        diagnostic,
+        serde_json::json!({
+            "bootstrapAuthority": true,
+            "event": "finished",
+            "route": "/",
+            "surface": "dashboard",
+        })
+    );
+    assert!(!diagnostic.to_string().contains(&token));
 }
 
 #[test]

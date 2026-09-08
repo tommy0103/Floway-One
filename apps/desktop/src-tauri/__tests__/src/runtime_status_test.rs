@@ -7,8 +7,9 @@ mod runtime_status;
 
 use bundle_contract::RuntimeCompatibility;
 use runtime_status::{
-    FailureKind, RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT,
-    SidecarFailureDecoder, parse_sidecar_failure, validate_health_response_for_test,
+    FailureKind, InitialStatusLoadGate, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
+    STARTUP_TIMEOUT, SidecarFailureDecoder, parse_sidecar_failure,
+    validate_health_response_for_test,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -140,4 +141,34 @@ fn only_the_matching_starting_attempt_can_time_out() {
 #[test]
 fn startup_deadline_is_finite_and_user_visible() {
     assert_eq!(STARTUP_TIMEOUT.as_secs(), 30);
+}
+
+#[test]
+fn delayed_initial_status_load_releases_runtime_start_exactly_once() {
+    let gate = InitialStatusLoadGate::default();
+
+    assert!(!gate.arm());
+    assert!(gate.mark_loaded());
+    assert!(!gate.mark_loaded());
+    assert!(!gate.arm());
+}
+
+#[test]
+fn early_initial_status_load_waits_for_runtime_setup_before_starting() {
+    let gate = InitialStatusLoadGate::default();
+
+    assert!(!gate.mark_loaded());
+    assert!(gate.arm());
+    assert!(!gate.arm());
+    assert!(!gate.mark_loaded());
+}
+
+#[test]
+fn an_initial_status_timeout_prevents_a_late_runtime_start() {
+    let gate = InitialStatusLoadGate::default();
+
+    assert!(!gate.arm());
+    assert!(gate.time_out());
+    assert!(!gate.mark_loaded());
+    assert!(!gate.time_out());
 }

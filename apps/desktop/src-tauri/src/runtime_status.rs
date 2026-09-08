@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -15,6 +16,58 @@ const DESKTOP_HEALTH_PATH: &str = "/api/desktop/health";
 const HEALTH_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const MAXIMUM_HEALTH_RESPONSE_BYTES: u64 = 64 * 1024;
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Default)]
+struct InitialStatusLoadState {
+    armed: bool,
+    loaded: bool,
+    settled: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct InitialStatusLoadGate {
+    state: Mutex<InitialStatusLoadState>,
+}
+
+impl InitialStatusLoadGate {
+    pub fn arm(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.armed = true;
+        Self::claim_start(&mut state)
+    }
+
+    pub fn mark_loaded(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.loaded = true;
+        Self::claim_start(&mut state)
+    }
+
+    pub fn time_out(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.settled {
+            return false;
+        }
+        state.settled = true;
+        true
+    }
+
+    fn claim_start(state: &mut InitialStatusLoadState) -> bool {
+        if !state.armed || !state.loaded || state.settled {
+            return false;
+        }
+        state.settled = true;
+        true
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailureKind {
