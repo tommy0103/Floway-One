@@ -6,6 +6,7 @@ import packageManifest from '../package.json' with { type: 'json' };
 export const DESKTOP_RUNTIME_CONTRACT_ENV = 'FLOWAY_DESKTOP_CONTRACT';
 export const DESKTOP_RUNTIME_HEALTH_PATH = '/api/desktop/health';
 export const DESKTOP_RUNTIME_PROTOCOL_VERSION = 1;
+export const DESKTOP_RUNTIME_SCHEMA_VERSION = 4;
 
 export interface DesktopRuntimeCompatibility {
   readonly contractDigest: string;
@@ -37,7 +38,7 @@ export const loadDesktopRuntimeCompatibility = (
   };
   const protocolVersion = contract.compatibility?.protocolVersion;
   const releaseVersion = contract.compatibility?.releaseVersion;
-  if (contract.schemaVersion !== 3) {
+  if (contract.schemaVersion !== DESKTOP_RUNTIME_SCHEMA_VERSION) {
     throw new Error(`Floway desktop bundle schema ${String(contract.schemaVersion)} is incompatible with this runtime`);
   }
   if (protocolVersion !== DESKTOP_RUNTIME_PROTOCOL_VERSION) {
