@@ -100,7 +100,7 @@ fn accepts_only_bounded_typed_recovery_support_state() {
 }
 
 #[test]
-fn rejects_untyped_or_unbounded_rendered_recovery_reports() {
+fn rejects_untyped_or_inconsistent_recovery_support_reports() {
     for surface in [
         serde_json::json!({ "failureKind": "constructor" }),
         serde_json::json!({

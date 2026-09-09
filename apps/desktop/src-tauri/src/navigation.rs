@@ -34,20 +34,20 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
         let fields = surface.as_object().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic must be an object",
+                "Floway recovery support diagnostic must be an object",
             )
         })?;
         if fields.len() != 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic has an invalid field count",
+                "Floway recovery support diagnostic has an invalid field count",
             ));
         }
         let value = |key: &str| -> Result<&str, io::Error> {
             fields.get(key).and_then(Value::as_str).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Floway rendered failure diagnostic has an invalid {key} field"),
+                    format!("Floway recovery support diagnostic has an invalid {key} field"),
                 )
             })
         };
@@ -66,14 +66,14 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic has an unknown failure kind",
+                "Floway recovery support diagnostic has an unknown failure kind",
             ));
         }
         let locale = value("locale")?;
         if !matches!(locale, "en" | "zh-Hans") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic has an unknown locale",
+                "Floway recovery support diagnostic has an unknown locale",
             ));
         }
         let restart_enabled = fields
@@ -82,7 +82,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Floway rendered failure diagnostic has an invalid restartEnabled field",
+                    "Floway recovery support diagnostic has an invalid restartEnabled field",
                 )
             })?;
         let actions = fields
@@ -91,7 +91,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Floway rendered failure diagnostic has an invalid actions field",
+                    "Floway recovery support diagnostic has an invalid actions field",
                 )
             })?;
         let expected_actions = if restart_enabled {
@@ -105,7 +105,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
         if actions != &expected_actions {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic actions do not match recovery readiness",
+                "Floway recovery support diagnostic actions do not match recovery readiness",
             ));
         }
         Ok(json!({
