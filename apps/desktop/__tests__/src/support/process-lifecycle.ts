@@ -195,6 +195,18 @@ export const appEnvironmentWithoutPortOverride = (
   return environment;
 };
 
+const desktopAppArguments = (
+  applicationHome: string,
+  locale: 'en' | 'zh-Hans' = 'en',
+): string[] => [
+  '-AppleLanguages',
+  locale === 'zh-Hans' ? '(zh-Hans)' : '(en)',
+  '-AppleLocale',
+  locale === 'zh-Hans' ? 'zh_CN' : 'en_US',
+  '--data-dir',
+  applicationHome,
+];
+
 export const assertBoundedSidecarLogs = async (
   applicationHome: string,
   expectedFragments: readonly string[],
@@ -283,7 +295,7 @@ export const observePackagedFailureSurface = async (options: {
   const { child, output } = captureApp(
     options.executable,
     appEnvironmentWithoutPortOverride(options.expectedLocale),
-    ['--data-dir', options.applicationHome],
+    desktopAppArguments(options.applicationHome, options.expectedLocale),
   );
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
   const observedSidecars = new Set<number>();
