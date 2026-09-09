@@ -60,6 +60,7 @@ export default function DesktopStatus() {
   const [ipcReady, setIpcReady] = useState(false);
   const failed = status.state === 'failed';
   const surface = useRef<HTMLDivElement>(null);
+  const statusRevision = useRef(0);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -68,11 +69,17 @@ export default function DesktopStatus() {
     void (async () => {
       unlisten = await listen<{ readonly kind?: unknown; readonly state?: unknown }>(
         'floway-desktop-status',
-        event => setStatus(parseDesktopStatusValues(event.payload.state, event.payload.kind)),
+        event => {
+          statusRevision.current += 1;
+          setStatus(parseDesktopStatusValues(event.payload.state, event.payload.kind));
+        },
       );
+      const snapshotRevision = statusRevision.current;
       const current = await invoke<{ readonly kind?: unknown; readonly state?: unknown }>('desktop_runtime_status');
       if (!disposed) {
-        setStatus(parseDesktopStatusValues(current.state, current.kind));
+        if (statusRevision.current === snapshotRevision) {
+          setStatus(parseDesktopStatusValues(current.state, current.kind));
+        }
         setIpcReady(true);
       } else unlisten();
     })().catch(() => {

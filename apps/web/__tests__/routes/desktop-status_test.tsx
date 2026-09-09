@@ -113,3 +113,34 @@ test('reports recovery only after the native IPC state has been reconciled', asy
     }),
   ));
 });
+
+test('does not let an older status snapshot overwrite a newer runtime event', async () => {
+  let resolveStatus: ((status: { readonly kind?: string; readonly state: string }) => void) | undefined;
+  let publishStatus: ((event: { readonly payload: { readonly kind?: string; readonly state: string } }) => void) | undefined;
+  const currentStatus = new Promise<{ readonly kind?: string; readonly state: string }>(resolve => {
+    resolveStatus = resolve;
+  });
+  tauri.isTauri.mockReturnValue(true);
+  tauri.listen.mockImplementation(async (_event, listener) => {
+    publishStatus = listener;
+    return vi.fn();
+  });
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') return await currentStatus;
+    return undefined;
+  });
+  const router = createMemoryRouter([{
+    path: '/desktop-status',
+    element: <DesktopStatus />,
+  }], {
+    initialEntries: ['/desktop-status'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('desktop_runtime_status'));
+  publishStatus?.({ payload: { kind: 'port', state: 'failed' } });
+  resolveStatus?.({ state: 'starting' });
+
+  await waitFor(() => expect(screen.getByText(/configured local port is unavailable/i)).toBeTruthy());
+  expect(screen.queryByText(/starting the local gateway/i)).toBeNull();
+});
