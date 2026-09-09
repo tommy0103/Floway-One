@@ -275,6 +275,7 @@ export const observePackagedFailureSurface = async (options: {
   readonly executable: string;
   readonly expectedFragments: readonly string[];
   readonly expectedLocale?: 'en' | 'zh-Hans';
+  readonly expectedLogsAvailable?: boolean;
   readonly failureKind: string;
   readonly forbiddenSnapshotText?: readonly string[];
   readonly nativeWindowProbe: string;
@@ -308,6 +309,7 @@ export const observePackagedFailureSurface = async (options: {
     'FLOWAY_DESKTOP_SURFACE ',
     'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
     '"restartEnabled":true',
+    `"logsAvailable":${options.expectedLogsAvailable ?? true}`,
   ];
   const observeUntil = async (deadline: number, expected: readonly string[]): Promise<void> => {
     while (Date.now() < deadline) {
@@ -340,6 +342,7 @@ export const observePackagedFailureSurface = async (options: {
   }
   await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
     expectedLocale: options.expectedLocale,
+    expectedLogsAvailable: options.expectedLogsAvailable,
     failureKind: options.failureKind,
     forbiddenSnapshotText: options.forbiddenSnapshotText ?? options.expectedFragments,
   });

@@ -41,6 +41,7 @@ const zhHansCN = {
       status: {
         attention: '需要处理',
         detailsInLogs: '详细诊断信息可在日志中查看。',
+        detailsInStandardError: '日志目录不可用。请查看 Floway 的标准错误输出以获取原始故障信息。',
         failedTitle: 'Floway 无法启动本机 Gateway',
         failures: {
           asset: 'Dashboard 文件缺失，或与当前 Floway 版本不匹配。',

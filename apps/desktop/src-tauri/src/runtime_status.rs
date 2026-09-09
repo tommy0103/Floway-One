@@ -159,9 +159,37 @@ pub enum RuntimePhase {
 
 #[derive(Debug)]
 pub struct RuntimeAttemptState {
+    failure_kind: Option<FailureKind>,
     generation: u64,
+    logs_available: bool,
     phase: RuntimePhase,
     restart_available: bool,
+    revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DesktopRuntimeStatus {
+    pub failure_kind: Option<FailureKind>,
+    pub logs_available: bool,
+    pub phase: RuntimePhase,
+    pub restart_available: bool,
+    pub revision: u64,
+}
+
+impl DesktopRuntimeStatus {
+    pub fn to_wire_value(self) -> Value {
+        serde_json::json!({
+            "kind": self.failure_kind.map(FailureKind::as_str),
+            "logsAvailable": self.logs_available,
+            "restartEnabled": self.restart_available,
+            "revision": self.revision,
+            "state": match self.phase {
+                RuntimePhase::Failed => "failed",
+                RuntimePhase::Ready => "ready",
+                RuntimePhase::Starting => "starting",
+            },
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -262,9 +290,12 @@ impl SidecarFailureDecoder {
 impl RuntimeAttemptState {
     pub fn new() -> Self {
         Self {
+            failure_kind: None,
             generation: 0,
+            logs_available: false,
             phase: RuntimePhase::Failed,
             restart_available: false,
+            revision: 0,
         }
     }
 
@@ -277,8 +308,10 @@ impl RuntimeAttemptState {
             return None;
         }
         self.generation = self.generation.saturating_add(1);
+        self.failure_kind = None;
         self.phase = RuntimePhase::Starting;
         self.restart_available = false;
+        self.revision = self.revision.saturating_add(1);
         Some(self.generation)
     }
 
@@ -291,34 +324,53 @@ impl RuntimeAttemptState {
             return Ok(false);
         }
         effects(self)?;
+        self.failure_kind = None;
         self.phase = RuntimePhase::Ready;
         self.restart_available = false;
+        self.revision = self.revision.saturating_add(1);
         Ok(true)
     }
 
-    pub fn mark_startup_failed(&mut self, generation: u64) -> bool {
+    pub fn mark_startup_failed(&mut self, generation: u64, kind: FailureKind) -> bool {
         if self.generation != generation || self.phase != RuntimePhase::Starting {
             return false;
         }
+        self.failure_kind = Some(kind);
         self.phase = RuntimePhase::Failed;
         self.restart_available = false;
+        self.revision = self.revision.saturating_add(1);
         true
     }
 
-    pub fn mark_failed(&mut self, generation: u64) -> bool {
+    pub fn mark_failed(&mut self, generation: u64, kind: FailureKind) -> bool {
         if self.generation != generation || self.phase == RuntimePhase::Failed {
             return false;
         }
+        self.failure_kind = Some(kind);
         self.phase = RuntimePhase::Failed;
         self.restart_available = false;
+        self.revision = self.revision.saturating_add(1);
         true
     }
 
     pub fn complete_teardown(&mut self, generation: u64) -> bool {
-        if self.generation != generation || self.phase != RuntimePhase::Failed {
+        if self.generation != generation
+            || self.phase != RuntimePhase::Failed
+            || self.restart_available
+        {
             return false;
         }
         self.restart_available = true;
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    pub fn set_logs_available(&mut self, available: bool) -> bool {
+        if self.logs_available == available {
+            return false;
+        }
+        self.logs_available = available;
+        self.revision = self.revision.saturating_add(1);
         true
     }
 
@@ -332,6 +384,16 @@ impl RuntimeAttemptState {
 
     pub fn restart_available(&self) -> bool {
         self.restart_available
+    }
+
+    pub fn status(&self) -> DesktopRuntimeStatus {
+        DesktopRuntimeStatus {
+            failure_kind: self.failure_kind,
+            logs_available: self.logs_available,
+            phase: self.phase,
+            restart_available: self.restart_available,
+            revision: self.revision,
+        }
     }
 }
 

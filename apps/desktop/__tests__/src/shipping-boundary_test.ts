@@ -59,7 +59,7 @@ test('the Node entry does not relabel every untyped startup failure as a native 
   expect(entry).not.toContain("reportDesktopStartupFailure(failure, 'native-dependency')");
 });
 
-test('issue 16 recovery adds no issue 17 general lifetime policy', async () => {
+test('runtime recovery adds no general application lifetime policy', async () => {
   const sources = await Promise.all([
     'apps/desktop/src-tauri/src/app.rs',
     'apps/desktop/src-tauri/src/runtime_controller.rs',
@@ -79,8 +79,7 @@ test('issue 16 recovery adds no issue 17 general lifetime policy', async () => {
   ]) {
     expect(combined).not.toContain(deferredPolicy);
   }
-  expect(combined).toContain('failure-only restart transition');
-  expect(combined).toContain('automatic restart,');
+  expect(combined).toContain('Owns only packaged child registration, termination, and teardown settlement.');
   expect(combined).toContain('TrayIconBuilder');
   expect(combined).toContain('restart_failed_runtime');
   expect(combined).toContain('RunEvent::ExitRequested');

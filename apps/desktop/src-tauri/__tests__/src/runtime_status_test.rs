@@ -106,7 +106,7 @@ fn decodes_a_structured_failure_split_across_stderr_events() {
 fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("first attempt must begin");
-    assert!(state.mark_startup_failed(first));
+    assert!(state.mark_startup_failed(first, FailureKind::Port));
     assert!(state.complete_teardown(first));
     let second = state.begin().expect("failed runtime may restart");
 
@@ -123,8 +123,8 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
             .expect("ready transition must succeed")
     );
     assert_eq!(state.phase(), RuntimePhase::Ready);
-    assert!(!state.mark_startup_failed(first));
-    assert!(state.mark_failed(second));
+    assert!(!state.mark_startup_failed(first, FailureKind::Timeout));
+    assert!(state.mark_failed(second, FailureKind::UnexpectedExit));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 
@@ -140,7 +140,7 @@ fn a_ready_attempt_cannot_time_out_after_its_deadline() {
     );
     thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1));
 
-    assert!(!state.mark_startup_failed(generation));
+    assert!(!state.mark_startup_failed(generation, FailureKind::Timeout));
     assert_eq!(state.phase(), RuntimePhase::Ready);
 }
 
@@ -168,7 +168,7 @@ fn ready_effects_finish_before_the_attempt_can_become_ready() {
 fn a_failed_attempt_rejects_all_late_ready_effects() {
     let mut state = RuntimeAttemptState::new();
     let generation = state.begin().expect("attempt must begin");
-    assert!(state.mark_startup_failed(generation));
+    assert!(state.mark_startup_failed(generation, FailureKind::Migration));
     let mut effects_ran = false;
 
     assert!(
@@ -206,7 +206,12 @@ fn termination_waiting_on_ready_effects_applies_failed_last() {
     effects_started_rx.recv().unwrap();
 
     let failed_state = Arc::clone(&state);
-    let failed = thread::spawn(move || failed_state.lock().unwrap().mark_failed(generation));
+    let failed = thread::spawn(move || {
+        failed_state
+            .lock()
+            .unwrap()
+            .mark_failed(generation, FailureKind::UnexpectedExit)
+    });
     finish_effects_tx.send(()).unwrap();
 
     assert!(ready.join().unwrap());
@@ -218,9 +223,9 @@ fn termination_waiting_on_ready_effects_applies_failed_last() {
 fn only_the_matching_starting_attempt_can_time_out() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("attempt must begin");
-    assert!(!state.mark_startup_failed(first.saturating_add(1)));
+    assert!(!state.mark_startup_failed(first.saturating_add(1), FailureKind::Timeout));
     assert!(state.is_starting(first));
-    assert!(state.mark_startup_failed(first));
+    assert!(state.mark_startup_failed(first, FailureKind::Timeout));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 
@@ -263,7 +268,7 @@ fn an_initial_status_timeout_prevents_a_late_runtime_start() {
 fn restart_stays_unavailable_until_the_failed_attempt_finishes_teardown() {
     let mut state = RuntimeAttemptState::new();
     let generation = state.begin().expect("attempt must begin");
-    assert!(state.mark_failed(generation));
+    assert!(state.mark_failed(generation, FailureKind::Storage));
 
     assert!(!state.restart_available());
     assert!(state.begin().is_none());
@@ -276,6 +281,44 @@ fn restart_stays_unavailable_until_the_failed_attempt_finishes_teardown() {
     assert!(!state.restart_available());
     assert!(state.begin().is_none());
     assert_ne!(restarted, generation);
+}
+
+#[test]
+fn status_snapshots_are_atomic_and_monotonically_revisioned() {
+    let mut state = RuntimeAttemptState::new();
+    let initial = state.status();
+    let generation = state.begin().expect("attempt must begin");
+    state.set_logs_available(true);
+    let starting = state.status();
+    assert!(starting.revision > initial.revision);
+    assert_eq!(starting.phase, RuntimePhase::Starting);
+    assert_eq!(starting.failure_kind, None);
+    assert!(!starting.restart_available);
+    assert!(starting.logs_available);
+
+    assert!(state.mark_startup_failed(generation, FailureKind::Storage));
+    let failed = state.status();
+    assert!(failed.revision > starting.revision);
+    assert_eq!(failed.phase, RuntimePhase::Failed);
+    assert_eq!(failed.failure_kind, Some(FailureKind::Storage));
+    assert!(!failed.restart_available);
+    assert!(failed.logs_available);
+
+    assert!(state.complete_teardown(generation));
+    let settled = state.status();
+    assert!(settled.revision > failed.revision);
+    assert_eq!(settled.failure_kind, Some(FailureKind::Storage));
+    assert!(settled.restart_available);
+    assert_eq!(
+        settled.to_wire_value(),
+        serde_json::json!({
+            "kind": "storage",
+            "logsAvailable": true,
+            "restartEnabled": true,
+            "revision": settled.revision,
+            "state": "failed",
+        })
+    );
 }
 
 #[test]

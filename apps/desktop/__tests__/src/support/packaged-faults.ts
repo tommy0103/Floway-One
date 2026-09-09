@@ -59,6 +59,7 @@ export const assertPortAndStorageFailureSurfaces = async (
     applicationHome,
     executable: context.executable,
     expectedFragments: ['Permission denied'],
+    expectedLogsAvailable: false,
     failureKind: 'storage',
     nativeWindowProbe,
   });

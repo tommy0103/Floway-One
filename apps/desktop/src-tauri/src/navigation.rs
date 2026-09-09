@@ -37,7 +37,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
                 "Floway recovery support diagnostic must be an object",
             )
         })?;
-        if fields.len() != 4 {
+        if fields.len() != 6 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Floway recovery support diagnostic has an invalid field count",
@@ -85,6 +85,25 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
                     "Floway recovery support diagnostic has an invalid restartEnabled field",
                 )
             })?;
+        let logs_available = fields
+            .get("logsAvailable")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid logsAvailable field",
+                )
+            })?;
+        let revision = fields
+            .get("revision")
+            .and_then(Value::as_u64)
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid revision field",
+                )
+            })?;
         let actions = fields
             .get("actions")
             .and_then(Value::as_array)
@@ -94,14 +113,13 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
                     "Floway recovery support diagnostic has an invalid actions field",
                 )
             })?;
-        let expected_actions = if restart_enabled {
-            vec![
-                Value::String("restart".to_owned()),
-                Value::String("open-logs".to_owned()),
-            ]
-        } else {
-            vec![Value::String("open-logs".to_owned())]
-        };
+        let mut expected_actions = Vec::new();
+        if restart_enabled {
+            expected_actions.push(Value::String("restart".to_owned()));
+        }
+        if logs_available {
+            expected_actions.push(Value::String("open-logs".to_owned()));
+        }
         if actions != &expected_actions {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -111,8 +129,10 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
         Ok(json!({
             "actions": actions,
             "failureKind": failure_kind,
+            "logsAvailable": logs_available,
             "locale": locale,
             "restartEnabled": restart_enabled,
+            "revision": revision,
         }))
     })()
 }

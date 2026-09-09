@@ -30,15 +30,17 @@ test('packaged native observation combines actual Tauri objects with an external
     readFile(resolve(desktopRoot, 'src-tauri/src/runtime_controller.rs'), 'utf8'),
   ]);
   for (const boundary of [
+    'AXUIElementCreateApplication(',
+    'AXUIElementCopyAttributeValue(',
+    'AXUIElementCopyActionNames(',
     'CGWindowListCopyWindowInfo(',
     'kCGWindowOwnerPID',
     'kCGWindowLayer',
   ]) {
     expect(probe).toContain(boundary);
   }
-  for (const forbidden of ['ApplicationServices', 'AXUIElement', 'AXIsProcessTrusted']) {
-    expect(probe).not.toContain(forbidden);
-  }
+  expect(probe).toContain('ApplicationServices');
+  expect(probe).not.toContain('AXIsProcessTrusted');
   for (const actualObjectRead of [
     'controller.tray.diagnostic_snapshot()',
     'window.is_visible()',

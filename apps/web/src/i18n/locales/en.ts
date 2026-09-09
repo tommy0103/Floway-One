@@ -43,6 +43,7 @@ const en = {
       status: {
         attention: 'Needs attention',
         detailsInLogs: 'Detailed diagnostics are available in the logs.',
+        detailsInStandardError: 'The log directory is unavailable. Review Floway’s standard error output for the original failure.',
         failedTitle: 'Floway could not start the local Gateway',
         failures: {
           asset: 'Dashboard files are missing or do not match this Floway release.',

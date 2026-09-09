@@ -85,8 +85,10 @@ fn accepts_only_bounded_typed_recovery_support_state() {
     let surface = serde_json::json!({
         "actions": ["restart", "open-logs"],
         "failureKind": "port",
+        "logsAvailable": true,
         "locale": "en",
         "restartEnabled": true,
+        "revision": 4,
     });
     let diagnostic =
         recovery_surface_diagnostic(&surface).expect("bounded recovery state must be accepted");
@@ -106,14 +108,18 @@ fn rejects_untyped_or_inconsistent_recovery_support_reports() {
         serde_json::json!({
             "actions": ["restart", "open-logs"],
             "failureKind": "port",
+            "logsAvailable": true,
             "locale": "en",
             "restartEnabled": false,
+            "revision": 4,
         }),
         serde_json::json!({
             "actions": ["restart", "open-logs"],
             "failureKind": "port",
+            "logsAvailable": true,
             "locale": "en",
             "restartEnabled": true,
+            "revision": 4,
             "title": "arbitrary rendered text",
         }),
     ] {

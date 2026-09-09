@@ -31,8 +31,8 @@ use crate::navigation::{
     sanitized_page_load_diagnostic,
 };
 use crate::runtime_status::{
-    DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate, RuntimeAttemptState,
-    RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
+    DesktopRuntimeStatus, DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate,
+    RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
     apply_recovery_surface, probe_compatible_runtime,
 };
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
@@ -177,7 +177,12 @@ impl DesktopTray {
         })
     }
 
-    fn set_phase(&self, phase: RuntimePhase, restart_enabled: bool) -> Result<(), Box<dyn Error>> {
+    fn set_phase(
+        &self,
+        phase: RuntimePhase,
+        restart_enabled: bool,
+        logs_enabled: bool,
+    ) -> Result<(), Box<dyn Error>> {
         let (label, tooltip) = match phase {
             RuntimePhase::Starting => (
                 self.messages.status_starting,
@@ -191,6 +196,7 @@ impl DesktopTray {
         };
         self.status.set_text(label)?;
         self.restart.set_enabled(restart_enabled)?;
+        self.logs.set_enabled(logs_enabled)?;
         self._icon.set_tooltip(Some(tooltip))?;
         Ok(())
     }
@@ -220,7 +226,6 @@ struct DesktopController {
     dashboard_policy: RwLock<Option<DashboardNavigationPolicy>>,
     log: Mutex<Option<BoundedSidecarLog>>,
     logs_dir: PathBuf,
-    failure_kind: Mutex<Option<FailureKind>>,
     pending_failure_surface: Mutex<Option<FailureKind>>,
     status_url: Url,
     supervisor: Arc<PackageProcessSupervisor>,
@@ -237,10 +242,6 @@ impl DesktopController {
         *self
             .dashboard_policy
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *self
-            .failure_kind
-            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         Some(generation)
     }
@@ -263,18 +264,18 @@ impl DesktopController {
             .commit_ready(generation, |_attempt| effects())
     }
 
-    fn mark_startup_failed(&self, generation: u64) -> bool {
+    fn mark_startup_failed(&self, generation: u64, kind: FailureKind) -> bool {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_startup_failed(generation)
+            .mark_startup_failed(generation, kind)
     }
 
-    fn mark_failed(&self, generation: u64) -> bool {
+    fn mark_failed(&self, generation: u64, kind: FailureKind) -> bool {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_failed(generation)
+            .mark_failed(generation, kind)
     }
 
     fn phase(&self) -> RuntimePhase {
@@ -298,30 +299,57 @@ impl DesktopController {
             .restart_available()
     }
 
+    fn status(&self) -> DesktopRuntimeStatus {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .status()
+    }
+
+    fn set_logs_available(&self, available: bool) {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_logs_available(available);
+    }
+
     fn append_log(&self, stream: SidecarStream, bytes: &[u8]) -> io::Result<()> {
         let mut log = self
             .log
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if log.is_none() {
-            *log = Some(BoundedSidecarLog::open(&self.logs_dir)?);
-        }
-        log.as_mut()
-            .expect("sidecar log must be initialized")
-            .append(stream, bytes)
+        let result = (|| {
+            if log.is_none() {
+                *log = Some(BoundedSidecarLog::open(&self.logs_dir)?);
+            }
+            log.as_mut()
+                .expect("sidecar log must be initialized")
+                .append(stream, bytes)
+        })();
+        drop(log);
+        self.set_logs_available(result.is_ok());
+        result
     }
+}
+
+fn desktop_status_value(status: DesktopRuntimeStatus) -> serde_json::Value {
+    status.to_wire_value()
+}
+
+fn emit_desktop_status(app: &AppHandle, status: DesktopRuntimeStatus) -> Result<(), tauri::Error> {
+    app.emit(DESKTOP_STATUS_EVENT, desktop_status_value(status))
 }
 
 fn status_url(controller: &DesktopController, report: Option<&FailureReport>) -> Url {
     let mut url = controller.status_url.clone();
     url.set_query(None);
     url.set_fragment(None);
-    let phase = controller.phase();
+    let status = controller.status();
     {
         let mut query = url.query_pairs_mut();
         query.append_pair(
             "state",
-            match phase {
+            match status.phase {
                 RuntimePhase::Failed => "failed",
                 RuntimePhase::Ready => "ready",
                 RuntimePhase::Starting => "starting",
@@ -399,7 +427,7 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: 
 
 fn emit_pending_failure_surface(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>();
-    if !controller.restart_available() {
+    if !controller.status().restart_available {
         return;
     }
     let kind = controller
@@ -435,19 +463,18 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
     if !controller.complete_teardown(generation) {
         return;
     }
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed, true) {
+    let status = controller.status();
+    if let Err(error) = controller.tray.set_phase(
+        RuntimePhase::Failed,
+        status.restart_available,
+        status.logs_available,
+    ) {
         print_error_chain(error.as_ref());
         app.exit(1);
         return;
     }
-    if let Err(error) = app.emit(
-        DESKTOP_STATUS_EVENT,
-        serde_json::json!({
-            "kind": kind.as_str(),
-            "restartEnabled": true,
-            "state": "failed",
-        }),
-    ) {
+    debug_assert_eq!(status.failure_kind, Some(kind));
+    if let Err(error) = emit_desktop_status(app, status) {
         print_error_chain(&error);
         app.exit(1);
         return;
@@ -457,7 +484,12 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
 
 fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed, false) {
+    let status = controller.status();
+    if let Err(error) = controller.tray.set_phase(
+        RuntimePhase::Failed,
+        status.restart_available,
+        status.logs_available,
+    ) {
         print_error_chain(error.as_ref());
         app.exit(1);
     }
@@ -470,18 +502,7 @@ fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop
         "Floway desktop runtime state: failed kind={}",
         report.kind.as_str()
     );
-    *controller
-        .failure_kind
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report.kind);
-    if let Err(error) = app.emit(
-        DESKTOP_STATUS_EVENT,
-        serde_json::json!({
-            "kind": report.kind.as_str(),
-            "restartEnabled": false,
-            "state": "failed",
-        }),
-    ) {
+    if let Err(error) = emit_desktop_status(app, controller.status()) {
         print_error_chain(&error);
         app.exit(1);
     }
@@ -512,14 +533,14 @@ fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop
 
 fn fail_startup_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.mark_startup_failed(generation) {
+    if controller.mark_startup_failed(generation, report.kind) {
         publish_failure(app, generation, report, stop);
     }
 }
 
 fn fail_current_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.mark_failed(generation) {
+    if controller.mark_failed(generation, report.kind) {
         publish_failure(app, generation, report, stop);
     }
 }
@@ -545,7 +566,9 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                 .dashboard_policy
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(policy);
-            controller.tray.set_phase(RuntimePhase::Ready, false)?;
+            controller
+                .tray
+                .set_phase(RuntimePhase::Ready, false, true)?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .navigate(dashboard_url)
@@ -724,15 +747,16 @@ fn start_runtime(app: &AppHandle) {
     let Some(generation) = controller.begin_attempt() else {
         return;
     };
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Starting, false) {
+    if let Err(error) = controller.tray.set_phase(
+        RuntimePhase::Starting,
+        false,
+        controller.status().logs_available,
+    ) {
         print_error_chain(error.as_ref());
         app.exit(1);
         return;
     }
-    if let Err(error) = app.emit(
-        DESKTOP_STATUS_EVENT,
-        serde_json::json!({ "state": "starting" }),
-    ) {
+    if let Err(error) = emit_desktop_status(app, controller.status()) {
         print_error_chain(&error);
     }
     if let Err(error) = show_status(app, None) {
@@ -759,6 +783,7 @@ fn start_runtime(app: &AppHandle) {
                 );
             }
         }
+        controller.set_logs_available(true);
         let resource_dir = app.path().resource_dir().map_err(|source| {
             DesktopStartupError::new(
                 FailureKind::Compatibility,
@@ -844,6 +869,9 @@ fn start_runtime(app: &AppHandle) {
 
 fn open_logs(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>();
+    if !controller.status().logs_available {
+        return;
+    }
     #[allow(deprecated)]
     let result = fs::create_dir_all(&controller.logs_dir).and_then(|()| {
         app.shell()
@@ -916,21 +944,26 @@ fn report_desktop_recovery_surface(
         return Err(error.to_string());
     }
     let controller = app.state::<Arc<DesktopController>>();
-    let failure_kind = controller
-        .failure_kind
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .map(FailureKind::as_str);
-    if controller.phase() != RuntimePhase::Failed
-        || failure_kind
+    let status = controller.status();
+    if status.phase != RuntimePhase::Failed
+        || status.failure_kind.map(FailureKind::as_str)
             != diagnostic
                 .get("failureKind")
                 .and_then(serde_json::Value::as_str)
-        || controller.restart_available()
+        || status.restart_available
             != diagnostic
                 .get("restartEnabled")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
+        || status.logs_available
+            != diagnostic
+                .get("logsAvailable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        || Some(status.revision)
+            != diagnostic
+                .get("revision")
+                .and_then(serde_json::Value::as_u64)
     {
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
@@ -955,20 +988,7 @@ fn report_desktop_recovery_surface(
 #[tauri::command]
 fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
     let controller = app.state::<Arc<DesktopController>>();
-    let phase = controller.phase();
-    let failure_kind = *controller
-        .failure_kind
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    serde_json::json!({
-        "kind": failure_kind.map(FailureKind::as_str),
-        "restartEnabled": controller.restart_available(),
-        "state": match phase {
-            RuntimePhase::Failed => "failed",
-            RuntimePhase::Ready => "ready",
-            RuntimePhase::Starting => "starting",
-        },
-    })
+    desktop_status_value(controller.status())
 }
 
 fn stop_packaged_process(app_handle: &AppHandle) {
@@ -1018,7 +1038,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                     && is_desktop_status_navigation(payload.url(), false)
                 {
                     if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>() {
-                        if controller.restart_available() {
+                        if controller.status().restart_available {
                             emit_pending_failure_surface(&page_load_app);
                         }
                     }
@@ -1049,7 +1069,6 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             let controller = Arc::new(DesktopController {
                 attempts: Mutex::new(RuntimeAttemptState::new()),
                 dashboard_policy: RwLock::new(None),
-                failure_kind: Mutex::new(None),
                 log: Mutex::new(None),
                 logs_dir,
                 pending_failure_surface: Mutex::new(None),

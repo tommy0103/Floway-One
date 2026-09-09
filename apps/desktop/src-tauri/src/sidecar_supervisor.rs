@@ -109,9 +109,9 @@ enum ProcessState {
     Terminated,
 }
 
-/// Owns only the packaged child process. The failure-only restart transition
-/// belongs to #16 recovery; general window, tray, singleton, automatic restart,
-/// autostart, and user-driven lifetime policy remain the responsibility of #17.
+/// Owns only packaged child registration, termination, and teardown settlement.
+/// Window, tray, singleton, autostart, and user-driven lifetime policy stay
+/// outside this process-ownership boundary.
 pub(crate) struct PackageProcessSupervisor {
     changed: Condvar,
     state: Mutex<ProcessState>,

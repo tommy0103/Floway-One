@@ -29,7 +29,9 @@ const isFailureKind = (candidate: string): candidate is keyof typeof failureKeys
 export interface DesktopStatusView {
   readonly failureKind: keyof typeof failureKeys;
   readonly failureKey: (typeof failureKeys)[keyof typeof failureKeys];
+  readonly logsAvailable: boolean;
   readonly restartEnabled: boolean;
+  readonly revision: number;
   readonly state: 'failed' | 'starting';
 }
 
@@ -41,16 +43,25 @@ const parseDesktopStatusValues = (
   stateCandidate: unknown,
   kindCandidate: unknown,
   restartEnabledCandidate: unknown = false,
+  logsAvailableCandidate: unknown = false,
+  revisionCandidate: unknown = 0,
 ): DesktopStatusView => {
   const state = stateCandidate === 'failed' ? 'failed' : 'starting';
   const candidate = typeof kindCandidate === 'string' ? kindCandidate : null;
   const failureKind = candidate !== null && isFailureKind(candidate)
     ? candidate
     : 'unknown';
+  const revision = typeof revisionCandidate === 'number'
+    && Number.isSafeInteger(revisionCandidate)
+    && revisionCandidate >= 0
+    ? revisionCandidate
+    : 0;
   return {
     failureKind,
     failureKey: failureKeys[failureKind],
+    logsAvailable: state === 'failed' && logsAvailableCandidate === true,
     restartEnabled: state === 'failed' && restartEnabledCandidate === true,
+    revision,
     state,
   };
 };
@@ -66,7 +77,6 @@ export default function DesktopStatus() {
   const [ipcReady, setIpcReady] = useState(false);
   const failed = status.state === 'failed';
   const surface = useRef<HTMLDivElement>(null);
-  const statusRevision = useRef(0);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -75,29 +85,39 @@ export default function DesktopStatus() {
     void (async () => {
       unlisten = await listen<{
         readonly kind?: unknown;
+        readonly logsAvailable?: unknown;
         readonly restartEnabled?: unknown;
+        readonly revision?: unknown;
         readonly state?: unknown;
       }>(
         'floway-desktop-status',
         event => {
-          statusRevision.current += 1;
-          setStatus(parseDesktopStatusValues(
+          const next = parseDesktopStatusValues(
             event.payload.state,
             event.payload.kind,
             event.payload.restartEnabled,
-          ));
+            event.payload.logsAvailable,
+            event.payload.revision,
+          );
+          setStatus(current => next.revision > current.revision ? next : current);
         },
       );
-      const snapshotRevision = statusRevision.current;
       const current = await invoke<{
         readonly kind?: unknown;
+        readonly logsAvailable?: unknown;
         readonly restartEnabled?: unknown;
+        readonly revision?: unknown;
         readonly state?: unknown;
       }>('desktop_runtime_status');
       if (!disposed) {
-        if (statusRevision.current === snapshotRevision) {
-          setStatus(parseDesktopStatusValues(current.state, current.kind, current.restartEnabled));
-        }
+        const next = parseDesktopStatusValues(
+          current.state,
+          current.kind,
+          current.restartEnabled,
+          current.logsAvailable,
+          current.revision,
+        );
+        setStatus(status => next.revision > status.revision ? next : status);
         setIpcReady(true);
       } else unlisten();
     })().catch(() => {
@@ -115,15 +135,20 @@ export default function DesktopStatus() {
     const locale = i18n.resolvedLanguage === 'zh-Hans' ? 'zh-Hans' : 'en';
     void invoke('report_desktop_recovery_surface', {
       surface: {
-        actions: status.restartEnabled ? ['restart', 'open-logs'] : ['open-logs'],
+        actions: [
+          ...(status.restartEnabled ? ['restart'] : []),
+          ...(status.logsAvailable ? ['open-logs'] : []),
+        ],
         failureKind: status.failureKind,
+        logsAvailable: status.logsAvailable,
         locale,
         restartEnabled: status.restartEnabled,
+        revision: status.revision,
       },
     }).catch(() => {
       console.error('Floway could not report the rendered desktop recovery surface');
     });
-  }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.restartEnabled]);
+  }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.logsAvailable, status.restartEnabled, status.revision]);
 
   return (
     <div className="contents" ref={surface}>
@@ -138,9 +163,11 @@ export default function DesktopStatus() {
               >
                 {t('desktop.status.restart')}
               </Button>
-              <Button as="a" href="floway-action://open-logs">
-                {t('desktop.status.openLogs')}
-              </Button>
+              {status.logsAvailable
+                ? <Button as="a" href="floway-action://open-logs">
+                    {t('desktop.status.openLogs')}
+                  </Button>
+                : null}
             </>
           : undefined}
         header={
@@ -154,7 +181,9 @@ export default function DesktopStatus() {
         message={failed
           ? <>
               <span data-desktop-failure-kind={status.failureKind}>{t(status.failureKey)}</span>{' '}
-              <span data-desktop-diagnostics="logs-only">{t('desktop.status.detailsInLogs')}</span>
+              <span data-desktop-diagnostics={status.logsAvailable ? 'logs' : 'standard-error'}>
+                {t(status.logsAvailable ? 'desktop.status.detailsInLogs' : 'desktop.status.detailsInStandardError')}
+              </span>
             </>
           : t('desktop.status.startingDescription')}
         title={t(failed ? 'desktop.status.failedTitle' : 'desktop.status.startingTitle')}
