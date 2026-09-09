@@ -36,6 +36,8 @@ test('shipping desktop and Node sources contain no verification modes or environ
   }
   expect(runtimeController).not.toContain('.env("ADMIN_KEY"');
   expect(runtimeController).not.toContain('.env("PORT"');
+  expect(runtimeController).not.toContain('FLOWAY_DESKTOP_LOGS_DIR');
+  expect(runtimeController).toContain('DesktopPaths::from_args(platform_data_dir, std::env::args_os())');
   expect(runtimeController).toContain('.env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())');
   expect(runtimeController).toContain('.navigate(dashboard_url)');
   expect(runtimeController).toContain('ready_dashboard_origin(&runtime_stdout)');
@@ -43,12 +45,18 @@ test('shipping desktop and Node sources contain no verification modes or environ
   expect(runtimeController).toContain('.on_new_window(move |candidate, _features|');
   expect(runtimeController).toContain('NewWindowResponse::Deny');
   const ownerSetup = runtimeController.indexOf('supervisor: PackageProcessSupervisor::new(),');
-  const preflight = runtimeController.indexOf('let runtime = resolve_runtime_bundle(&resource_dir)?;');
-  const registeredSpawn = runtimeController.indexOf('let events = controller.supervisor.spawn_registered(||');
+  const preflight = runtimeController.indexOf('let runtime = resolve_runtime_bundle(&resource_dir).map_err');
+  const registeredSpawn = runtimeController.indexOf('.spawn_registered(||');
   expect(ownerSetup).toBeGreaterThan(-1);
   expect(preflight).toBeGreaterThan(-1);
   expect(registeredSpawn).toBeGreaterThan(preflight);
   expect(supervisor).toContain('Registration shares one lock with stop/termination bookkeeping');
+});
+
+test('the Node entry does not relabel every untyped startup failure as a native dependency', async () => {
+  const entry = await readFile(resolve(repositoryRoot, 'apps/platform-node/entry.ts'), 'utf8');
+  expect(entry).toContain('reportDesktopStartupFailure(failure);');
+  expect(entry).not.toContain("reportDesktopStartupFailure(failure, 'native-dependency')");
 });
 
 test('issue 16 recovery adds no issue 17 general lifetime policy', async () => {
@@ -113,6 +121,8 @@ test('the legacy product identifier remains only in established bundle, app-data
   }
 
   const allowed = occurrences.filter(({ line, path }) => {
+    if (path === 'apps/desktop/src-tauri/src/desktop_paths.rs') return line.includes('.join(');
+    if (path === 'apps/desktop/src-tauri/__tests__/src/desktop_paths_test.rs') return line.includes('PathBuf::from(');
     if (path === 'apps/desktop/src-tauri/src/runtime_controller.rs') return line.includes('.join(');
     if (path === 'apps/platform-node/src/device-master-key-credential-identity.ts') return line.includes('service:');
     if (path === 'apps/platform-node/src/personal-runtime.ts') {

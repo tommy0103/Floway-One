@@ -1,11 +1,14 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, expect, test, vi } from 'vitest';
 
 const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => false),
-  listen: vi.fn(async () => vi.fn()),
+  listen: vi.fn(async (
+    _event: string,
+    _listener: (event: { readonly payload: { readonly kind?: unknown; readonly restartEnabled?: unknown; readonly state?: unknown } }) => void,
+  ) => vi.fn()),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -16,18 +19,21 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import DesktopStatus, { parseDesktopStatus } from '../../src/routes/desktop-status.tsx';
+import { setLanguage } from '../../src/i18n';
 import { renderInApp } from '../render.tsx';
 
-afterEach(() => {
+afterEach(async () => {
   tauri.invoke.mockReset();
   tauri.isTauri.mockReturnValue(false);
   tauri.listen.mockClear();
+  await act(async () => { await setLanguage('en'); });
 });
 
 test('defaults to a bounded startup state without requiring the sidecar', () => {
   expect(parseDesktopStatus(new URLSearchParams())).toEqual({
     failureKind: 'unknown',
     failureKey: 'desktop.status.failures.unknown',
+    restartEnabled: false,
     state: 'starting',
   });
 });
@@ -50,6 +56,7 @@ test('maps every shell failure code to typed localized recovery copy', () => {
     }))).toEqual({
       failureKind: kind,
       failureKey,
+      restartEnabled: false,
       state: 'failed',
     });
   }
@@ -60,6 +67,7 @@ test('rejects inherited and malformed failure kinds at the URL boundary', () => 
     expect(parseDesktopStatus(new URLSearchParams({ kind, state: 'failed' }))).toEqual({
       failureKind: 'unknown',
       failureKey: 'desktop.status.failures.unknown',
+      restartEnabled: false,
       state: 'failed',
     });
   }
@@ -80,13 +88,34 @@ test('renders typed recovery information without echoing arbitrary URL detail', 
     && element.textContent === 'The configured local port is unavailable. Detailed diagnostics are available in the logs.'))
     .toBeTruthy();
   expect(screen.queryByText(/secret stderr/i)).toBeNull();
-  expect(screen.getByRole('link', { name: 'Restart Gateway' }).getAttribute('href')).toBe('floway-action://restart');
+  const restart = screen.getByRole('button', { name: 'Restart Gateway' });
+  expect(restart.getAttribute('aria-disabled')).toBe('true');
+  expect(restart.getAttribute('href')).toBeNull();
   expect(screen.getByRole('link', { name: 'Open logs' }).getAttribute('href')).toBe('floway-action://open-logs');
 });
 
+test('renders the exact Simplified Chinese recovery copy and actions', async () => {
+  await act(async () => { await setLanguage('zh-Hans'); });
+  const router = createMemoryRouter([{
+    path: '/desktop-status',
+    element: <DesktopStatus />,
+  }], {
+    initialEntries: ['/desktop-status?state=failed&kind=storage'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  expect(screen.getByRole('heading', { name: 'Floway 无法启动本机 Gateway' })).toBeTruthy();
+  expect(screen.getByText((_content, element) =>
+    element?.tagName === 'P'
+    && element.textContent === 'Floway 无法读取或写入本机数据或日志。 详细诊断信息可在日志中查看。'))
+    .toBeTruthy();
+  expect(screen.getByRole('button', { name: '重启 Gateway' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByRole('link', { name: '打开日志' }).getAttribute('href')).toBe('floway-action://open-logs');
+});
+
 test('reports recovery only after the native IPC state has been reconciled', async () => {
-  let resolveStatus: ((status: { readonly kind: string; readonly state: string }) => void) | undefined;
-  const currentStatus = new Promise<{ readonly kind: string; readonly state: string }>(resolve => {
+  let resolveStatus: ((status: { readonly kind: string; readonly restartEnabled?: boolean; readonly state: string }) => void) | undefined;
+  const currentStatus = new Promise<{ readonly kind: string; readonly restartEnabled?: boolean; readonly state: string }>(resolve => {
     resolveStatus = resolve;
   });
   tauri.isTauri.mockReturnValue(true);
@@ -103,21 +132,26 @@ test('reports recovery only after the native IPC state has been reconciled', asy
   renderInApp(<RouterProvider router={router} />);
 
   await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('desktop_runtime_status'));
-  expect(tauri.invoke).not.toHaveBeenCalledWith('report_desktop_rendered_surface', expect.anything());
+  expect(tauri.invoke).not.toHaveBeenCalledWith('report_desktop_recovery_surface', expect.anything());
 
-  resolveStatus?.({ kind: 'compatibility', state: 'failed' });
+  resolveStatus?.({ kind: 'compatibility', restartEnabled: true, state: 'failed' });
   await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith(
-    'report_desktop_rendered_surface',
+    'report_desktop_recovery_surface',
     expect.objectContaining({
-      surface: expect.objectContaining({ failureKind: 'compatibility' }),
+      surface: {
+        actions: ['restart', 'open-logs'],
+        failureKind: 'compatibility',
+        locale: 'en',
+        restartEnabled: true,
+      },
     }),
   ));
 });
 
 test('does not let an older status snapshot overwrite a newer runtime event', async () => {
-  let resolveStatus: ((status: { readonly kind?: string; readonly state: string }) => void) | undefined;
-  let publishStatus: ((event: { readonly payload: { readonly kind?: string; readonly state: string } }) => void) | undefined;
-  const currentStatus = new Promise<{ readonly kind?: string; readonly state: string }>(resolve => {
+  let resolveStatus: ((status: { readonly kind?: string; readonly restartEnabled?: boolean; readonly state: string }) => void) | undefined;
+  let publishStatus: ((event: { readonly payload: { readonly kind?: string; readonly restartEnabled?: boolean; readonly state: string } }) => void) | undefined;
+  const currentStatus = new Promise<{ readonly kind?: string; readonly restartEnabled?: boolean; readonly state: string }>(resolve => {
     resolveStatus = resolve;
   });
   tauri.isTauri.mockReturnValue(true);
@@ -138,7 +172,7 @@ test('does not let an older status snapshot overwrite a newer runtime event', as
   renderInApp(<RouterProvider router={router} />);
 
   await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('desktop_runtime_status'));
-  publishStatus?.({ payload: { kind: 'port', state: 'failed' } });
+  publishStatus?.({ payload: { kind: 'port', restartEnabled: true, state: 'failed' } });
   resolveStatus?.({ state: 'starting' });
 
   await waitFor(() => expect(screen.getByText(/configured local port is unavailable/i)).toBeTruthy());

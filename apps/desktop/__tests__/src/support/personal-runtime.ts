@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
-import type { InstalledAppVerificationContext } from './installed-app.ts';
+import { type InstalledAppVerificationContext, writeContractedEntry } from './installed-app.ts';
 import { assertNativeFailureSurface } from './native-surface.ts';
 import {
   appEnvironmentWithoutPortOverride,
@@ -270,13 +270,14 @@ export const assertPersonalRuntime = async (
       await utimes(runtimeStatePath, 1, 1);
       seededRuntimeStateMtime = (await stat(runtimeStatePath)).mtimeMs;
     }
-    await writeFile(context.entry, personalEntrySource(
+    await writeContractedEntry(context, personalEntrySource(
       verificationRoot,
       credentialIdentity,
     ));
     const { child, output } = captureApp(
       context.executable,
-      appEnvironmentWithoutPortOverride(verificationRoot),
+      appEnvironmentWithoutPortOverride(),
+      ['--data-dir', verificationRoot],
     );
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
@@ -355,14 +356,15 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
     cleanup.defer('unexpected-exit application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
     cleanup.defer('unexpected-exit credential', async () => await runCredentialScript(context, credentialIdentity, 'delete'));
     cleanup.defer('unexpected-exit listener', async () => await assertLoopbackPortReleased(port));
-    await writeFile(context.entry, personalEntrySource(
+    await writeContractedEntry(context, personalEntrySource(
       verificationRoot,
       credentialIdentity,
       `setTimeout(() => { throw new Error(${JSON.stringify(parentFailure)}, { cause: new Error(${JSON.stringify(originalCause)}) }); }, 1_500);`,
     ));
     const { child, output } = captureApp(
       context.executable,
-      appEnvironmentWithoutPortOverride(verificationRoot),
+      appEnvironmentWithoutPortOverride(),
+      ['--data-dir', verificationRoot],
     );
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
     const sidecarPid = await waitForDirectChild(child, output);
@@ -373,7 +375,8 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       'Floway packaged runtime exited unexpectedly',
       'Floway desktop runtime state: failed kind=unexpected-exit',
       'FLOWAY_DESKTOP_SURFACE ',
-      'FLOWAY_DESKTOP_RENDERED_SURFACE ',
+      'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+      '"restartEnabled":true',
     ];
     const captured = await waitForOutput(child, output, expected);
     if (child.pid === undefined || !processIsRunning(child.pid)) {
@@ -388,7 +391,11 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
       failureKind: 'unexpected-exit',
       forbiddenSnapshotText: [parentFailure, originalCause],
     });
-    await assertBoundedSidecarLogs(verificationRoot, [parentFailure, originalCause]);
+    await assertBoundedSidecarLogs(verificationRoot, [
+      parentFailure,
+      originalCause,
+      'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+    ]);
     await assertNoDirectChildren(child.pid);
     await assertLoopbackPortReleased(port);
     await terminateProcessGroup(child);

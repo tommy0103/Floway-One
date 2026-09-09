@@ -45,4 +45,18 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
     ] {
         assert!(!message.trim().is_empty());
     }
+    assert_eq!(simplified_chinese.open_logs, "打开日志");
+    assert_eq!(simplified_chinese.restart_gateway, "重启 Gateway");
+    assert_eq!(
+        simplified_chinese.status_needs_attention,
+        "Gateway：需要处理"
+    );
+    assert_eq!(simplified_chinese.status_running, "Gateway：运行中");
+    assert_eq!(simplified_chinese.status_starting, "Gateway：正在启动");
+    assert_eq!(
+        simplified_chinese.tooltip_needs_attention,
+        "Floway：需要处理"
+    );
+    assert_eq!(simplified_chinese.tooltip_running, "Floway：运行中");
+    assert_eq!(simplified_chinese.tooltip_starting, "Floway：正在启动");
 }

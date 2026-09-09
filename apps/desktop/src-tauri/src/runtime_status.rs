@@ -117,6 +117,39 @@ pub struct FailureReport {
     pub kind: FailureKind,
 }
 
+#[derive(Debug)]
+pub struct DesktopStartupError {
+    kind: FailureKind,
+    message: &'static str,
+    source: Box<dyn Error>,
+}
+
+impl DesktopStartupError {
+    pub fn new(kind: FailureKind, message: &'static str, source: impl Error + 'static) -> Self {
+        Self {
+            kind,
+            message,
+            source: Box::new(source),
+        }
+    }
+
+    pub fn kind(&self) -> FailureKind {
+        self.kind
+    }
+}
+
+impl Display for DesktopStartupError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl Error for DesktopStartupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimePhase {
     Failed,
@@ -128,6 +161,65 @@ pub enum RuntimePhase {
 pub struct RuntimeAttemptState {
     generation: u64,
     phase: RuntimePhase,
+    restart_available: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoverySurfaceOperation {
+    Focus,
+    Navigate,
+    Show,
+}
+
+#[derive(Debug)]
+pub struct RecoverySurfaceError<E> {
+    operation: RecoverySurfaceOperation,
+    source: E,
+}
+
+impl<E> RecoverySurfaceError<E> {
+    pub fn operation(&self) -> RecoverySurfaceOperation {
+        self.operation
+    }
+}
+
+impl<E: Error> Display for RecoverySurfaceError<E> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        let operation = match self.operation() {
+            RecoverySurfaceOperation::Focus => "focus",
+            RecoverySurfaceOperation::Navigate => "navigate to",
+            RecoverySurfaceOperation::Show => "show",
+        };
+        write!(
+            formatter,
+            "Floway could not {operation} its recovery surface"
+        )
+    }
+}
+
+impl<E: Error + 'static> Error for RecoverySurfaceError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub fn apply_recovery_surface<E: Error>(
+    navigate: impl FnOnce() -> Result<(), E>,
+    show: impl FnOnce() -> Result<(), E>,
+    focus: impl FnOnce() -> Result<(), E>,
+) -> Result<(), RecoverySurfaceError<E>> {
+    navigate().map_err(|source| RecoverySurfaceError {
+        operation: RecoverySurfaceOperation::Navigate,
+        source,
+    })?;
+    show().map_err(|source| RecoverySurfaceError {
+        operation: RecoverySurfaceOperation::Show,
+        source,
+    })?;
+    focus().map_err(|source| RecoverySurfaceError {
+        operation: RecoverySurfaceOperation::Focus,
+        source,
+    })
 }
 
 #[derive(Default)]
@@ -172,15 +264,21 @@ impl RuntimeAttemptState {
         Self {
             generation: 0,
             phase: RuntimePhase::Failed,
+            restart_available: false,
         }
     }
 
     pub fn begin(&mut self) -> Option<u64> {
-        if self.phase == RuntimePhase::Starting {
+        if self.phase == RuntimePhase::Starting
+            || (self.phase == RuntimePhase::Failed
+                && self.generation > 0
+                && !self.restart_available)
+        {
             return None;
         }
         self.generation = self.generation.saturating_add(1);
         self.phase = RuntimePhase::Starting;
+        self.restart_available = false;
         Some(self.generation)
     }
 
@@ -194,6 +292,7 @@ impl RuntimeAttemptState {
         }
         effects(self)?;
         self.phase = RuntimePhase::Ready;
+        self.restart_available = false;
         Ok(true)
     }
 
@@ -202,6 +301,7 @@ impl RuntimeAttemptState {
             return false;
         }
         self.phase = RuntimePhase::Failed;
+        self.restart_available = false;
         true
     }
 
@@ -210,6 +310,15 @@ impl RuntimeAttemptState {
             return false;
         }
         self.phase = RuntimePhase::Failed;
+        self.restart_available = false;
+        true
+    }
+
+    pub fn complete_teardown(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.phase != RuntimePhase::Failed {
+            return false;
+        }
+        self.restart_available = true;
         true
     }
 
@@ -219,6 +328,10 @@ impl RuntimeAttemptState {
 
     pub fn phase(&self) -> RuntimePhase {
         self.phase
+    }
+
+    pub fn restart_available(&self) -> bool {
+        self.restart_available
     }
 }
 

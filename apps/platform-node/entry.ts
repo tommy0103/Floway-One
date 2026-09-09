@@ -13,7 +13,7 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(
   try {
     await runNodeEntry();
   } catch (failure) {
-    reportDesktopStartupFailure(failure, 'native-dependency');
+    reportDesktopStartupFailure(failure);
     throw failure;
   }
 }

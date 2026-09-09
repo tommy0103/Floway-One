@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInstalledAppVerificationContext } from './support/installed-app.ts';
+import { createInstalledAppVerificationContext, writeContractedEntry } from './support/installed-app.ts';
 import { compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
 import { assertMigrationFailureSurface, assertPortAndStorageFailureSurfaces } from './support/packaged-faults.ts';
@@ -127,7 +127,7 @@ if (launchSupported) {
       console.log(`Floway personal ${phase} fault left no app, sidecar, listener, credential, or data root`);
     }
 
-    await writeFile(context.entry, productionEntry);
+    await writeContractedEntry(context, productionEntry);
     const lazyDashboardAsset = packaged.dashboardAssets.find(asset => asset.path.startsWith('assets/'));
     if (lazyDashboardAsset === undefined) throw new Error('Packaged Dashboard contract names no lazy production asset');
     const installedLazyAsset = resolve(installedApp, 'Contents/Resources/runtime/apps/web/dist/client', lazyDashboardAsset.path);
@@ -140,6 +140,7 @@ if (launchSupported) {
         applicationHome: resolve(isolatedRoot, 'ShellData-missing-asset'),
         executable: context.executable,
         expectedFragments: expected,
+        expectedLocale: 'zh-Hans',
         failureKind: 'asset',
         nativeWindowProbe,
         persistedLogFragments: expected,
@@ -201,7 +202,24 @@ if (launchSupported) {
       });
     });
 
-    await writeFile(context.entry, 'setInterval(() => {}, 60_000);\n');
+    await withFailureSafeCleanup(async faultCleanup => {
+      faultCleanup.defer('tampered-entry restoration', async () => await writeFile(context.entry, productionEntry));
+      await writeFile(context.entry, `${productionEntry}\nthrow new Error('uncontracted entry mutation');\n`);
+      const expected = ['entry digest is stale', context.entry];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-tampered-entry'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'compatibility',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
+    });
+    console.log('Floway production preflight rejected a tampered packaged entry with its exact integrity cause');
+
+    await writeContractedEntry(context, 'setInterval(() => {}, 60_000);\n');
     const blockingFailure = new Error('forced verifier failure with live packaged sidecar');
     try {
       await withFailureSafeCleanup(async blockingCleanup => {
@@ -210,7 +228,8 @@ if (launchSupported) {
         blockingCleanup.defer('blocking shell application data', async () => await rm(blockingHome, { force: true, recursive: true }));
         const { child, output } = captureApp(
           context.executable,
-          appEnvironmentWithoutPortOverride(blockingHome),
+          appEnvironmentWithoutPortOverride(),
+          ['--data-dir', blockingHome],
         );
         blockingCleanup.defer('blocking application process group', async () => await terminateProcessGroup(child));
         const sidecarPid = await waitForDirectChild(child, output);
@@ -221,6 +240,24 @@ if (launchSupported) {
       if (!errorChainIncludes(error, blockingFailure.message)) throw error;
     }
     console.log('Floway forced parent failure terminated its live packaged sidecar and process group');
+
+    await withFailureSafeCleanup(async faultCleanup => {
+      const missingKeyring = `${context.keyringNative}.missing`;
+      await rename(context.keyringNative, missingKeyring);
+      faultCleanup.defer('missing Keyring binding restoration', async () => await rename(missingKeyring, context.keyringNative));
+      const expected = [context.keyringNative, 'No such file'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-missing-keyring'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'native-dependency',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
+    });
+    console.log('Floway production preflight classified a missing .node binding as a native dependency');
 
     await withFailureSafeCleanup(async faultCleanup => {
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
@@ -250,7 +287,7 @@ if (launchSupported) {
     });
     console.log(`Floway corrupted the exact loaded Keyring binding and verified pre-launch native-dependency integrity recovery: ${context.keyringNative}`);
 
-    await writeFile(context.entry, productionEntry);
+    await writeContractedEntry(context, productionEntry);
     await withFailureSafeCleanup(async faultCleanup => {
       const nodeFile = await open(context.node, 'r+');
       faultCleanup.defer('wrong-architecture sidecar file handle', async () => await nodeFile.close());

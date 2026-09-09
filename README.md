@@ -154,6 +154,11 @@ also retained in size-bounded rotating files under the application-data logs
 directory; ordinary Node server mode continues to use its existing console
 behavior.
 
+The desktop executable accepts `--data-dir <absolute-path>` when an operator
+needs its shell logs and support diagnostics beneath a different application
+data root. This changes only Floway-owned desktop data; it does not replace the
+user home directory or operating-system credential store.
+
 Podman users can instead follow the
 [systemd deployment guide](./docker/systemd/README.md).
 

@@ -184,10 +184,11 @@ describe('desktop bundle preparation', () => {
       schemaVersion?: unknown;
       compatibility?: { protocolVersion?: unknown; releaseVersion?: unknown };
       dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
+      entry?: { path?: unknown; sha256?: unknown };
       migrations?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
       nativeDependencies?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
     };
-    expect(contract.schemaVersion).toBe(3);
+    expect(contract.schemaVersion).toBe(4);
     expect(contract.compatibility).toEqual({
       protocolVersion: 1,
       releaseVersion: '0.1.0',
@@ -198,6 +199,8 @@ describe('desktop bundle preparation', () => {
       'index.html',
     ]);
     expect(contract.dashboard?.assets?.every(asset => /^[\da-f]{64}$/.test(String(asset.sha256)))).toBe(true);
+    expect(contract.entry?.path).toBe('entry.js');
+    expect(contract.entry?.sha256).toMatch(/^[\da-f]{64}$/);
     expect(contract.migrations?.files?.map(file => file.path)).toEqual([
       '0001_initial.sql',
       '0002_independent.sql',

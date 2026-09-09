@@ -19,26 +19,29 @@ use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
 use url::Url;
 
 use crate::NODE_SIDECAR_NAME;
-use crate::bundle_contract::{BundleResourceError, RuntimeBundle, resolve_runtime_bundle};
+use crate::bundle_contract::{
+    BundleResourceError, BundleResourceKind, RuntimeBundle, resolve_runtime_bundle,
+};
 use crate::desktop_i18n::{DesktopMessages, system_messages};
+use crate::desktop_paths::DesktopPaths;
 use crate::navigation::{
     DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, desktop_action, enforce_dashboard_navigation,
-    is_desktop_status_navigation, ready_dashboard_origin, rendered_surface_diagnostic,
+    is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
     sanitized_page_load_diagnostic,
 };
 use crate::runtime_status::{
-    FailureKind, FailureReport, InitialStatusLoadGate, RuntimeAttemptState, RuntimeHealthError,
-    RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder, probe_compatible_runtime,
+    DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate, RuntimeAttemptState,
+    RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
+    apply_recovery_surface, probe_compatible_runtime,
 };
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
-const DESKTOP_LOGS_DIR_ENV: &str = "FLOWAY_DESKTOP_LOGS_DIR";
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
-const DESKTOP_RENDERED_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RENDERED_SURFACE ";
+const DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RECOVERY_SURFACE ";
 const DESKTOP_STATUS_EVENT: &str = "floway-desktop-status";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
@@ -85,41 +88,11 @@ fn print_error_chain(error: &(dyn Error + 'static)) {
 }
 
 fn classify_bundle_failure(error: &BundleResourceError) -> FailureKind {
-    let path = error.path().to_string_lossy();
-    let chain = FailureReport::from_error(FailureKind::Unknown, error)
-        .chain
-        .join(" ")
-        .to_ascii_lowercase();
-    if path.contains("apps/web/dist/client") || chain.contains("dashboard asset") {
-        FailureKind::Asset
-    } else if path.ends_with(".sql") || chain.contains("migration") {
-        FailureKind::Migration
-    } else if chain.contains("architecture")
-        || chain.contains("native dependency")
-        || chain.contains("node contract")
-    {
-        FailureKind::NativeDependency
-    } else {
-        FailureKind::Compatibility
-    }
-}
-
-fn classify_setup_failure(error: &(dyn Error + 'static)) -> FailureKind {
-    if let Some(bundle) = error.downcast_ref::<BundleResourceError>() {
-        return classify_bundle_failure(bundle);
-    }
-    let report = FailureReport::from_error(FailureKind::Unknown, error);
-    let chain = report.chain.join(" ").to_ascii_lowercase();
-    if chain.contains("permission denied")
-        || chain.contains("read-only")
-        || chain.contains("no space")
-        || chain.contains("log")
-    {
-        FailureKind::Storage
-    } else if chain.contains("sidecar") || chain.contains("executable") {
-        FailureKind::NativeDependency
-    } else {
-        FailureKind::Unknown
+    match error.kind() {
+        BundleResourceKind::Asset => FailureKind::Asset,
+        BundleResourceKind::Compatibility => FailureKind::Compatibility,
+        BundleResourceKind::Migration => FailureKind::Migration,
+        BundleResourceKind::NativeDependency => FailureKind::NativeDependency,
     }
 }
 
@@ -204,22 +177,16 @@ impl DesktopTray {
         })
     }
 
-    fn set_phase(&self, phase: RuntimePhase) -> Result<(), Box<dyn Error>> {
-        let (label, tooltip, restart_enabled) = match phase {
+    fn set_phase(&self, phase: RuntimePhase, restart_enabled: bool) -> Result<(), Box<dyn Error>> {
+        let (label, tooltip) = match phase {
             RuntimePhase::Starting => (
                 self.messages.status_starting,
                 self.messages.tooltip_starting,
-                false,
             ),
-            RuntimePhase::Ready => (
-                self.messages.status_running,
-                self.messages.tooltip_running,
-                false,
-            ),
+            RuntimePhase::Ready => (self.messages.status_running, self.messages.tooltip_running),
             RuntimePhase::Failed => (
                 self.messages.status_needs_attention,
                 self.messages.tooltip_needs_attention,
-                true,
             ),
         };
         self.status.set_text(label)?;
@@ -317,6 +284,20 @@ impl DesktopController {
             .phase()
     }
 
+    fn complete_teardown(&self, generation: u64) -> bool {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .complete_teardown(generation)
+    }
+
+    fn restart_available(&self) -> bool {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .restart_available()
+    }
+
     fn append_log(&self, stream: SidecarStream, bytes: &[u8]) -> io::Result<()> {
         let mut log = self
             .log
@@ -353,17 +334,21 @@ fn status_url(controller: &DesktopController, report: Option<&FailureReport>) ->
     url
 }
 
-fn show_status(app: &AppHandle, report: Option<&FailureReport>) {
+fn show_status(app: &AppHandle, report: Option<&FailureReport>) -> Result<(), Box<dyn Error>> {
     let controller = app.state::<Arc<DesktopController>>();
-    if let Some(window) = app.get_webview_window("main") {
-        let result = window
-            .navigate(status_url(controller.inner(), report))
-            .and_then(|()| window.show())
-            .and_then(|()| window.set_focus());
-        if let Err(error) = result {
-            print_error_chain(&error);
-        }
-    }
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway main recovery window is unavailable",
+        )
+    })?;
+    let url = status_url(controller.inner(), report);
+    apply_recovery_surface(
+        || window.navigate(url),
+        || window.show(),
+        || window.set_focus(),
+    )?;
+    Ok(())
 }
 
 fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: Url) {
@@ -412,10 +397,69 @@ fn emit_failure_surface_snapshot(app: AppHandle, kind: FailureKind, loaded_url: 
     }
 }
 
-fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
+fn emit_pending_failure_surface(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>();
+    if !controller.restart_available() {
+        return;
+    }
+    let kind = controller
+        .pending_failure_surface
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    let Some(kind) = kind else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        print_error_chain(&io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway main recovery window is unavailable for support diagnostics",
+        ));
+        app.exit(1);
+        return;
+    };
+    match window.url() {
+        Ok(loaded_url) => {
+            let snapshot_app = app.clone();
+            thread::spawn(move || emit_failure_surface_snapshot(snapshot_app, kind, loaded_url));
+        }
+        Err(error) => {
+            print_error_chain(&error);
+            app.exit(1);
+        }
+    }
+}
+
+fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed) {
+    if !controller.complete_teardown(generation) {
+        return;
+    }
+    if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed, true) {
         print_error_chain(error.as_ref());
+        app.exit(1);
+        return;
+    }
+    if let Err(error) = app.emit(
+        DESKTOP_STATUS_EVENT,
+        serde_json::json!({
+            "kind": kind.as_str(),
+            "restartEnabled": true,
+            "state": "failed",
+        }),
+    ) {
+        print_error_chain(&error);
+        app.exit(1);
+        return;
+    }
+    emit_pending_failure_surface(app);
+}
+
+fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
+    let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    if let Err(error) = controller.tray.set_phase(RuntimePhase::Failed, false) {
+        print_error_chain(error.as_ref());
+        app.exit(1);
     }
     let detail = report.chain.join("\n\ncaused by: ");
     eprintln!("Floway desktop runtime failure: {detail}");
@@ -432,36 +476,51 @@ fn publish_failure(app: &AppHandle, report: FailureReport, stop: bool) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report.kind);
     if let Err(error) = app.emit(
         DESKTOP_STATUS_EVENT,
-        serde_json::json!({ "kind": report.kind.as_str(), "state": "failed" }),
+        serde_json::json!({
+            "kind": report.kind.as_str(),
+            "restartEnabled": false,
+            "state": "failed",
+        }),
     ) {
         print_error_chain(&error);
+        app.exit(1);
     }
     *controller
         .pending_failure_surface
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report.kind);
-    show_status(app, Some(&report));
+    if let Err(error) = show_status(app, Some(&report)) {
+        print_error_chain(error.as_ref());
+        app.exit(1);
+    }
     if stop {
         let supervisor = Arc::clone(&controller.supervisor);
+        let teardown_app = app.clone();
+        let kind = report.kind;
         thread::spawn(move || {
             if let Err(error) = supervisor.stop_now() {
                 print_error_chain(&error);
+                teardown_app.exit(1);
+                return;
             }
+            complete_failure_teardown(&teardown_app, generation, kind);
         });
+    } else {
+        complete_failure_teardown(app, generation, report.kind);
     }
 }
 
 fn fail_startup_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
     if controller.mark_startup_failed(generation) {
-        publish_failure(app, report, stop);
+        publish_failure(app, generation, report, stop);
     }
 }
 
 fn fail_current_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
     if controller.mark_failed(generation) {
-        publish_failure(app, report, stop);
+        publish_failure(app, generation, report, stop);
     }
 }
 
@@ -486,7 +545,7 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                 .dashboard_policy
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(policy);
-            controller.tray.set_phase(RuntimePhase::Ready)?;
+            controller.tray.set_phase(RuntimePhase::Ready, false)?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .navigate(dashboard_url)
@@ -665,8 +724,10 @@ fn start_runtime(app: &AppHandle) {
     let Some(generation) = controller.begin_attempt() else {
         return;
     };
-    if let Err(error) = controller.tray.set_phase(RuntimePhase::Starting) {
+    if let Err(error) = controller.tray.set_phase(RuntimePhase::Starting, false) {
         print_error_chain(error.as_ref());
+        app.exit(1);
+        return;
     }
     if let Err(error) = app.emit(
         DESKTOP_STATUS_EVENT,
@@ -674,32 +735,71 @@ fn start_runtime(app: &AppHandle) {
     ) {
         print_error_chain(&error);
     }
-    show_status(app, None);
+    if let Err(error) = show_status(app, None) {
+        print_error_chain(error.as_ref());
+        app.exit(1);
+        return;
+    }
 
-    let setup = (|| -> Result<_, Box<dyn Error>> {
+    let setup = (|| -> Result<_, DesktopStartupError> {
         {
             let mut log = controller
                 .log
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if log.is_none() {
-                *log = Some(BoundedSidecarLog::open(&controller.logs_dir)?);
+                *log = Some(
+                    BoundedSidecarLog::open(&controller.logs_dir).map_err(|source| {
+                        DesktopStartupError::new(
+                            FailureKind::Storage,
+                            "Floway could not initialize its desktop logs",
+                            source,
+                        )
+                    })?,
+                );
             }
         }
-        let resource_dir = app.path().resource_dir()?;
-        let runtime = resolve_runtime_bundle(&resource_dir)?;
-        let bootstrap_token = ephemeral_bootstrap_token()?;
-        let events = controller.supervisor.spawn_registered(|| {
-            app.shell()
-                .sidecar(NODE_SIDECAR_NAME)?
-                .args(runtime.sidecar_arguments())
-                .current_dir(&runtime.root)
-                .env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())
-                .env(DESKTOP_RUNTIME_CONTRACT_ENV, runtime.contract.clone())
-                .env("FLOWAY_PROFILE", "personal")
-                .env("NODE_ENV", "production")
-                .spawn()
+        let resource_dir = app.path().resource_dir().map_err(|source| {
+            DesktopStartupError::new(
+                FailureKind::Compatibility,
+                "Floway could not locate its packaged resources",
+                source,
+            )
         })?;
+        let runtime = resolve_runtime_bundle(&resource_dir).map_err(|source| {
+            DesktopStartupError::new(
+                classify_bundle_failure(&source),
+                "Floway could not validate its packaged runtime",
+                source,
+            )
+        })?;
+        let bootstrap_token = ephemeral_bootstrap_token().map_err(|source| {
+            DesktopStartupError::new(
+                FailureKind::Compatibility,
+                "Floway could not create startup authority",
+                source,
+            )
+        })?;
+        let events = controller
+            .supervisor
+            .spawn_registered(|| {
+                app.shell()
+                    .sidecar(NODE_SIDECAR_NAME)?
+                    .args(runtime.sidecar_arguments())
+                    .current_dir(&runtime.root)
+                    .env(PERSONAL_DASHBOARD_BOOTSTRAP_ENV, bootstrap_token.clone())
+                    .env(DESKTOP_RUNTIME_CONTRACT_ENV, runtime.contract.clone())
+                    .env("FLOWAY_PROFILE", "personal")
+                    .env("NODE_ENV", "production")
+                    .spawn()
+            })
+            .map_err(|source| {
+                DesktopStartupError::new(
+                    FailureKind::NativeDependency,
+                    "Floway could not start its packaged runtime",
+                    source,
+                )
+            })?;
         Ok((events, runtime, bootstrap_token))
     })();
 
@@ -730,12 +830,12 @@ fn start_runtime(app: &AppHandle) {
             );
         }
         Err(error) => {
-            let kind = classify_setup_failure(error.as_ref());
-            print_error_chain(error.as_ref());
+            let kind = error.kind();
+            print_error_chain(&error);
             fail_startup_attempt(
                 app,
                 generation,
-                FailureReport::from_error(kind, error.as_ref()),
+                FailureReport::from_error(kind, &error),
                 false,
             );
         }
@@ -757,7 +857,7 @@ fn open_logs(app: &AppHandle) {
 
 fn restart_failed_runtime(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.phase() == RuntimePhase::Failed {
+    if controller.phase() == RuntimePhase::Failed && controller.restart_available() {
         start_runtime(app);
     }
 }
@@ -795,8 +895,11 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
 }
 
 #[tauri::command]
-fn report_desktop_rendered_surface(surface: serde_json::Value) -> Result<(), String> {
-    let diagnostic = rendered_surface_diagnostic(&surface).map_err(|error| {
+fn report_desktop_recovery_surface(
+    app: AppHandle,
+    surface: serde_json::Value,
+) -> Result<(), String> {
+    let diagnostic = recovery_surface_diagnostic(&surface).map_err(|error| {
         print_error_chain(&error);
         error.to_string()
     })?;
@@ -807,12 +910,45 @@ fn report_desktop_rendered_surface(surface: serde_json::Value) -> Result<(), Str
     if encoded.len() > MAXIMUM_SURFACE_EVENT_BYTES {
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
-            "Floway rendered failure diagnostic exceeded its byte bound",
+            "Floway recovery support diagnostic exceeded its byte bound",
         );
         print_error_chain(&error);
         return Err(error.to_string());
     }
-    eprintln!("{DESKTOP_RENDERED_SURFACE_EVENT_PREFIX}{encoded}");
+    let controller = app.state::<Arc<DesktopController>>();
+    let failure_kind = controller
+        .failure_kind
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .map(FailureKind::as_str);
+    if controller.phase() != RuntimePhase::Failed
+        || failure_kind
+            != diagnostic
+                .get("failureKind")
+                .and_then(serde_json::Value::as_str)
+        || controller.restart_available()
+            != diagnostic
+                .get("restartEnabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support state does not match the owning runtime state",
+        );
+        print_error_chain(&error);
+        return Err(error.to_string());
+    }
+    eprintln!("{DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX}{encoded}");
+    controller
+        .append_log(
+            SidecarStream::Stderr,
+            format!("{DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX}{encoded}").as_bytes(),
+        )
+        .map_err(|error| {
+            print_error_chain(&error);
+            error.to_string()
+        })?;
     Ok(())
 }
 
@@ -826,6 +962,7 @@ fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     serde_json::json!({
         "kind": failure_kind.map(FailureKind::as_str),
+        "restartEnabled": controller.restart_available(),
         "state": match phase {
             RuntimePhase::Failed => "failed",
             RuntimePhase::Ready => "ready",
@@ -853,7 +990,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
-            report_desktop_rendered_surface,
+            report_desktop_recovery_surface,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -881,17 +1018,8 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                     && is_desktop_status_navigation(payload.url(), false)
                 {
                     if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>() {
-                        let failure_kind = controller
-                            .pending_failure_surface
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .take();
-                        if let Some(kind) = failure_kind {
-                            let snapshot_app = page_load_app.clone();
-                            let loaded_url = payload.url().clone();
-                            thread::spawn(move || {
-                                emit_failure_surface_snapshot(snapshot_app, kind, loaded_url);
-                            });
+                        if controller.restart_available() {
+                            emit_pending_failure_surface(&page_load_app);
                         }
                     }
                     if page_load_gate.mark_loaded() {
@@ -904,20 +1032,15 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             .min_inner_size(520.0, 420.0)
             .build()?;
             let status_url = window.url()?;
-            let logs_dir: Result<PathBuf, Box<dyn Error>> =
-                match std::env::var_os(DESKTOP_LOGS_DIR_ENV) {
-                    Some(path) if PathBuf::from(&path).is_absolute() => Ok(PathBuf::from(path)),
-                    Some(_) => Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Floway desktop log directory override must be absolute",
-                    )
-                    .into()),
-                    None => app
-                        .path()
-                        .data_dir()
-                        .map(|path| path.join("Floway One/logs"))
-                        .map_err(Into::into),
-                };
+            let logs_dir: Result<PathBuf, Box<dyn Error>> = app
+                .path()
+                .data_dir()
+                .map_err(|error| Box::new(error) as Box<dyn Error>)
+                .and_then(|platform_data_dir| {
+                    DesktopPaths::from_args(platform_data_dir, std::env::args_os())
+                        .map(|paths| paths.logs())
+                        .map_err(|error| Box::new(error) as Box<dyn Error>)
+                });
             let (logs_dir, logs_dir_error) = match logs_dir {
                 Ok(logs_dir) => (logs_dir, None),
                 Err(error) => (PathBuf::new(), Some(error)),

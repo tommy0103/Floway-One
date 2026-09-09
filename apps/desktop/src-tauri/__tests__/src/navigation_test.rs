@@ -3,9 +3,8 @@ use floway_desktop::{
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
     PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
     enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
-    rendered_surface_diagnostic, sanitized_page_load_diagnostic,
+    recovery_surface_diagnostic, sanitized_page_load_diagnostic,
 };
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ForcedNavigationOpenFailure;
@@ -82,38 +81,22 @@ fn limits_shell_status_navigation_and_actions_to_the_owned_surface() {
 }
 
 #[test]
-fn hashes_only_bounded_typed_rendered_recovery_content() {
-    let copy = [
-        "Floway could not start the local Gateway",
-        "The configured local port is unavailable. Detailed diagnostics are available in the logs.",
-        "Restart Gateway",
-        "floway-action://restart",
-        "Open logs",
-        "floway-action://open-logs",
-    ];
+fn accepts_only_bounded_typed_recovery_support_state() {
     let surface = serde_json::json!({
+        "actions": ["restart", "open-logs"],
         "failureKind": "port",
         "locale": "en",
-        "title": copy[0],
-        "message": copy[1],
-        "restartLabel": copy[2],
-        "restartHref": copy[3],
-        "logsLabel": copy[4],
-        "logsHref": copy[5],
+        "restartEnabled": true,
     });
     let diagnostic =
-        rendered_surface_diagnostic(&surface).expect("bounded rendered action must be accepted");
+        recovery_surface_diagnostic(&surface).expect("bounded recovery state must be accepted");
     assert_eq!(diagnostic["failureKind"], "port");
     assert_eq!(diagnostic["locale"], "en");
     assert_eq!(
         diagnostic["actions"],
         serde_json::json!(["restart", "open-logs"])
     );
-    assert_eq!(
-        diagnostic["copyDigest"],
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&copy).unwrap()))
-    );
-    assert!(!diagnostic.to_string().contains(copy[1]));
+    assert_eq!(diagnostic, surface);
 }
 
 #[test]
@@ -121,17 +104,20 @@ fn rejects_untyped_or_unbounded_rendered_recovery_reports() {
     for surface in [
         serde_json::json!({ "failureKind": "constructor" }),
         serde_json::json!({
+            "actions": ["restart", "open-logs"],
             "failureKind": "port",
             "locale": "en",
-            "title": "ok",
-            "message": "ok",
-            "restartLabel": "ok",
-            "restartHref": "https://example.test",
-            "logsLabel": "ok",
-            "logsHref": "floway-action://open-logs",
+            "restartEnabled": false,
+        }),
+        serde_json::json!({
+            "actions": ["restart", "open-logs"],
+            "failureKind": "port",
+            "locale": "en",
+            "restartEnabled": true,
+            "title": "arbitrary rendered text",
         }),
     ] {
-        assert!(rendered_surface_diagnostic(&surface).is_err());
+        assert!(recovery_surface_diagnostic(&surface).is_err());
     }
 }
 

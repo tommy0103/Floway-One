@@ -29,6 +29,7 @@ interface DesktopBundleContract {
     readonly releaseVersion: unknown;
   };
   readonly dashboard: { readonly assets: readonly BundleFileContract[] };
+  readonly entry: BundleFileContract;
   readonly migrations: { readonly files: readonly BundleFileContract[] };
   readonly nativeDependencies: { readonly files: readonly BundleFileContract[] };
   readonly node: {
@@ -111,7 +112,7 @@ export const verifyPackagedApplication = async (options: {
   ]);
   const contract = JSON.parse(await readFile(contractPath, 'utf8')) as Partial<DesktopBundleContract>;
   if (
-    contract.schemaVersion !== 3
+    contract.schemaVersion !== 4
     || contract.compatibility?.protocolVersion !== DESKTOP_COMPATIBILITY_VERSION
     || contract.compatibility.releaseVersion !== releaseVersion
     || contract.node?.architecture !== expectedArchitecture
@@ -121,6 +122,8 @@ export const verifyPackagedApplication = async (options: {
     || !Array.isArray(contract.dashboard?.assets)
     || contract.dashboard.assets.length === 0
     || contract.dashboard.assets.some(asset => typeof asset.path !== 'string' || !/^[\da-f]{64}$/i.test(String(asset.sha256)))
+    || contract.entry?.path !== 'entry.js'
+    || !/^[\da-f]{64}$/i.test(String(contract.entry.sha256))
     || !Array.isArray(contract.migrations?.files)
     || contract.migrations.files.length === 0
     || contract.migrations.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
@@ -131,9 +134,11 @@ export const verifyPackagedApplication = async (options: {
     throw new Error(`Packaged desktop contract does not own ${targetTriple}/Node.js ${packagedNodeVersion}`);
   }
   const dashboardAssets = contract.dashboard.assets;
+  const entry = contract.entry;
   const migrations = contract.migrations.files;
   const nativeDependencies = contract.nativeDependencies.files;
   await validateFileContract(resolve(runtimeRoot, 'apps/web/dist/client'), dashboardAssets, 'Dashboard');
+  await validateFileContract(platformNodeRoot, [entry], 'entry');
   await validateFileContract(dependenciesRoot, nativeDependencies, 'native dependency');
 
   const migrationNames = migrations.map(file => file.path);

@@ -3,7 +3,6 @@ use std::io;
 
 use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use url::Url;
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
@@ -12,7 +11,6 @@ pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
 pub const DESKTOP_STATUS_ROUTE: &str = "desktop-status";
 const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
-const MAXIMUM_RENDERED_SURFACE_VALUE_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopAction {
@@ -31,7 +29,7 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
     }
 }
 
-pub fn rendered_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> {
+pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> {
     (|| {
         let fields = surface.as_object().ok_or_else(|| {
             io::Error::new(
@@ -39,43 +37,23 @@ pub fn rendered_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
                 "Floway rendered failure diagnostic must be an object",
             )
         })?;
-        let required = [
-            "failureKind",
-            "locale",
-            "title",
-            "message",
-            "restartLabel",
-            "restartHref",
-            "logsLabel",
-            "logsHref",
-        ];
-        if fields.len() != required.len() {
+        if fields.len() != 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Floway rendered failure diagnostic has an invalid field count",
             ));
         }
-        let value = |key: &str| -> Result<String, io::Error> {
-            let value = fields.get(key).and_then(Value::as_str).ok_or_else(|| {
+        let value = |key: &str| -> Result<&str, io::Error> {
+            fields.get(key).and_then(Value::as_str).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Floway rendered failure diagnostic has an invalid {key} field"),
                 )
-            })?;
-            if value.is_empty()
-                || value.len() > MAXIMUM_RENDERED_SURFACE_VALUE_BYTES
-                || value.chars().any(char::is_control)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Floway rendered failure diagnostic has an unsafe {key} field"),
-                ));
-            }
-            Ok(value.to_owned())
+            })
         };
         let failure_kind = value("failureKind")?;
         if !matches!(
-            failure_kind.as_str(),
+            failure_kind,
             "asset"
                 | "compatibility"
                 | "migration"
@@ -92,32 +70,49 @@ pub fn rendered_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
             ));
         }
         let locale = value("locale")?;
-        if !matches!(locale.as_str(), "en" | "zh-Hans") {
+        if !matches!(locale, "en" | "zh-Hans") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Floway rendered failure diagnostic has an unknown locale",
             ));
         }
-        let copy = [
-            value("title")?,
-            value("message")?,
-            value("restartLabel")?,
-            value("restartHref")?,
-            value("logsLabel")?,
-            value("logsHref")?,
-        ];
-        if copy[3] != "floway-action://restart" || copy[5] != "floway-action://open-logs" {
+        let restart_enabled = fields
+            .get("restartEnabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway rendered failure diagnostic has an invalid restartEnabled field",
+                )
+            })?;
+        let actions = fields
+            .get("actions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway rendered failure diagnostic has an invalid actions field",
+                )
+            })?;
+        let expected_actions = if restart_enabled {
+            vec![
+                Value::String("restart".to_owned()),
+                Value::String("open-logs".to_owned()),
+            ]
+        } else {
+            vec![Value::String("open-logs".to_owned())]
+        };
+        if actions != &expected_actions {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway rendered failure diagnostic has an unknown recovery action",
+                "Floway rendered failure diagnostic actions do not match recovery readiness",
             ));
         }
-        let encoded = serde_json::to_vec(&copy).map_err(io::Error::other)?;
         Ok(json!({
-            "actions": ["restart", "open-logs"],
-            "copyDigest": format!("{:x}", Sha256::digest(encoded)),
+            "actions": actions,
             "failureKind": failure_kind,
             "locale": locale,
+            "restartEnabled": restart_enabled,
         }))
     })()
 }

@@ -52,8 +52,8 @@ test('packaged native observation combines actual Tauri objects with an external
   expect(controller).not.toContain('FLOWAY_DESKTOP_TEST_SURFACE_PROBE');
   expect(controller).not.toContain('window.eval(');
   expect(surface).toContain('FLOWAY_DESKTOP_SURFACE ');
-  expect(surface).toContain('FLOWAY_DESKTOP_RENDERED_SURFACE ');
-  expect(surface).toContain("createHash('sha256')");
+  expect(surface).toContain('FLOWAY_DESKTOP_RECOVERY_SURFACE ');
+  expect(surface).not.toContain("createHash('sha256')");
   expect(surface).toContain('visibleWindowCount');
 });
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use floway_desktop::{NODE_SIDECAR_NAME, resolve_runtime_bundle};
+use floway_desktop::{BundleResourceKind, NODE_SIDECAR_NAME, resolve_runtime_bundle};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -67,12 +67,16 @@ fn write_fixture(root: &Path) {
         })
     });
     let contract = json!({
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "compatibility": {
             "protocolVersion": 1,
             "releaseVersion": "0.1.0",
         },
         "dashboard": { "assets": dashboard_assets },
+        "entry": {
+            "path": "entry.js",
+            "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/entry.js")).unwrap())),
+        },
         "migrations": { "files": migration_files },
         "nativeDependencies": {
             "files": [{
@@ -272,8 +276,30 @@ fn missing_native_dependency_fails_with_the_original_filesystem_error() {
 
     let error = resolve_runtime_bundle(&root).expect_err("missing native dependency must fail");
     assert_eq!(error.path(), missing);
+    assert_eq!(error.kind(), BundleResourceKind::NativeDependency);
     let source = error.source().expect("filesystem cause must be retained");
     assert!(source.to_string().contains("No such file") || source.to_string().contains("not find"));
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn modified_entry_fails_preflight_with_the_exact_contract_cause() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let entry = root.join("runtime/apps/platform-node/entry.js");
+    write(&entry, "tampered packaged entry").expect("fixture entry must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("modified entry must fail before launch");
+    assert_eq!(error.kind(), BundleResourceKind::Compatibility);
+    assert_eq!(error.path(), root.join("desktop-bundle-contract.json"));
+    assert!(
+        error
+            .source()
+            .expect("stale entry contract cause must be retained")
+            .to_string()
+            .contains("entry digest is stale")
+    );
 
     remove_dir_all(root).expect("fixture cleanup must succeed");
 }

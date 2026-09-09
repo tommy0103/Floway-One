@@ -7,10 +7,12 @@ mod runtime_status;
 
 use bundle_contract::RuntimeCompatibility;
 use runtime_status::{
-    FailureKind, InitialStatusLoadGate, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
-    STARTUP_TIMEOUT, SidecarFailureDecoder, parse_sidecar_failure,
-    validate_health_response_for_test,
+    DesktopStartupError, FailureKind, InitialStatusLoadGate, RecoverySurfaceOperation,
+    RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
+    apply_recovery_surface, parse_sidecar_failure, validate_health_response_for_test,
 };
+use std::error::Error;
+use std::io;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -105,6 +107,7 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("first attempt must begin");
     assert!(state.mark_startup_failed(first));
+    assert!(state.complete_teardown(first));
     let second = state.begin().expect("failed runtime may restart");
 
     assert_ne!(first, second);
@@ -254,4 +257,63 @@ fn an_initial_status_timeout_prevents_a_late_runtime_start() {
     assert!(gate.time_out());
     assert!(!gate.mark_loaded());
     assert!(!gate.time_out());
+}
+
+#[test]
+fn restart_stays_unavailable_until_the_failed_attempt_finishes_teardown() {
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+    assert!(state.mark_failed(generation));
+
+    assert!(!state.restart_available());
+    assert!(state.begin().is_none());
+    assert!(state.complete_teardown(generation));
+    assert!(state.restart_available());
+
+    let restarted = state
+        .begin()
+        .expect("settled failure may restart exactly once");
+    assert!(!state.restart_available());
+    assert!(state.begin().is_none());
+    assert_ne!(restarted, generation);
+}
+
+#[test]
+fn recovery_surface_operation_failure_preserves_its_owned_operation_and_source() {
+    let original = io::Error::other("forced window show failure");
+    let error = apply_recovery_surface(
+        || Ok::<(), io::Error>(()),
+        || Err(original),
+        || Ok::<(), io::Error>(()),
+    )
+    .expect_err("a hidden recovery surface must fail publication");
+
+    assert_eq!(error.operation(), RecoverySurfaceOperation::Show);
+    assert_eq!(
+        error.to_string(),
+        "Floway could not show its recovery surface"
+    );
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
+        Some("forced window show failure")
+    );
+}
+
+#[test]
+fn startup_failure_category_is_owned_without_message_or_path_inference() {
+    let error = DesktopStartupError::new(
+        FailureKind::NativeDependency,
+        "Floway could not start its packaged runtime",
+        io::Error::other("opaque loader failure"),
+    );
+
+    assert_eq!(error.kind(), FailureKind::NativeDependency);
+    assert_eq!(
+        error.to_string(),
+        "Floway could not start its packaged runtime"
+    );
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
+        Some("opaque loader failure")
+    );
 }

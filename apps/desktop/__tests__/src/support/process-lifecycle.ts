@@ -131,11 +131,15 @@ export const terminateProcessGroup = async (child: CapturedChild): Promise<void>
   await waitForProcessGroupStopped(child.pid);
 };
 
-export const captureApp = (executable: string, environment: NodeJS.ProcessEnv): {
+export const captureApp = (
+  executable: string,
+  environment: NodeJS.ProcessEnv,
+  args: readonly string[] = [],
+): {
   readonly child: CapturedChild;
   readonly output: () => string;
 } => {
-  const child = spawn(executable, [], {
+  const child = spawn(executable, args, {
     detached: true,
     env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -181,10 +185,13 @@ export const reserveNonDefaultLoopbackPort = async (): Promise<number> => await 
   return port;
 });
 
-export const appEnvironmentWithoutPortOverride = (applicationHome: string): NodeJS.ProcessEnv => {
+export const appEnvironmentWithoutPortOverride = (
+  locale: 'en' | 'zh-Hans' = 'en',
+): NodeJS.ProcessEnv => {
   const environment = { ...process.env };
   delete environment.PORT;
-  environment.FLOWAY_DESKTOP_LOGS_DIR = resolve(applicationHome, 'logs');
+  environment.AppleLanguages = locale === 'zh-Hans' ? '(zh-Hans)' : '(en)';
+  environment.AppleLocale = locale === 'zh-Hans' ? 'zh_CN' : 'en_US';
   return environment;
 };
 
@@ -255,6 +262,7 @@ export const observePackagedFailureSurface = async (options: {
   readonly applicationHome: string;
   readonly executable: string;
   readonly expectedFragments: readonly string[];
+  readonly expectedLocale?: 'en' | 'zh-Hans';
   readonly failureKind: string;
   readonly forbiddenSnapshotText?: readonly string[];
   readonly nativeWindowProbe: string;
@@ -274,7 +282,8 @@ export const observePackagedFailureSurface = async (options: {
   });
   const { child, output } = captureApp(
     options.executable,
-    appEnvironmentWithoutPortOverride(options.applicationHome),
+    appEnvironmentWithoutPortOverride(options.expectedLocale),
+    ['--data-dir', options.applicationHome],
   );
   cleanup.defer('fault-probe application process group', async () => await terminateProcessGroup(child));
   const observedSidecars = new Set<number>();
@@ -285,7 +294,8 @@ export const observePackagedFailureSurface = async (options: {
   ];
   const surfaceEvidence = [
     'FLOWAY_DESKTOP_SURFACE ',
-    'FLOWAY_DESKTOP_RENDERED_SURFACE ',
+    'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+    '"restartEnabled":true',
   ];
   const observeUntil = async (deadline: number, expected: readonly string[]): Promise<void> => {
     while (Date.now() < deadline) {
@@ -317,11 +327,15 @@ export const observePackagedFailureSurface = async (options: {
     throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedSidecars].join(', ')}`);
   }
   await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
+    expectedLocale: options.expectedLocale,
     failureKind: options.failureKind,
     forbiddenSnapshotText: options.forbiddenSnapshotText ?? options.expectedFragments,
   });
   if (options.persistedLogFragments !== undefined) {
-    await assertBoundedSidecarLogs(options.applicationHome, options.persistedLogFragments);
+    await assertBoundedSidecarLogs(options.applicationHome, [
+      ...options.persistedLogFragments,
+      'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+    ]);
   }
   await assertNoDirectChildren(child.pid);
   await terminateProcessGroup(child);

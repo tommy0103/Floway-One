@@ -40,6 +40,10 @@ path = "__tests__/src/sidecar_log_test.rs"
 name = "desktop_i18n"
 path = "__tests__/src/desktop_i18n_test.rs"
 
+[[test]]
+name = "desktop_paths"
+path = "__tests__/src/desktop_paths_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
