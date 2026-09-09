@@ -18,8 +18,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
-import DesktopStatus, { parseDesktopStatus } from '../../src/routes/desktop-status.tsx';
 import { setLanguage } from '../../src/i18n';
+import DesktopStatus, { parseDesktopStatus } from '../../src/routes/desktop-status.tsx';
 import { renderInApp } from '../render.tsx';
 
 afterEach(async () => {
