@@ -388,6 +388,7 @@ export const assertUnexpectedSidecarExitSurfacesFailure = async (
     await waitForProcessStopped(sidecarPid);
     if (child.pid === undefined) throw new Error('Floway production app process has no PID');
     await assertNativeFailureSurface(nativeWindowProbe, child.pid, captured, {
+      dataRoot: verificationRoot,
       failureKind: 'unexpected-exit',
       forbiddenSnapshotText: [parentFailure, originalCause],
     });

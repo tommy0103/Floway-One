@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { FlowayLogo } from '../components/logo';
@@ -129,25 +129,41 @@ export default function DesktopStatus() {
     };
   }, []);
 
-  useLayoutEffect(() => {
+  // The support report evidences the rendered surface, so it waits until the
+  // browser has painted this committed state instead of racing the paint.
+  useEffect(() => {
     if (!ipcReady || !failed || surface.current === null) return;
     if (!isTauri()) return;
     const locale = i18n.resolvedLanguage === 'zh-Hans' ? 'zh-Hans' : 'en';
-    void invoke('report_desktop_recovery_surface', {
-      surface: {
-        actions: [
-          ...(status.restartEnabled ? ['restart'] : []),
-          ...(status.logsAvailable ? ['open-logs'] : []),
-        ],
-        failureKind: status.failureKind,
-        logsAvailable: status.logsAvailable,
-        locale,
-        restartEnabled: status.restartEnabled,
-        revision: status.revision,
-      },
-    }).catch(() => {
-      console.error('Floway could not report the rendered desktop recovery surface');
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        void (async () => {
+          try {
+            await invoke('report_desktop_recovery_surface', {
+              surface: {
+                actions: [
+                  ...(status.restartEnabled ? ['restart'] : []),
+                  ...(status.logsAvailable ? ['open-logs'] : []),
+                ],
+                failureKind: status.failureKind,
+                logsAvailable: status.logsAvailable,
+                locale,
+                restartEnabled: status.restartEnabled,
+                revision: status.revision,
+              },
+            });
+          } catch {
+            console.error('Floway could not report the rendered desktop recovery surface');
+          }
+        })();
+      });
     });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
   }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.logsAvailable, status.restartEnabled, status.revision]);
 
   return (

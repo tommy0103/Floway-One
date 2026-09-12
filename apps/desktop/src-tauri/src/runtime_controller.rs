@@ -30,6 +30,7 @@ use crate::navigation::{
     is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
     sanitized_page_load_diagnostic,
 };
+use crate::rendered_snapshot::capture_rendered_snapshot;
 use crate::runtime_status::{
     DesktopRuntimeStatus, DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate,
     RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
@@ -45,6 +46,7 @@ const DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RECOVERY_SUR
 const DESKTOP_STATUS_EVENT: &str = "floway-desktop-status";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
+const RECOVERY_SNAPSHOT_FILE_NAME: &str = "recovery-surface.png";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
 const TRAY_RESTART_ID: &str = "runtime-restart";
@@ -922,7 +924,9 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
     }
 }
 
-#[tauri::command]
+// The snapshot round trip parks this command on a channel while the browser
+// completes it on the main run loop, so it must run off the main thread.
+#[tauri::command(async)]
 fn report_desktop_recovery_surface(
     app: AppHandle,
     surface: serde_json::Value,
@@ -931,18 +935,6 @@ fn report_desktop_recovery_surface(
         print_error_chain(&error);
         error.to_string()
     })?;
-    let encoded = serde_json::to_string(&diagnostic).map_err(|error| {
-        print_error_chain(&error);
-        error.to_string()
-    })?;
-    if encoded.len() > MAXIMUM_SURFACE_EVENT_BYTES {
-        let error = io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Floway recovery support diagnostic exceeded its byte bound",
-        );
-        print_error_chain(&error);
-        return Err(error.to_string());
-    }
     let controller = app.state::<Arc<DesktopController>>();
     let status = controller.status();
     if status.phase != RuntimePhase::Failed
@@ -968,6 +960,67 @@ fn report_desktop_recovery_surface(
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
             "Floway recovery support state does not match the owning runtime state",
+        );
+        print_error_chain(&error);
+        return Err(error.to_string());
+    }
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        let error = io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway main recovery window is unavailable for rendered snapshot evidence",
+        );
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    let snapshot = capture_rendered_snapshot(&window).map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    let data_root = controller
+        .logs_dir
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            let error = io::Error::new(
+                io::ErrorKind::NotFound,
+                "Floway desktop data root is unavailable for rendered snapshot evidence",
+            );
+            print_error_chain(&error);
+            error.to_string()
+        })?;
+    let snapshot_staging = data_root.join(".recovery-surface.png.tmp");
+    fs::write(&snapshot_staging, &snapshot.png).map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    fs::rename(
+        &snapshot_staging,
+        data_root.join(RECOVERY_SNAPSHOT_FILE_NAME),
+    )
+    .map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    let mut diagnostic = diagnostic;
+    diagnostic
+        .as_object_mut()
+        .expect("validated recovery diagnostic must remain an object")
+        .insert(
+            "renderedSnapshot".to_owned(),
+            serde_json::json!({
+                "algorithm": "sha256-png-v1",
+                "byteLength": snapshot.png.len(),
+                "sha256": snapshot.sha256,
+            }),
+        );
+    let encoded = serde_json::to_string(&diagnostic).map_err(|error| {
+        print_error_chain(&error);
+        error.to_string()
+    })?;
+    if encoded.len() > MAXIMUM_SURFACE_EVENT_BYTES {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic exceeded its byte bound",
         );
         print_error_chain(&error);
         return Err(error.to_string());
@@ -1037,10 +1090,10 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 if payload.event() == PageLoadEvent::Finished
                     && is_desktop_status_navigation(payload.url(), false)
                 {
-                    if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>() {
-                        if controller.status().restart_available {
-                            emit_pending_failure_surface(&page_load_app);
-                        }
+                    if let Some(controller) = page_load_app.try_state::<Arc<DesktopController>>()
+                        && controller.status().restart_available
+                    {
+                        emit_pending_failure_surface(&page_load_app);
                     }
                     if page_load_gate.mark_loaded() {
                         start_runtime(&page_load_app);

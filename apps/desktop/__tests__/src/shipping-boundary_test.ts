@@ -14,12 +14,23 @@ test('shipping desktop and Node sources contain no verification modes or environ
     'apps/desktop/src-tauri/src/bundle_contract.rs',
     'apps/desktop/src-tauri/src/lib.rs',
     'apps/desktop/src-tauri/src/navigation.rs',
+    'apps/desktop/src-tauri/src/rendered_snapshot.rs',
     'apps/desktop/src-tauri/src/runtime_controller.rs',
     'apps/desktop/src-tauri/src/runtime_status.rs',
     'apps/desktop/src-tauri/src/sidecar_log.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
-  const [_app, _bundle, _library, _navigation, runtimeController, _runtimeStatus, _sidecarLog, supervisor] = desktopSources;
+  const [
+    _app,
+    _bundle,
+    _library,
+    _navigation,
+    _renderedSnapshot,
+    runtimeController,
+    _runtimeStatus,
+    _sidecarLog,
+    supervisor,
+  ] = desktopSources;
   const nodeSources = await Promise.all([
     'apps/platform-node/src/device-master-key.ts',
     'apps/platform-node/src/run-node-entry.ts',

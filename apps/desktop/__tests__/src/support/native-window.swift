@@ -1,18 +1,21 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
-import ApplicationServices
+import Vision
 
 private func fail(_ message: String, code: Int32) -> Never {
     FileHandle.standardError.write(Data("\(message)\n".utf8))
     exit(code)
 }
 
-guard CommandLine.arguments.count == 2, let pid = pid_t(CommandLine.arguments[1]) else {
-    fail("usage: native-window <pid>", code: 64)
+// Usage: native-window <pid> [snapshot-path expected-sha256]
+guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 4,
+      let pid = pid_t(CommandLine.arguments[1]) else {
+    fail("usage: native-window <pid> [snapshot-path expected-sha256]", code: 64)
 }
 
-// The window-server inventory and accessibility tree observe the packaged
-// process independently of its own diagnostics.
+// This window-server inventory requires no Accessibility or Screen Recording
+// grant and observes the packaged process independently of its own diagnostics.
 // https://developer.apple.com/documentation/coregraphics/1455137-cgwindowlistcopywindowinfo
 let visibleWindows = (CGWindowListCopyWindowInfo(
     [.optionOnScreenOnly, .excludeDesktopElements],
@@ -23,57 +26,43 @@ let visibleWindows = (CGWindowListCopyWindowInfo(
         && (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0 > 0
 }
 
-private func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
-    var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, name, &value) == .success else {
-        return nil
-    }
-    return value
-}
-
-var accessibilityText = Set<String>()
-var accessibilityActions = Set<String>()
-var visited = 0
-
-func visit(_ element: AXUIElement, depth: Int) {
-    guard depth <= 24, visited < 4_096 else { return }
-    visited += 1
-    let role = attribute(element, kAXRoleAttribute as CFString) as? String
-    var ownText: [String] = []
-    for name in [
-        kAXTitleAttribute,
-        kAXValueAttribute,
-        kAXDescriptionAttribute,
-        kAXHelpAttribute,
-    ] {
-        if let value = attribute(element, name as CFString) as? String,
-           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            accessibilityText.insert(value)
-            ownText.append(value)
-        }
-    }
-    var actionNames: CFArray?
-    if AXUIElementCopyActionNames(element, &actionNames) == .success,
-       let actions = actionNames as? [String],
-       actions.contains(kAXPressAction as String),
-       let label = ownText.first {
-        accessibilityActions.insert("\(role ?? "unknown"): \(label)")
-    }
-    if let children = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] {
-        for child in children {
-            visit(child, depth: depth + 1)
-        }
-    }
-}
-
-visit(AXUIElementCreateApplication(pid), depth: 0)
-
-let payload: [String: Any] = [
-    "accessibilityActions": accessibilityActions.sorted(),
-    "accessibilityText": accessibilityText.sorted(),
+var payload: [String: Any] = [
     "pid": pid,
     "visibleWindowCount": visibleWindows.count,
 ]
+
+if CommandLine.arguments.count == 4 {
+    let snapshotPath = CommandLine.arguments[2]
+    let expectedSha256 = CommandLine.arguments[3]
+
+    let snapshotData: Data
+    do {
+        snapshotData = try Data(contentsOf: URL(fileURLWithPath: snapshotPath))
+    } catch {
+        fail("Floway rendered snapshot unreadable: \(error.localizedDescription)", code: 66)
+    }
+    let actualSha256 = SHA256.hash(data: snapshotData).map { String(format: "%02x", $0) }.joined()
+    guard actualSha256 == expectedSha256 else {
+        fail("Floway rendered snapshot digest mismatch: expected \(expectedSha256), observed \(actualSha256)", code: 65)
+    }
+
+    // Vision text recognition reads only the captured image and needs no
+    // Accessibility grant, so it works on a clean machine and in CI.
+    // https://developer.apple.com/documentation/vision/vnrecognizetextrequest
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    request.usesLanguageCorrection = false
+    let handler = VNImageRequestHandler(url: URL(fileURLWithPath: snapshotPath), options: [:])
+    do {
+        try handler.perform([request])
+    } catch {
+        fail("Floway rendered snapshot recognition failed: \(error.localizedDescription)", code: 74)
+    }
+    payload["ocrCandidates"] = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+    payload["snapshotSha256"] = actualSha256
+}
+
 let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
 FileHandle.standardOutput.write(encoded)
 FileHandle.standardOutput.write(Data("\n".utf8))

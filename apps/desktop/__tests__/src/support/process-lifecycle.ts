@@ -341,6 +341,7 @@ export const observePackagedFailureSurface = async (options: {
     throw new Error(`Floway production setup spawned sidecars before failing: ${[...observedSidecars].join(', ')}`);
   }
   await assertNativeFailureSurface(options.nativeWindowProbe, child.pid, captured, {
+    dataRoot: options.applicationHome,
     expectedLocale: options.expectedLocale,
     expectedLogsAvailable: options.expectedLogsAvailable,
     failureKind: options.failureKind,

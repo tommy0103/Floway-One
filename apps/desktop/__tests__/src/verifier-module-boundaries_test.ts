@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 
 import { expect, test } from 'vitest';
 
+import { labels, recoveryCopy } from './support/native-surface.ts';
+
 const desktopRoot = resolve(import.meta.dirname, '../..');
 
 test('packaged verifier orchestrates cohesive test-support modules', async () => {
@@ -23,24 +25,24 @@ test('verifier-only output cleanup support lives outside production src', async 
     .rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-test('packaged native observation combines actual Tauri objects with an external window-server probe', async () => {
-  const [probe, surface, controller] = await Promise.all([
+test('packaged native observation combines actual Tauri objects, rendered pixels, and an external window-server probe', async () => {
+  const [probe, surface, controller, renderedSnapshot] = await Promise.all([
     readFile(resolve(desktopRoot, '__tests__/src/support/native-window.swift'), 'utf8'),
     readFile(resolve(desktopRoot, '__tests__/src/support/native-surface.ts'), 'utf8'),
     readFile(resolve(desktopRoot, 'src-tauri/src/runtime_controller.rs'), 'utf8'),
+    readFile(resolve(desktopRoot, 'src-tauri/src/rendered_snapshot.rs'), 'utf8'),
   ]);
   for (const boundary of [
-    'AXUIElementCreateApplication(',
-    'AXUIElementCopyAttributeValue(',
-    'AXUIElementCopyActionNames(',
     'CGWindowListCopyWindowInfo(',
     'kCGWindowOwnerPID',
     'kCGWindowLayer',
+    'VNRecognizeTextRequest',
+    'SHA256.hash',
   ]) {
     expect(probe).toContain(boundary);
   }
-  expect(probe).toContain('ApplicationServices');
-  expect(probe).not.toContain('AXIsProcessTrusted');
+  expect(probe).not.toContain('ApplicationServices');
+  expect(probe).not.toContain('AXUIElement');
   for (const actualObjectRead of [
     'controller.tray.diagnostic_snapshot()',
     'window.is_visible()',
@@ -51,12 +53,26 @@ test('packaged native observation combines actual Tauri objects with an external
   }
   expect(controller).toContain('.on_page_load(');
   expect(controller).toContain('FLOWAY_DESKTOP_PAGE_LOAD ');
+  expect(controller).toContain('recovery-surface.png');
+  expect(controller).toContain('renderedSnapshot');
   expect(controller).not.toContain('FLOWAY_DESKTOP_TEST_SURFACE_PROBE');
   expect(controller).not.toContain('window.eval(');
+  for (const browserObservation of [
+    'webview.inner()',
+    'takeSnapshotWithConfiguration',
+    'WKSnapshotConfiguration',
+  ]) {
+    expect(renderedSnapshot).toContain(browserObservation);
+  }
+  expect(renderedSnapshot).not.toContain('AXUIElement');
+  expect(renderedSnapshot).not.toContain('Floway could not start the local Gateway');
+  expect(renderedSnapshot).not.toContain('Floway 无法启动本机 Gateway');
   expect(surface).toContain('FLOWAY_DESKTOP_SURFACE ');
   expect(surface).toContain('FLOWAY_DESKTOP_RECOVERY_SURFACE ');
-  expect(surface).not.toContain("createHash('sha256')");
+  expect(surface).toContain('recovery-surface.png');
   expect(surface).toContain('visibleWindowCount');
+  expect(surface).toContain('ocrCandidates');
+  expect(surface).not.toContain('AXUIElement');
 });
 
 test('desktop process helpers avoid System Events automation', async () => {
@@ -79,4 +95,28 @@ test('Tauri composition stays thin while runtime recovery has one owning module'
   expect(controller).toContain('fn begin_health_probe(');
   expect(controller).toContain('fn fail_startup_attempt(');
   expect(controller).toContain('fn fail_current_attempt(');
+});
+
+test('recovery surface expectations stay verbatim in the locale resources', async () => {
+  const [en, zhHans, nativeMessages] = await Promise.all([
+    readFile(resolve(desktopRoot, '../web/src/i18n/locales/en.ts'), 'utf8'),
+    readFile(resolve(desktopRoot, '../web/src/i18n/locales/zh-Hans.ts'), 'utf8'),
+    readFile(resolve(desktopRoot, 'src-tauri/src/desktop_i18n.rs'), 'utf8'),
+  ]);
+  const localeResources = { en, 'zh-Hans': zhHans } as const;
+  const leafStrings = (value: unknown): string[] => {
+    if (typeof value === 'string') return [value];
+    if (value !== null && typeof value === 'object') {
+      return Object.values(value).flatMap(leafStrings);
+    }
+    return [];
+  };
+  for (const [locale, resource] of Object.entries(localeResources)) {
+    for (const copy of leafStrings(recoveryCopy[locale as keyof typeof recoveryCopy])) {
+      expect(resource).toContain(copy);
+    }
+    for (const label of leafStrings(labels[locale as keyof typeof labels])) {
+      expect(nativeMessages).toContain(label);
+    }
+  }
 });

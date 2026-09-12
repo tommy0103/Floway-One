@@ -12,6 +12,8 @@ mod sidecar_log;
 #[cfg(feature = "desktop")]
 mod app;
 #[cfg(feature = "desktop")]
+mod rendered_snapshot;
+#[cfg(feature = "desktop")]
 mod runtime_controller;
 #[cfg(feature = "desktop")]
 mod sidecar_supervisor;

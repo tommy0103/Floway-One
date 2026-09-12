@@ -47,7 +47,10 @@ path = "__tests__/src/desktop_paths_test.rs"
 [features]
 default = ["desktop"]
 desktop = [
+  "dep:block2",
   "dep:getrandom",
+  "dep:objc2",
+  "dep:objc2-core-foundation",
   "dep:sys-locale",
   "dep:tauri",
   "dep:tauri-build",
@@ -71,6 +74,13 @@ url = { version = "=2.5.8" }
 tauri = { version = "=2.11.5", optional = true, features = ["tray-icon"] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
 tauri-plugin-shell = { version = "=2.3.6", optional = true }
+[target.'cfg(target_os = "macos")'.dependencies]
+# https://github.com/madsmtm/objc2/releases/tag/block2-0.6.2
+block2 = { version = "=0.6.2", optional = true }
+# https://github.com/madsmtm/objc2/releases/tag/objc2-0.6.4
+objc2 = { version = "=0.6.4", optional = true }
+# https://github.com/madsmtm/objc2/releases/tag/frameworks-0.3.2
+objc2-core-foundation = { version = "=0.3.2", optional = true }
 [build-dependencies]
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-build-v2.6.3
 tauri-build = { version = "=2.6.3", optional = true, features = [] }
