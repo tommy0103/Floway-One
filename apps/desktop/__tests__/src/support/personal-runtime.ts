@@ -5,12 +5,16 @@ import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
-import type { InstalledAppVerificationContext } from './installed-app.ts';
+import { type InstalledAppVerificationContext, writeContractedEntry } from './installed-app.ts';
+import { assertNativeFailureSurface } from './native-surface.ts';
 import {
   appEnvironmentWithoutPortOverride,
+  assertBoundedSidecarLogs,
+  assertNoDirectChildren,
   assertLoopbackPortReleased,
   captureApp,
   PERSONAL_DASHBOARD_PORT,
+  processIsRunning,
   requestNormalApplicationExit,
   terminateProcessGroup,
   type CapturedChild,
@@ -22,6 +26,12 @@ import {
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 const execFileAsync = promisify(execFile);
+const DASHBOARD_BOOTSTRAP_TIMEOUT_MS = 30_000;
+const DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS = 50;
+const DASHBOARD_PAGE_LOAD_EVENT_PREFIX = 'FLOWAY_DESKTOP_PAGE_LOAD ';
+const DASHBOARD_BOOTSTRAP_COMPLETED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"completed"}';
+const DASHBOARD_BOOTSTRAP_FAILED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"failed"}';
+const DASHBOARD_BOOTSTRAP_REJECTED = 'FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"rejected"}';
 
 export type PersonalFailurePhase = 'app' | 'sidecar' | 'listener' | 'dashboard' | 'migration' | 'credential';
 
@@ -77,20 +87,26 @@ export const personalEntrySource = (
 import { createOperatingSystemCredential } from './src/device-master-key.js';
 import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
+import { reportDesktopStartupFailure } from './src/startup-failure.js';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 
-await runNodeEntry({
-  resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
-    dataDir: ${JSON.stringify(dataRoot)},
-    stableUserHome: ${JSON.stringify(dataRoot)},
-  }),
-  createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
-    const credential = await createOperatingSystemCredential(
-      ${JSON.stringify(credentialIdentity)},
-    );
-    return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
-  },
-});
+try {
+  await runNodeEntry({
+    resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
+      dataDir: ${JSON.stringify(dataRoot)},
+      stableUserHome: ${JSON.stringify(dataRoot)},
+    }),
+    createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
+      const credential = await createOperatingSystemCredential(
+        ${JSON.stringify(credentialIdentity)},
+      );
+      return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
+    },
+  });
+} catch (failure) {
+  reportDesktopStartupFailure(failure, 'native-dependency');
+  throw failure;
+}
 ${afterStartup}
 `;
 
@@ -98,30 +114,80 @@ const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual
   if (expected === actual) throw new Error(`forced personal runtime ${actual} phase failure`);
 };
 
+export const waitForDashboardBootstrapSession = async (
+  readOutput: () => string,
+  readSessionToken: () => string | undefined,
+  options: {
+    readonly now?: () => number;
+    readonly sleep?: (milliseconds: number) => Promise<void>;
+    readonly timeoutMs?: number;
+  } = {},
+): Promise<string> => {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? (async (milliseconds: number) => {
+    await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
+  });
+  const timeoutMs = options.timeoutMs ?? DASHBOARD_BOOTSTRAP_TIMEOUT_MS;
+  let deadline = now() + timeoutMs;
+  let documentLoaded = false;
+  while (now() < deadline) {
+    const captured = readOutput();
+    if (captured.includes(DASHBOARD_BOOTSTRAP_FAILED) || captured.includes(DASHBOARD_BOOTSTRAP_REJECTED)) {
+      throw new Error(`Installed Dashboard bootstrap request failed\n${captured}`);
+    }
+    if (!documentLoaded) {
+      const events = captured.split('\n').flatMap(line => {
+        if (!line.startsWith(DASHBOARD_PAGE_LOAD_EVENT_PREFIX)) return [];
+        try {
+          const event = JSON.parse(line.slice(DASHBOARD_PAGE_LOAD_EVENT_PREFIX.length)) as {
+            bootstrapAuthority?: unknown;
+            event?: unknown;
+            surface?: unknown;
+          };
+          return [event];
+        } catch {
+          return [];
+        }
+      });
+      const finishedWithAuthority = events.some(event =>
+        event.bootstrapAuthority === true && event.event === 'finished' && event.surface === 'dashboard');
+      const startedWithAuthority = events.some(event =>
+        event.bootstrapAuthority === true && event.event === 'started' && event.surface === 'dashboard');
+      const finishedDashboard = events.some(event => event.event === 'finished' && event.surface === 'dashboard');
+      // The bootstrap exchange strips the credential fragment as soon as it
+      // settles, so the finished event can legitimately arrive without it.
+      documentLoaded = finishedWithAuthority || (startedWithAuthority && finishedDashboard);
+      if (documentLoaded) deadline = now() + timeoutMs;
+    }
+    if (documentLoaded && captured.includes(DASHBOARD_BOOTSTRAP_COMPLETED)) {
+      const token = readSessionToken();
+      if (token !== undefined) return token;
+      throw new Error(`Installed Dashboard reported bootstrap completion without a durable owner session\n${captured}`);
+    }
+    await sleep(Math.min(DASHBOARD_BOOTSTRAP_POLL_INTERVAL_MS, Math.max(0, deadline - now())));
+  }
+  const stage = documentLoaded
+    ? 'did not complete its one-time bootstrap exchange after the document loaded'
+    : 'did not finish loading its bootstrap document';
+  throw new Error(`Installed Dashboard ${stage}\n${readOutput()}`);
+};
+
 const assertDashboardBootstrapAndControlPlane = async (
+  output: () => string,
   origin: string,
   databasePath: string,
 ): Promise<void> => {
-  const deadline = Date.now() + 10_000;
-  let sessionToken: string | undefined;
-  while (Date.now() < deadline) {
+  const sessionToken = await waitForDashboardBootstrapSession(output, () => {
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
       database.exec('PRAGMA busy_timeout = 5000');
       const session = database.prepare('SELECT id FROM sessions WHERE user_id = 1 ORDER BY created_at DESC LIMIT 1')
         .get() as { id?: unknown } | undefined;
-      if (typeof session?.id === 'string') {
-        sessionToken = session.id;
-        break;
-      }
+      return typeof session?.id === 'string' ? session.id : undefined;
     } finally {
       database.close();
     }
-    await new Promise(resolveWait => setTimeout(resolveWait, 50));
-  }
-  if (sessionToken === undefined) {
-    throw new Error('Installed Dashboard did not exchange its one-time bootstrap authority for an owner session');
-  }
+  });
 
   const sessionResponse = await fetch(`${origin}/auth/me`, {
     headers: { origin, 'x-floway-session': sessionToken },
@@ -210,11 +276,15 @@ export const assertPersonalRuntime = async (
       await utimes(runtimeStatePath, 1, 1);
       seededRuntimeStateMtime = (await stat(runtimeStatePath)).mtimeMs;
     }
-    await writeFile(context.entry, personalEntrySource(
+    await writeContractedEntry(context, personalEntrySource(
       verificationRoot,
       credentialIdentity,
     ));
-    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(
+      context.executable,
+      appEnvironmentWithoutPortOverride(),
+      ['--data-dir', verificationRoot],
+    );
     cleanup.defer('application and sidecar process group', async () => await terminateProcessGroup(child));
     forcePersonalFailure(forcedFailure, 'app');
 
@@ -233,8 +303,8 @@ export const assertPersonalRuntime = async (
     if (assetPath === undefined) throw new Error('Installed Dashboard document names no asset');
     const assetResponse = await fetch(`${origin}${assetPath}`);
     if (!assetResponse.ok) throw new Error(`Installed Dashboard asset returned ${assetResponse.status}`);
-    await assertDashboardBootstrapAndControlPlane(origin, resolve(verificationRoot, 'floway.db'));
     forcePersonalFailure(forcedFailure, 'dashboard');
+    await assertDashboardBootstrapAndControlPlane(output, origin, resolve(verificationRoot, 'floway.db'));
 
     const database = new DatabaseSync(resolve(verificationRoot, 'floway.db'), { readOnly: true });
     try {
@@ -272,7 +342,8 @@ export const assertPersonalRuntime = async (
   });
 };
 
-export const assertUnexpectedSidecarExitClosesShell = async (
+export const assertUnexpectedSidecarExitSurfacesFailure = async (
+  nativeWindowProbe: string,
   context: InstalledAppVerificationContext,
   verificationRoot: string,
 ): Promise<void> => {
@@ -291,24 +362,49 @@ export const assertUnexpectedSidecarExitClosesShell = async (
     cleanup.defer('unexpected-exit application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
     cleanup.defer('unexpected-exit credential', async () => await runCredentialScript(context, credentialIdentity, 'delete'));
     cleanup.defer('unexpected-exit listener', async () => await assertLoopbackPortReleased(port));
-    await writeFile(context.entry, personalEntrySource(
+    await writeContractedEntry(context, personalEntrySource(
       verificationRoot,
       credentialIdentity,
       `setTimeout(() => { throw new Error(${JSON.stringify(parentFailure)}, { cause: new Error(${JSON.stringify(originalCause)}) }); }, 1_500);`,
     ));
-    const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
+    const { child, output } = captureApp(
+      context.executable,
+      appEnvironmentWithoutPortOverride(),
+      ['--data-dir', verificationRoot],
+    );
     cleanup.defer('unexpected-exit application process group', async () => await terminateProcessGroup(child));
     const sidecarPid = await waitForDirectChild(child, output);
     await waitForHealthyRuntime(child, output, origin);
-    await waitForChildExit(child, 10_000);
-    if (child.exitCode !== 1) {
-      throw new Error(`Floway shell did not fail after its personal runtime exited: ${child.exitCode ?? child.signalCode}\n${output()}`);
+    const expected = [
+      parentFailure,
+      originalCause,
+      'Floway packaged runtime exited unexpectedly',
+      'Floway desktop runtime state: failed kind=unexpected-exit',
+      'FLOWAY_DESKTOP_SURFACE ',
+      'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+      '"restartEnabled":true',
+    ];
+    const captured = await waitForOutput(child, output, expected);
+    if (child.pid === undefined || !processIsRunning(child.pid)) {
+      throw new Error(`Floway shell did not remain available after its runtime exited\n${captured}`);
     }
-    const captured = output();
-    for (const fragment of [parentFailure, originalCause, 'Floway packaged runtime exited unexpectedly']) {
+    for (const fragment of expected) {
       if (!captured.includes(fragment)) throw new Error(`Floway shell omitted ${JSON.stringify(fragment)}\n${captured}`);
     }
     await waitForProcessStopped(sidecarPid);
+    if (child.pid === undefined) throw new Error('Floway production app process has no PID');
+    await assertNativeFailureSurface(nativeWindowProbe, child.pid, captured, {
+      dataRoot: verificationRoot,
+      failureKind: 'unexpected-exit',
+      forbiddenSnapshotText: [parentFailure, originalCause],
+    });
+    await assertBoundedSidecarLogs(verificationRoot, [
+      parentFailure,
+      originalCause,
+      'FLOWAY_DESKTOP_RECOVERY_SURFACE ',
+    ]);
+    await assertNoDirectChildren(child.pid);
     await assertLoopbackPortReleased(port);
+    await terminateProcessGroup(child);
   });
 };

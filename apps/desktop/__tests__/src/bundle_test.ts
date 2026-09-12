@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { exchangeDirectoriesAtomically } from '../../src/atomic-directory.ts';
 import { assertPackagedRuntime, prepareDesktopBundle } from '../../src/bundle.ts';
 import { compilePackagedRuntime } from '../../src/packaged-runtime.ts';
-import { targetTripleForHost } from '../../src/release-contract.ts';
+import { readDesktopReleaseVersion, targetTripleForHost } from '../../src/release-contract.ts';
 
 const roots = new Set<string>();
 const desktopRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -67,21 +67,72 @@ const generateFixtureRuntime = async (runtimeRoot: string): Promise<void> => {
     await mkdir(resolve(path, '..'), { recursive: true });
     await writeFile(path, content);
   }));
+  const nativeFixture = resolve(runtimeRoot, 'apps/platform-node/node_modules/native-fixture/runtime.node');
+  await mkdir(resolve(nativeFixture, '..'), { recursive: true });
+  if (process.platform === 'darwin') await copyFile(process.execPath, nativeFixture);
+  else await writeFile(nativeFixture, 'native fixture');
 };
 
 describe('desktop bundle preparation', () => {
+  test('rejects any release version drift between shell, sidecar, and Dashboard', async () => {
+    const root = await temporaryRoot();
+    const testDesktopRoot = resolve(root, 'apps/desktop');
+    await Promise.all([
+      mkdir(resolve(testDesktopRoot, 'src-tauri'), { recursive: true }),
+      mkdir(resolve(root, 'apps/platform-node'), { recursive: true }),
+      mkdir(resolve(root, 'apps/web'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(resolve(testDesktopRoot, 'package.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(root, 'apps/platform-node/package.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(root, 'apps/web/package.json'), '{"version":"0.2.0"}'),
+      writeFile(resolve(testDesktopRoot, 'src-tauri/tauri.conf.json'), '{"version":"0.1.0"}'),
+      writeFile(resolve(testDesktopRoot, 'src-tauri/Cargo.toml'), '[package]\nversion = "0.1.0"\n'),
+    ]);
+
+    await expect(readDesktopReleaseVersion(testDesktopRoot)).rejects.toThrow(
+      'Desktop shell, sidecar, Dashboard, Tauri configuration, and Cargo release versions must match exactly',
+    );
+  });
+
   test('maps the validated runtime and Node sidecar to the installed paths Rust resolves', async () => {
-    const config = JSON.parse(
-      await readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
-    ) as {
-      bundle: { externalBin: string[]; resources: Record<string, string> };
-      productName: string;
-    };
+    const [config, mainCapability] = await Promise.all([
+      readFile(resolve(desktopRoot, 'src-tauri/tauri.conf.json'), 'utf8').then(JSON.parse) as Promise<{
+        build: { frontendDist: string };
+        bundle: { externalBin: string[]; resources: Record<string, string> };
+        productName: string;
+        version: string;
+      }>,
+      readFile(resolve(desktopRoot, 'src-tauri/capabilities/main.json'), 'utf8').then(JSON.parse) as Promise<{
+        identifier: string;
+        permissions: string[];
+        windows: string[];
+      }>,
+    ]);
+    const [desktopManifest, sidecarManifest, dashboardManifest, cargoManifest] = await Promise.all([
+      readFile(resolve(desktopRoot, 'package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, '../platform-node/package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, '../web/package.json'), 'utf8').then(JSON.parse) as Promise<{ version: string }>,
+      readFile(resolve(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8'),
+    ]);
     expect(config.productName).toBe('Floway');
+    expect(config.build.frontendDist).toBe('bundle-inputs/runtime/apps/web/dist/client');
+    expect(config.version).toBe(desktopManifest.version);
+    expect(sidecarManifest.version).toBe(desktopManifest.version);
+    expect(dashboardManifest.version).toBe(desktopManifest.version);
+    expect(cargoManifest).toMatch(new RegExp(`^version = "${desktopManifest.version.replaceAll('.', '\\.')}"$`, 'mu'));
     expect(config.bundle.externalBin).toEqual(['bundle-inputs/binaries/floway-node']);
     expect(config.bundle.resources).toEqual({
       'bundle-inputs/desktop-bundle-contract.json': 'desktop-bundle-contract.json',
       'bundle-inputs/runtime/': 'runtime/',
+    });
+    expect(mainCapability).toMatchObject({
+      identifier: 'main',
+      permissions: [
+        'core:event:allow-listen',
+        'core:event:allow-unlisten',
+      ],
+      windows: ['main'],
     });
   });
 
@@ -120,6 +171,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable,
       nodePlatform: process.platform,
       nodeVersion: '24.19.0',
+      releaseVersion: '0.1.0',
       targetTriple,
     });
 
@@ -129,20 +181,35 @@ describe('desktop bundle preparation', () => {
     ));
     expect(prepared.contractPath).toBe(resolve(root, 'src-tauri/bundle-inputs/desktop-bundle-contract.json'));
     const contract = JSON.parse(await readFile(prepared.contractPath, 'utf8')) as {
+      schemaVersion?: unknown;
+      compatibility?: { protocolVersion?: unknown; releaseVersion?: unknown };
       dashboard?: { assets?: Array<{ path?: unknown; sha256?: unknown }> };
+      entry?: { path?: unknown; sha256?: unknown };
       migrations?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
+      nativeDependencies?: { files?: Array<{ path?: unknown; sha256?: unknown }> };
     };
+    expect(contract.schemaVersion).toBe(4);
+    expect(contract.compatibility).toEqual({
+      protocolVersion: 1,
+      releaseVersion: '0.1.0',
+    });
     expect(contract.dashboard?.assets?.map(asset => asset.path)).toEqual([
       'assets/lazy-dashboard.js',
       'dashboard-routes.json',
       'index.html',
     ]);
     expect(contract.dashboard?.assets?.every(asset => /^[\da-f]{64}$/.test(String(asset.sha256)))).toBe(true);
+    expect(contract.entry?.path).toBe('entry.js');
+    expect(contract.entry?.sha256).toMatch(/^[\da-f]{64}$/);
     expect(contract.migrations?.files?.map(file => file.path)).toEqual([
       '0001_initial.sql',
       '0002_independent.sql',
     ]);
     expect(contract.migrations?.files?.every(file => /^[\da-f]{64}$/.test(String(file.sha256)))).toBe(true);
+    expect(contract.nativeDependencies?.files?.map(file => file.path)).toEqual([
+      'native-fixture/runtime.node',
+    ]);
+    expect(contract.nativeDependencies?.files?.every(file => /^[\da-f]{64}$/.test(String(file.sha256)))).toBe(true);
     expect((await stat(prepared.nodeSidecar)).size).toBe((await stat(nodeExecutable)).size);
     if (process.platform !== 'win32') {
       expect((await stat(prepared.nodeSidecar)).mode & 0o777).toBe(0o755);
@@ -154,7 +221,7 @@ describe('desktop bundle preparation', () => {
       'apps/platform-node/node_modules/.bin',
     ))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
-  });
+  }, 20_000);
 
   test('rejects an assembly omission against canonical migrations before publishing a contract', async () => {
     const root = await temporaryRoot();
@@ -171,6 +238,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple: targetTripleForHost(process.platform, process.arch),
       executeNode: false,
       validateSidecar: async () => undefined,
@@ -197,6 +265,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple: targetTripleForHost(process.platform, process.arch),
       executeNode: false,
       validateSidecar: async () => undefined,
@@ -217,6 +286,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const published = await prepareDesktopBundle(options);
@@ -237,7 +307,7 @@ describe('desktop bundle preparation', () => {
     expect(await readFile(published.contractPath, 'utf8')).toBe(priorContract);
     expect((await stat(published.nodeSidecar)).size).toBe(priorSidecar.size);
     await expect(stat(resolve(root, 'src-tauri/.bundle-staging'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 20_000);
 
   test('publishes a replacement complete input tree with one directory exchange', async () => {
     const root = await temporaryRoot();
@@ -256,6 +326,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const first = await prepareDesktopBundle(options);
@@ -281,6 +352,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: process.execPath,
       nodePlatform: process.platform,
       nodeVersion: process.versions.node,
+      releaseVersion: '0.1.0',
       targetTriple,
     } as const;
     const published = await prepareDesktopBundle(options);
@@ -318,6 +390,7 @@ describe('desktop bundle preparation', () => {
         nodeExecutable: process.execPath,
         nodePlatform: process.platform,
         nodeVersion: process.versions.node,
+        releaseVersion: '0.1.0',
         targetTriple: targetTripleForHost(process.platform, process.arch),
         cleanupStaging: async () => { throw cleanupFailure; },
       });
@@ -344,6 +417,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: resolve(root, 'node'),
       nodePlatform: 'darwin',
       nodeVersion: '24.19.0',
+      releaseVersion: '0.1.0',
       targetTriple: 'x86_64-apple-darwin',
     })).rejects.toThrow('incompatible with the build host darwin/arm64');
     expect(generateRuntime).not.toHaveBeenCalled();
@@ -362,6 +436,7 @@ describe('desktop bundle preparation', () => {
       nodeExecutable: resolve(root, 'node'),
       nodePlatform: 'darwin',
       nodeVersion: '24.18.0',
+      releaseVersion: '0.1.0',
       targetTriple: 'aarch64-apple-darwin',
     })).rejects.toThrow('Desktop bundles require Node.js 24.19.0; received 24.18.0');
     expect(generateRuntime).not.toHaveBeenCalled();

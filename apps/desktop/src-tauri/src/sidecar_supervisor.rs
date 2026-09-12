@@ -109,8 +109,9 @@ enum ProcessState {
     Terminated,
 }
 
-/// Owns only the packaged child process. Window, tray, singleton, restart,
-/// autostart, and user-driven lifetime policy remain the responsibility of #17.
+/// Owns only packaged child registration, termination, and teardown settlement.
+/// Window, tray, singleton, autostart, and user-driven lifetime policy stay
+/// outside this process-ownership boundary.
 pub(crate) struct PackageProcessSupervisor {
     changed: Condvar,
     state: Mutex<ProcessState>,
@@ -137,7 +138,7 @@ impl PackageProcessSupervisor {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !matches!(*state, ProcessState::Empty) {
+        if !matches!(*state, ProcessState::Empty | ProcessState::Terminated) {
             return Err(ProcessRegistrationError::AlreadyOwned);
         }
         let (events, child) = spawn().map_err(ProcessRegistrationError::Spawn)?;

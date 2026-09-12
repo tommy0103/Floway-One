@@ -2,13 +2,168 @@ use std::error::Error;
 use std::io;
 
 use percent_encoding::percent_decode_str;
+use serde_json::{Value, json};
 use url::Url;
 
 pub const DASHBOARD_ORIGIN: &str = "http://127.0.0.1:8788";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_ENV: &str = "FLOWAY_BOOTSTRAP_TOKEN";
 pub const PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY: &str = "floway-bootstrap";
 pub const PERSONAL_RUNTIME_READY_PREFIX: &str = "Floway listening on ";
+pub const DESKTOP_STATUS_ROUTE: &str = "desktop-status";
 const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopAction {
+    OpenLogs,
+    Restart,
+}
+
+pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
+    if candidate.scheme() != "floway-action" {
+        return None;
+    }
+    match candidate.host_str()? {
+        "open-logs" => Some(DesktopAction::OpenLogs),
+        "restart" => Some(DesktopAction::Restart),
+        _ => None,
+    }
+}
+
+pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> {
+    (|| {
+        let fields = surface.as_object().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic must be an object",
+            )
+        })?;
+        if fields.len() != 6 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic has an invalid field count",
+            ));
+        }
+        let value = |key: &str| -> Result<&str, io::Error> {
+            fields.get(key).and_then(Value::as_str).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Floway recovery support diagnostic has an invalid {key} field"),
+                )
+            })
+        };
+        let failure_kind = value("failureKind")?;
+        if !matches!(
+            failure_kind,
+            "asset"
+                | "compatibility"
+                | "migration"
+                | "native-dependency"
+                | "port"
+                | "storage"
+                | "timeout"
+                | "unexpected-exit"
+                | "unknown"
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic has an unknown failure kind",
+            ));
+        }
+        let locale = value("locale")?;
+        if !matches!(locale, "en" | "zh-Hans") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic has an unknown locale",
+            ));
+        }
+        let restart_enabled = fields
+            .get("restartEnabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid restartEnabled field",
+                )
+            })?;
+        let logs_available = fields
+            .get("logsAvailable")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid logsAvailable field",
+                )
+            })?;
+        let revision = fields
+            .get("revision")
+            .and_then(Value::as_u64)
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid revision field",
+                )
+            })?;
+        let actions = fields
+            .get("actions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid actions field",
+                )
+            })?;
+        let mut expected_actions = Vec::new();
+        if restart_enabled {
+            expected_actions.push(Value::String("restart".to_owned()));
+        }
+        if logs_available {
+            expected_actions.push(Value::String("open-logs".to_owned()));
+        }
+        if actions != &expected_actions {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic actions do not match recovery readiness",
+            ));
+        }
+        Ok(json!({
+            "actions": actions,
+            "failureKind": failure_kind,
+            "logsAvailable": logs_available,
+            "locale": locale,
+            "restartEnabled": restart_enabled,
+            "revision": revision,
+        }))
+    })()
+}
+
+pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {
+    if new_window || candidate.path().trim_matches('/') != DESKTOP_STATUS_ROUTE {
+        return false;
+    }
+    (candidate.scheme() == "tauri" && candidate.host_str() == Some("localhost"))
+        || (candidate.scheme() == "http" && candidate.host_str() == Some("tauri.localhost"))
+}
+
+pub fn sanitized_page_load_diagnostic(url: &Url, event: &str) -> Value {
+    let bootstrap_authority = url.fragment().is_some_and(|fragment| {
+        url::form_urlencoded::parse(fragment.as_bytes())
+            .any(|(key, _value)| key == PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY)
+    });
+    let surface = if is_desktop_status_navigation(url, false) {
+        "desktop-status"
+    } else if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") {
+        "dashboard"
+    } else {
+        "other"
+    };
+    json!({
+        "bootstrapAuthority": bootstrap_authority,
+        "event": event,
+        "route": url.path(),
+        "surface": surface,
+    })
+}
 
 fn has_valid_percent_encoding(value: &str) -> bool {
     let bytes = value.as_bytes();

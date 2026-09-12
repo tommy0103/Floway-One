@@ -9,6 +9,7 @@ import { assertSingleMachOArchitecture, thinMachOToArchitecture, type MachOArchi
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
 import {
   architectureForTargetTriple,
+  DESKTOP_COMPATIBILITY_VERSION,
   readPackagedNodeVersion,
   targetTripleForHost,
 } from './release-contract.ts';
@@ -21,6 +22,7 @@ export interface PrepareDesktopBundleOptions {
   readonly nodeExecutable: string;
   readonly nodePlatform: NodeJS.Platform;
   readonly nodeVersion: string;
+  readonly releaseVersion: string;
   readonly targetTriple: string;
   readonly executeNode?: boolean;
   readonly exchangeDirectories?: AtomicDirectoryExchange;
@@ -35,11 +37,19 @@ export interface PreparedDesktopBundle {
 }
 
 interface DesktopBundleContract {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 4;
+  readonly compatibility: {
+    readonly protocolVersion: typeof DESKTOP_COMPATIBILITY_VERSION;
+    readonly releaseVersion: string;
+  };
   readonly dashboard: {
     readonly assets: readonly BundleFileContract[];
   };
+  readonly entry: BundleFileContract;
   readonly migrations: {
+    readonly files: readonly BundleFileContract[];
+  };
+  readonly nativeDependencies: {
     readonly files: readonly BundleFileContract[];
   };
   readonly node: {
@@ -119,6 +129,25 @@ const migrationFileContract = async (migrationsRoot: string): Promise<readonly B
     throw new Error(`Desktop bundle migration manifest is empty beneath ${migrationsRoot}`);
   }
   return files;
+};
+
+const nativeDependencyFileContract = async (runtimeRoot: string): Promise<readonly BundleFileContract[]> => {
+  const dependenciesRoot = resolve(runtimeRoot, 'apps/platform-node/node_modules');
+  const files = await bundleFileContract(dependenciesRoot, path => path.endsWith('.node'));
+  if (files.length === 0) {
+    throw new Error(`Desktop bundle native dependency manifest is empty beneath ${dependenciesRoot}`);
+  }
+  return files;
+};
+
+const entryFileContract = async (runtimeRoot: string): Promise<BundleFileContract> => {
+  const path = 'entry.js';
+  return {
+    path,
+    sha256: createHash('sha256')
+      .update(await readFile(resolve(runtimeRoot, 'apps/platform-node', path)))
+      .digest('hex'),
+  };
 };
 
 const assertCanonicalMigrations = async (
@@ -262,6 +291,7 @@ export const prepareDesktopBundle = async ({
   nodeExecutable,
   nodePlatform,
   nodeVersion,
+  releaseVersion,
   targetTriple,
   executeNode = true,
   exchangeDirectories = exchangeDirectoriesAtomically,
@@ -306,9 +336,15 @@ export const prepareDesktopBundle = async ({
       canonicalMigrations,
     );
     const contract: DesktopBundleContract = {
-      schemaVersion: 1,
+      schemaVersion: 4,
+      compatibility: {
+        protocolVersion: DESKTOP_COMPATIBILITY_VERSION,
+        releaseVersion,
+      },
       dashboard: { assets: await dashboardAssetContract(stagedRuntimeRoot) },
+      entry: await entryFileContract(stagedRuntimeRoot),
       migrations: { files: canonicalMigrations },
+      nativeDependencies: { files: await nativeDependencyFileContract(stagedRuntimeRoot) },
       node: {
         architecture: nodeArchitecture,
         platform: nodePlatform,

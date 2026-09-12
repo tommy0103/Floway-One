@@ -1,7 +1,9 @@
 use floway_desktop::{
-    DASHBOARD_ORIGIN, DashboardNavigationPolicy, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
-    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, PERSONAL_RUNTIME_READY_PREFIX,
-    dashboard_bootstrap_url, enforce_dashboard_navigation, ready_dashboard_origin,
+    DASHBOARD_ORIGIN, DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
+    PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
+    PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
+    enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
+    recovery_surface_diagnostic, sanitized_page_load_diagnostic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +27,104 @@ fn owns_bootstrap_and_ready_protocol_constants() {
         ready_dashboard_origin("migration complete\nFloway listening on http://127.0.0.1:9217\n"),
         Some("http://127.0.0.1:9217")
     );
+}
+
+#[test]
+fn page_load_diagnostics_expose_state_without_bootstrap_authority() {
+    let token = "34".repeat(32);
+    let url = url::Url::parse(&format!("http://127.0.0.1:8788/#floway-bootstrap={token}")).unwrap();
+    let diagnostic = sanitized_page_load_diagnostic(&url, "finished");
+
+    assert_eq!(
+        diagnostic,
+        serde_json::json!({
+            "bootstrapAuthority": true,
+            "event": "finished",
+            "route": "/",
+            "surface": "dashboard",
+        })
+    );
+    assert!(!diagnostic.to_string().contains(&token));
+}
+
+#[test]
+fn limits_shell_status_navigation_and_actions_to_the_owned_surface() {
+    assert_eq!(DESKTOP_STATUS_ROUTE, "desktop-status");
+    assert!(is_desktop_status_navigation(
+        &url::Url::parse("tauri://localhost/desktop-status?state=failed").unwrap(),
+        false,
+    ));
+    assert!(is_desktop_status_navigation(
+        &url::Url::parse("http://tauri.localhost/desktop-status").unwrap(),
+        false,
+    ));
+    assert!(!is_desktop_status_navigation(
+        &url::Url::parse("https://tauri.localhost/desktop-status").unwrap(),
+        false,
+    ));
+    assert!(!is_desktop_status_navigation(
+        &url::Url::parse("tauri://localhost/desktop-status").unwrap(),
+        true,
+    ));
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://open-logs").unwrap()),
+        Some(DesktopAction::OpenLogs),
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://restart").unwrap()),
+        Some(DesktopAction::Restart),
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://quit").unwrap()),
+        None,
+    );
+}
+
+#[test]
+fn accepts_only_bounded_typed_recovery_support_state() {
+    let surface = serde_json::json!({
+        "actions": ["restart", "open-logs"],
+        "failureKind": "port",
+        "logsAvailable": true,
+        "locale": "en",
+        "restartEnabled": true,
+        "revision": 4,
+    });
+    let diagnostic =
+        recovery_surface_diagnostic(&surface).expect("bounded recovery state must be accepted");
+    assert_eq!(diagnostic["failureKind"], "port");
+    assert_eq!(diagnostic["locale"], "en");
+    assert_eq!(
+        diagnostic["actions"],
+        serde_json::json!(["restart", "open-logs"])
+    );
+    assert_eq!(diagnostic, surface);
+}
+
+#[test]
+fn rejects_untyped_or_inconsistent_recovery_support_reports() {
+    for surface in [
+        serde_json::json!({ "failureKind": "constructor" }),
+        serde_json::json!({
+            "actions": ["restart", "open-logs"],
+            "failureKind": "port",
+            "logsAvailable": true,
+            "locale": "en",
+            "restartEnabled": false,
+            "revision": 4,
+        }),
+        serde_json::json!({
+            "actions": ["restart", "open-logs"],
+            "failureKind": "port",
+            "logsAvailable": true,
+            "locale": "en",
+            "restartEnabled": true,
+            "revision": 4,
+            "title": "arbitrary rendered text",
+        }),
+    ] {
+        assert!(recovery_surface_diagnostic(&surface).is_err());
+    }
 }
 
 #[test]

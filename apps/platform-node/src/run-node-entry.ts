@@ -9,6 +9,11 @@ import {
   resolveNodeRuntimeProfile,
   type BootstrappedNodePlatform,
 } from './bootstrap.ts';
+import {
+  DESKTOP_RUNTIME_CONTRACT_ENV,
+  loadDesktopRuntimeCompatibility,
+  type DesktopRuntimeCompatibility,
+} from './desktop-runtime-compatibility.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
@@ -26,6 +31,7 @@ import { initializePersonalStorage } from './personal-storage.ts';
 import { selectNodeRuntimeProfile } from './runtime-profile.ts';
 import { startScheduledMaintenance } from './scheduled-maintenance.ts';
 import { startNodeRuntime } from './start-runtime.ts';
+import { startupFailure } from './startup-failure.ts';
 import { createNodeStoredSecretCodec } from './stored-secrets.ts';
 import {
   LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
@@ -88,6 +94,7 @@ export interface NodeEntryOverrides {
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
+  readonly loadDesktopRuntimeCompatibility?: typeof loadDesktopRuntimeCompatibility;
   readonly initPersonalDashboardBootstrap?: typeof initPersonalDashboardBootstrap;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
   readonly resolvePersonalRuntimePaths?: typeof resolvePersonalRuntimePaths;
@@ -109,8 +116,15 @@ const prepareNodePlatform = async (
       .first<{ name: string }>() !== null;
   const createStoredSecrets = overrides.createNodeStoredSecretCodec ?? createNodeStoredSecretCodec;
   let storedSecrets;
+  const applyRuntimeMigrations = async (...args: Parameters<typeof migrate>): Promise<void> => {
+    try {
+      await migrate(...args);
+    } catch (cause) {
+      throw startupFailure('migration', 'Floway could not apply its local database migrations', cause);
+    }
+  };
   if (hasExistingMigrationState) {
-    await migrate(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
+    await applyRuntimeMigrations(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
     storedSecrets = await createStoredSecrets(
       'personal',
       db,
@@ -118,10 +132,10 @@ const prepareNodePlatform = async (
       undefined,
       { validate: false },
     );
-    await migrate(db, undefined, storedSecrets);
+    await applyRuntimeMigrations(db, undefined, storedSecrets);
     await validateStoredSecrets(db, storedSecrets);
   } else {
-    await migrate(db);
+    await applyRuntimeMigrations(db);
     storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
   }
   if (personalDatabasePath !== undefined) personalStorage?.hardenSqliteFiles(personalDatabasePath);
@@ -134,13 +148,20 @@ const prepareNodePlatform = async (
 const startNodeListener = async (
   profile: RuntimeProfileMode,
   personalRuntime: PersonalRuntime | null,
+  desktopCompatibility: DesktopRuntimeCompatibility | null,
   port: number,
   overrides: NodeEntryOverrides,
 ): Promise<NodeEntryInfo> => {
-  const localApp = (overrides.createLocalApp ?? createLocalApp)({
-    gatewayFetch: app.fetch,
-    staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
-  });
+  let localApp: { fetch: typeof app.fetch };
+  try {
+    localApp = (overrides.createLocalApp ?? createLocalApp)({
+      desktopCompatibility,
+      gatewayFetch: app.fetch,
+      staticRoot: fileURLToPath(new URL('../../web/dist/client', import.meta.url)),
+    });
+  } catch (cause) {
+    throw startupFailure('asset', 'Floway could not load its packaged Dashboard assets', cause);
+  }
   const serve = overrides.serve ?? (async (options: NodeServeOptions): Promise<NodeEntryInfo> => {
     const server = createAdaptorServer({
       fetch: localApp.fetch,
@@ -151,11 +172,15 @@ const startNodeListener = async (
       serviceName: 'Floway',
     });
   });
-  return await serve({
-    displayEndpoint: personalRuntime?.endpoint ?? `http://localhost:${port}`,
-    ...(profile === 'personal' ? { hostname: '127.0.0.1' } : {}),
-    port,
-  });
+  try {
+    return await serve({
+      displayEndpoint: personalRuntime?.endpoint ?? `http://localhost:${port}`,
+      ...(profile === 'personal' ? { hostname: '127.0.0.1' } : {}),
+      port,
+    });
+  } catch (cause) {
+    throw startupFailure('port', 'Floway could not open its configured local endpoint', cause);
+  }
 };
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
@@ -172,22 +197,43 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   const resolvePersonalPaths = overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths;
   const personal = profile === 'personal'
     ? (() => {
-        const paths = resolvePersonalPaths();
-        const storage = (overrides.initializePersonalStorage ?? initializePersonalStorage)(paths);
-        return { paths, storage };
+        try {
+          const paths = resolvePersonalPaths();
+          const storage = (overrides.initializePersonalStorage ?? initializePersonalStorage)(paths);
+          return { paths, storage };
+        } catch (cause) {
+          throw startupFailure('storage', 'Floway could not initialize its personal data storage', cause);
+        }
       })()
     : null;
   if (personal !== null) {
     installPersonalLogging(personal.paths.logsDir, { permissions: personal.storage });
   }
+  const desktopCompatibility = profile === 'personal'
+    ? (() => {
+        try {
+          return (overrides.loadDesktopRuntimeCompatibility ?? loadDesktopRuntimeCompatibility)(
+            process.env[DESKTOP_RUNTIME_CONTRACT_ENV],
+          );
+        } catch (cause) {
+          throw startupFailure('compatibility', 'Floway could not verify desktop runtime compatibility', cause);
+        }
+      })()
+    : null;
   const startupWarnings: string[] = [];
   const personalRuntime = personal === null
     ? null
-    : (overrides.loadPersonalRuntime ?? loadPersonalRuntime)({
-        paths: personal.paths,
-        permissions: personal.storage,
-        warn: warning => startupWarnings.push(warning),
-      });
+    : (() => {
+        try {
+          return (overrides.loadPersonalRuntime ?? loadPersonalRuntime)({
+            paths: personal.paths,
+            permissions: personal.storage,
+            warn: warning => startupWarnings.push(warning),
+          });
+        } catch (cause) {
+          throw startupFailure('storage', 'Floway could not load its personal runtime state', cause);
+        }
+      })();
   for (const warning of startupWarnings) console.warn(warning);
   const port = personalRuntime?.port ?? Number(process.env.PORT ?? '8788');
 
@@ -229,7 +275,13 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       if (dashboardBootstrap !== null) {
         (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(dashboardBootstrap.activate());
       }
-      const info = await startNodeListener(profile, personalRuntime, port, overrides);
+      const info = await startNodeListener(
+        profile,
+        personalRuntime,
+        desktopCompatibility,
+        port,
+        overrides,
+      );
       startScheduledMaintenance();
       return info;
     },

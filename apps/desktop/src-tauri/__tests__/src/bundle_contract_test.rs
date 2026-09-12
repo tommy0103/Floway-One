@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use floway_desktop::{NODE_SIDECAR_NAME, resolve_runtime_bundle};
+use floway_desktop::{BundleResourceKind, NODE_SIDECAR_NAME, resolve_runtime_bundle};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -26,6 +26,7 @@ fn write_fixture(root: &Path) {
         "runtime/apps/platform-node/entry.js",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0002_independent.sql",
+        "runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node",
         "runtime/apps/web/dist/client/index.html",
         "runtime/apps/web/dist/client/dashboard-routes.json",
         "runtime/apps/web/dist/client/assets/lazy-dashboard.js",
@@ -66,9 +67,23 @@ fn write_fixture(root: &Path) {
         })
     });
     let contract = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 4,
+        "compatibility": {
+            "protocolVersion": 1,
+            "releaseVersion": "0.1.0",
+        },
         "dashboard": { "assets": dashboard_assets },
+        "entry": {
+            "path": "entry.js",
+            "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/entry.js")).unwrap())),
+        },
         "migrations": { "files": migration_files },
+        "nativeDependencies": {
+            "files": [{
+                "path": "@napi-rs/keyring/keyring.node",
+                "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node")).unwrap())),
+            }],
+        },
         "node": {
             "architecture": architecture,
             "platform": "darwin",
@@ -91,9 +106,13 @@ fn resolves_only_packaged_runtime_resources_for_the_personal_sidecar() {
     let runtime = resolve_runtime_bundle(&root).expect("complete packaged resources must resolve");
     assert_eq!(NODE_SIDECAR_NAME, "floway-node");
     assert_eq!(runtime.root, root.join("runtime"));
+    assert_eq!(runtime.compatibility.protocol_version, 1);
+    assert_eq!(runtime.compatibility.release_version, "0.1.0");
+    assert_eq!(runtime.compatibility.contract_digest.len(), 64);
     assert_eq!(runtime.contract, root.join("desktop-bundle-contract.json"));
     assert_eq!(runtime.dashboard_assets.len(), 3);
     assert_eq!(runtime.migration_files.len(), 2);
+    assert_eq!(runtime.native_dependency_files.len(), 1);
     assert_eq!(
         runtime.sidecar_arguments(),
         vec![
@@ -162,6 +181,31 @@ fn stale_dashboard_contract_fails_before_runtime_startup() {
 }
 
 #[test]
+fn incompatible_release_contract_fails_before_runtime_startup() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let contract_path = root.join("desktop-bundle-contract.json");
+    let mut contract: serde_json::Value = serde_json::from_slice(
+        &read(&contract_path).expect("fixture bundle contract must be readable"),
+    )
+    .expect("fixture bundle contract must be JSON");
+    contract["compatibility"]["releaseVersion"] = json!("0.2.0");
+    write(&contract_path, format!("{contract}\n")).expect("incompatible contract must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("incompatible release must fail");
+    assert_eq!(error.path(), contract_path);
+    assert!(
+        error
+            .source()
+            .expect("compatibility cause must be retained")
+            .to_string()
+            .contains("this shell requires protocol 1 release 0.1.0")
+    );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
 fn missing_independent_migration_fails_with_the_original_filesystem_error() {
     let root = temporary_root();
     write_fixture(&root);
@@ -196,6 +240,65 @@ fn modified_independent_migration_fails_with_the_contract_cause() {
             .expect("stale migration contract cause must be retained")
             .to_string()
             .contains("migration file digest is stale")
+    );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn corrupted_native_dependency_fails_with_its_exact_integrity_cause() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let native = root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+    write(&native, "corrupted signed native dependency")
+        .expect("native dependency fixture must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("corrupted native dependency must fail");
+    assert_eq!(error.path(), root.join("desktop-bundle-contract.json"));
+    assert!(
+        error
+            .source()
+            .expect("native integrity cause must be retained")
+            .to_string()
+            .contains("native dependency digest is stale")
+    );
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn missing_native_dependency_fails_with_the_original_filesystem_error() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let missing =
+        root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+    remove_file(&missing).expect("native dependency fixture must exist before removal");
+
+    let error = resolve_runtime_bundle(&root).expect_err("missing native dependency must fail");
+    assert_eq!(error.path(), missing);
+    assert_eq!(error.kind(), BundleResourceKind::NativeDependency);
+    let source = error.source().expect("filesystem cause must be retained");
+    assert!(source.to_string().contains("No such file") || source.to_string().contains("not find"));
+
+    remove_dir_all(root).expect("fixture cleanup must succeed");
+}
+
+#[test]
+fn modified_entry_fails_preflight_with_the_exact_contract_cause() {
+    let root = temporary_root();
+    write_fixture(&root);
+    let entry = root.join("runtime/apps/platform-node/entry.js");
+    write(&entry, "tampered packaged entry").expect("fixture entry must be writable");
+
+    let error = resolve_runtime_bundle(&root).expect_err("modified entry must fail before launch");
+    assert_eq!(error.kind(), BundleResourceKind::Compatibility);
+    assert_eq!(error.path(), root.join("desktop-bundle-contract.json"));
+    assert!(
+        error
+            .source()
+            .expect("stale entry contract cause must be retained")
+            .to_string()
+            .contains("entry digest is stale")
     );
 
     remove_dir_all(root).expect("fixture cleanup must succeed");

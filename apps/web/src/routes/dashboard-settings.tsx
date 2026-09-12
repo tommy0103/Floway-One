@@ -9,13 +9,16 @@ import type { Route } from './+types/dashboard-settings';
 import { useDashboardOutletContext } from './dashboard';
 import { requireDashboardSession } from './guards';
 import { changeOwnPassword } from '../api/auth';
+import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
+import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Input } from '../components/ui/fluent-form-controls';
-import { PANEL_STACK_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS, STATUS_HEADER_CLASS } from '../components/ui/layout';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { useOutcomeToasts } from '../components/ui/outcome-toast';
 import { Panel } from '../components/ui/panel';
 import { SectionHeader } from '../components/ui/section-header';
+import { StatusBadge } from '../components/ui/status-badge';
 import { fluentComponents } from '../fluent';
 
 const {
@@ -26,7 +29,12 @@ const {
 
 export async function clientLoader() {
   requireDashboardSession();
-  return null;
+  const runtime = await loadRuntimeInfo();
+  return {
+    desktop: runtime.profile.capabilities.desktopIntegration
+      ? await loadDesktopRuntimeStatus()
+      : null,
+  };
 }
 
 const passwordSchema = z
@@ -71,7 +79,7 @@ export async function clientAction({
   return { ok: true };
 }
 
-export default function DashboardSettings() {
+export default function DashboardSettings({ loaderData }: Route.ComponentProps) {
   const { t } = useTranslation();
   const { capabilities } = useDashboardOutletContext();
   const fetcher = useFetcher<SettingsActionData>();
@@ -121,6 +129,24 @@ export default function DashboardSettings() {
           : 'dashboard.settings.personalDescription')}
         title={t('dashboard.nav.settings')}
       />
+
+      {loaderData.desktop && <Panel className={`${PANEL_STACK_CLASS} w-full`}>
+        <div className={STATUS_HEADER_CLASS}>
+          <SectionHeader level={2} title={t('dashboard.settings.desktop.title')} />
+          <StatusBadge tone="success">{t('dashboard.settings.desktop.running')}</StatusBadge>
+        </div>
+        <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
+          <dt className="text-fui-fg2">{t('dashboard.settings.desktop.version')}</dt>
+          <dd className="m-0 font-mono">{loaderData.desktop.compatibility.releaseVersion}</dd>
+          <dt className="text-fui-fg2">{t('dashboard.settings.desktop.protocol')}</dt>
+          <dd className="m-0 font-mono">{loaderData.desktop.compatibility.protocolVersion}</dd>
+        </dl>
+        <div>
+          <Button as="a" href="floway-action://open-logs">
+            {t('dashboard.settings.desktop.openLogs')}
+          </Button>
+        </div>
+      </Panel>}
 
       <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
         <SectionHeader level={2} title={t('dashboard.settings.changePassword')} />
