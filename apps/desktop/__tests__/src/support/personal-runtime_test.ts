@@ -52,3 +52,13 @@ test('fails at the bounded exchange deadline after the Dashboard document loads'
   )).rejects.toThrow('Installed Dashboard did not complete its one-time bootstrap exchange after the document loaded');
   expect(elapsed).toBe(100);
 });
+
+test('accepts the Dashboard document when the bootstrap exchange strips the fragment before the finished event', async () => {
+  const startedWithAuthority = 'FLOWAY_DESKTOP_PAGE_LOAD {"bootstrapAuthority":true,"event":"started","route":"/","surface":"dashboard"}\n';
+  const finishedStripped = 'FLOWAY_DESKTOP_PAGE_LOAD {"bootstrapAuthority":false,"event":"finished","route":"/","surface":"dashboard"}\n';
+  const token = await waitForDashboardBootstrapSession(
+    () => `${startedWithAuthority}${finishedStripped}${completedBootstrap}`,
+    () => 'owner-session',
+  );
+  expect(token).toBe('owner-session');
+});

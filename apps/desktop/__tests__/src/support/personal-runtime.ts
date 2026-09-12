@@ -136,21 +136,27 @@ export const waitForDashboardBootstrapSession = async (
       throw new Error(`Installed Dashboard bootstrap request failed\n${captured}`);
     }
     if (!documentLoaded) {
-      documentLoaded = captured.split('\n').some(line => {
-        if (!line.startsWith(DASHBOARD_PAGE_LOAD_EVENT_PREFIX)) return false;
+      const events = captured.split('\n').flatMap(line => {
+        if (!line.startsWith(DASHBOARD_PAGE_LOAD_EVENT_PREFIX)) return [];
         try {
           const event = JSON.parse(line.slice(DASHBOARD_PAGE_LOAD_EVENT_PREFIX.length)) as {
             bootstrapAuthority?: unknown;
             event?: unknown;
             surface?: unknown;
           };
-          return event.bootstrapAuthority === true
-            && event.event === 'finished'
-            && event.surface === 'dashboard';
+          return [event];
         } catch {
-          return false;
+          return [];
         }
       });
+      const finishedWithAuthority = events.some(event =>
+        event.bootstrapAuthority === true && event.event === 'finished' && event.surface === 'dashboard');
+      const startedWithAuthority = events.some(event =>
+        event.bootstrapAuthority === true && event.event === 'started' && event.surface === 'dashboard');
+      const finishedDashboard = events.some(event => event.event === 'finished' && event.surface === 'dashboard');
+      // The bootstrap exchange strips the credential fragment as soon as it
+      // settles, so the finished event can legitimately arrive without it.
+      documentLoaded = finishedWithAuthority || (startedWithAuthority && finishedDashboard);
       if (documentLoaded) deadline = now() + timeoutMs;
     }
     if (documentLoaded && captured.includes(DASHBOARD_BOOTSTRAP_COMPLETED)) {
