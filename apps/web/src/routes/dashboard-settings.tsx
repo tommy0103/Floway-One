@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { isTauri } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useFetcher } from 'react-router';
@@ -141,11 +142,13 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
           <dt className="text-fui-fg2">{t('dashboard.settings.desktop.protocol')}</dt>
           <dd className="m-0 font-mono">{loaderData.desktop.compatibility.protocolVersion}</dd>
         </dl>
-        <div>
-          <Button as="a" href="floway-action://open-logs">
-            {t('dashboard.settings.desktop.openLogs')}
-          </Button>
-        </div>
+        {isTauri() && (
+          <div>
+            <Button as="a" href="floway-action://open-logs">
+              {t('dashboard.settings.desktop.openLogs')}
+            </Button>
+          </div>
+        )}
       </Panel>}
 
       <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
