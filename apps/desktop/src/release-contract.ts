@@ -28,6 +28,10 @@ export const MACOS_TARGET_TRIPLES = Object.freeze([
   HOST_TARGET_TRIPLES.darwin.x64,
 ] as const);
 
+export const DESKTOP_COMPATIBILITY_VERSION = 1;
+
+const exactVersion = /^\d+\.\d+\.\d+$/;
+
 export const targetTripleForHost = (
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
@@ -57,8 +61,43 @@ export const readPackagedNodeVersion = async (desktopRoot: string): Promise<stri
   }
   // Node publishes this versioned directory and its immutable SHASUMS file.
   // https://nodejs.org/dist/v24.19.0/SHASUMS256.txt
-  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  if (!exactVersion.test(version)) {
     throw new Error(`Desktop Node version authority is invalid at ${versionPath}`);
+  }
+  return version;
+};
+
+export const readDesktopReleaseVersion = async (desktopRoot: string): Promise<string> => {
+  const sources = [
+    resolve(desktopRoot, 'package.json'),
+    resolve(desktopRoot, '../platform-node/package.json'),
+    resolve(desktopRoot, '../web/package.json'),
+    resolve(desktopRoot, 'src-tauri/tauri.conf.json'),
+  ];
+  let values: unknown[];
+  let cargoManifest: string;
+  try {
+    [values, cargoManifest] = await Promise.all([
+      Promise.all(sources.map(async path => JSON.parse(await readFile(path, 'utf8')) as unknown)),
+      readFile(resolve(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8'),
+    ]);
+  } catch (cause) {
+    throw new Error(`Desktop release version authorities are unavailable beneath ${desktopRoot}`, { cause });
+  }
+  const versions = values.map(value => typeof value === 'object' && value !== null && 'version' in value
+    ? (value as { version?: unknown }).version
+    : undefined);
+  const cargoVersion = /^version = "(\d+\.\d+\.\d+)"$/mu.exec(cargoManifest)?.[1];
+  const version = versions[0];
+  if (
+    typeof version !== 'string'
+    || !exactVersion.test(version)
+    || versions.some(candidate => candidate !== version)
+    || cargoVersion !== version
+  ) {
+    throw new Error(
+      `Desktop shell, sidecar, Dashboard, Tauri configuration, and Cargo release versions must match exactly: ${JSON.stringify([...versions, cargoVersion])}`,
+    );
   }
   return version;
 };

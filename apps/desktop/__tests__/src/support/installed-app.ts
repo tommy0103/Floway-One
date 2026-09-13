@@ -1,4 +1,5 @@
-import { access } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 export interface InstalledAppVerificationContext {
@@ -53,4 +54,19 @@ export const createInstalledAppVerificationContext = async (
     access(context.migrations),
   ]);
   return context;
+};
+
+export const writeContractedEntry = async (
+  context: InstalledAppVerificationContext,
+  source: string,
+): Promise<void> => {
+  const contract = JSON.parse(await readFile(context.contract, 'utf8')) as {
+    entry?: { path?: unknown; sha256?: unknown };
+  };
+  if (contract.entry?.path !== 'entry.js') {
+    throw new Error('Installed app contract does not own entry.js');
+  }
+  await writeFile(context.entry, source);
+  contract.entry.sha256 = createHash('sha256').update(source).digest('hex');
+  await writeFile(context.contract, `${JSON.stringify(contract, undefined, 2)}\n`);
 };

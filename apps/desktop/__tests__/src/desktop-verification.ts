@@ -9,7 +9,16 @@ export interface DisposableDesktopPath {
 
 type RemoveTree = (path: string) => Promise<void>;
 
-const removeTree: RemoveTree = async path => await rm(path, { force: true, recursive: true });
+// Recursive removal can transiently receive ENOTEMPTY while Cargo finishes
+// closing or recreating an output entry. Node retries that class only when
+// maxRetries is nonzero, waiting retryDelay milliseconds between attempts.
+// https://nodejs.org/docs/latest-v24.x/api/fs.html#fspromisesrmpath-options
+const removeTree: RemoveTree = async path => await rm(path, {
+  force: true,
+  maxRetries: 10,
+  recursive: true,
+  retryDelay: 100,
+});
 
 export const deferDisposableDesktopPaths = (
   cleanup: FailureSafeCleanup,

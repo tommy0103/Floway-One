@@ -5,8 +5,9 @@ import { fluentComponents } from '../../fluent';
 
 const { Text } = fluentComponents;
 
-export function ErrorShell({ action, children, message, title }: PropsWithChildren<{
+export function ErrorShell({ action, children, header, message, title }: PropsWithChildren<{
   action?: ReactNode;
+  header?: ReactNode;
   /**
    * Omitted when a trace is shown and it needs nothing said about it: the
    * trace's first line is this sentence.
@@ -20,6 +21,7 @@ export function ErrorShell({ action, children, message, title }: PropsWithChildr
           window whenever a scrollbar takes width, so a window-measured child
           never lets the bar retract. */}
       <main className="floway-error-shell">
+        {header}
         <div className="floway-error-shell-stack">
           {/* `align` rather than a rule of our own: Fluent's Text emits a
               text-align atom regardless, and Griffel injects at runtime, so an

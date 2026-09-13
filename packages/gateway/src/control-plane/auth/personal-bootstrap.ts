@@ -16,6 +16,8 @@ const NON_CACHEABLE_HEADERS = {
   'referrer-policy': 'no-referrer',
 } as const;
 
+export const PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX = 'FLOWAY_DASHBOARD_BOOTSTRAP ';
+
 interface PersonalDashboardBootstrapCredential {
   readonly expiresAt: number;
   readonly token: string;
@@ -105,6 +107,7 @@ export const personalDashboardBootstrapRoutes = new Hono<{ Variables: AuthVars }
       if (getRuntimeProfile().mode !== 'personal') return c.body(null, 404, NON_CACHEABLE_HEADERS);
       const origin = c.req.header('origin');
       if (origin === undefined || !consumePersonalDashboardBootstrap(token, origin)) {
+        console.warn(`${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"rejected"}`);
         return c.json({ error: 'Invalid or expired bootstrap authority' }, 401, NON_CACHEABLE_HEADERS);
       }
 
@@ -114,8 +117,10 @@ export const personalDashboardBootstrapRoutes = new Hono<{ Variables: AuthVars }
         getRepo().sessions.create(owner.id),
         loadKnownUpstreamIds(),
       ]);
+      console.info(`${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"completed"}`);
       return c.json({ token: session.id, user: userToSessionWire(owner, knownUpstreamIds) }, 200, NON_CACHEABLE_HEADERS);
     } catch (error) {
+      console.error(`${PERSONAL_DASHBOARD_BOOTSTRAP_EVENT_PREFIX}{"phase":"failed"}`);
       console.error('Personal Dashboard bootstrap exchange failed', bootstrapErrorDiagnostics(error, token));
       return c.json({ error: { type: 'internal_error' as const } }, 500, NON_CACHEABLE_HEADERS);
     }

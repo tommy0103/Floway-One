@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 
+import { DESKTOP_RUNTIME_HEALTH_PATH } from '../src/desktop-runtime-compatibility.ts';
 import { createLocalApp } from '../src/local-app.ts';
 import { gatewayTestUrls } from '@floway-dev/test-utils';
 
@@ -42,6 +43,31 @@ afterEach(async () => {
 });
 
 describe('local app', () => {
+  it('serves the exact desktop compatibility contract only when desktop integration is active', async () => {
+    const desktopCompatibility = {
+      contractDigest: 'a'.repeat(64),
+      protocolVersion: 1 as const,
+      releaseVersion: '0.1.0',
+    };
+    const gatewayFetch = vi.fn(() => new Response('gateway'));
+    const localApp = createLocalApp({ desktopCompatibility, gatewayFetch, staticRoot });
+
+    const response = await localApp.fetch(new Request(`http://local.test${DESKTOP_RUNTIME_HEALTH_PATH}`));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    await expect(response.json()).resolves.toEqual({
+      compatibility: desktopCompatibility,
+      service: 'floway',
+      status: 'ok',
+    });
+    expect(gatewayFetch).not.toHaveBeenCalled();
+
+    const serverOnly = createLocalApp({ gatewayFetch, staticRoot });
+    expect(serverOnly.fetch(new Request(`http://local.test${DESKTOP_RUNTIME_HEALTH_PATH}`)))
+      .toBe(await Promise.resolve(gatewayFetch.mock.results.at(-1)?.value));
+  });
+
   it('fails construction when the Dashboard document is unavailable', () => {
     expect(() => createLocalApp({
       gatewayFetch: () => new Response(),

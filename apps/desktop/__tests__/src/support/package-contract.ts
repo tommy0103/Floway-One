@@ -9,6 +9,8 @@ import { visitFileTree } from '../../../src/filesystem-tree.ts';
 import { assertSingleMachOArchitecture } from '../../../src/mach-o.ts';
 import {
   architectureForTargetTriple,
+  DESKTOP_COMPATIBILITY_VERSION,
+  readDesktopReleaseVersion,
   readPackagedNodeVersion,
   type DesktopTargetTriple,
 } from '../../../src/release-contract.ts';
@@ -22,8 +24,14 @@ interface BundleFileContract {
 }
 
 interface DesktopBundleContract {
+  readonly compatibility: {
+    readonly protocolVersion: unknown;
+    readonly releaseVersion: unknown;
+  };
   readonly dashboard: { readonly assets: readonly BundleFileContract[] };
+  readonly entry: BundleFileContract;
   readonly migrations: { readonly files: readonly BundleFileContract[] };
+  readonly nativeDependencies: { readonly files: readonly BundleFileContract[] };
   readonly node: {
     readonly architecture: unknown;
     readonly platform: unknown;
@@ -98,10 +106,15 @@ export const verifyPackagedApplication = async (options: {
     access(resolve(runtimeRoot, 'apps/web/dist/client/dashboard-routes.json')),
   ]);
 
-  const packagedNodeVersion = await readPackagedNodeVersion(desktopRoot);
+  const [packagedNodeVersion, releaseVersion] = await Promise.all([
+    readPackagedNodeVersion(desktopRoot),
+    readDesktopReleaseVersion(desktopRoot),
+  ]);
   const contract = JSON.parse(await readFile(contractPath, 'utf8')) as Partial<DesktopBundleContract>;
   if (
-    contract.schemaVersion !== 1
+    contract.schemaVersion !== 4
+    || contract.compatibility?.protocolVersion !== DESKTOP_COMPATIBILITY_VERSION
+    || contract.compatibility.releaseVersion !== releaseVersion
     || contract.node?.architecture !== expectedArchitecture
     || contract.node.platform !== 'darwin'
     || contract.node.targetTriple !== targetTriple
@@ -109,15 +122,24 @@ export const verifyPackagedApplication = async (options: {
     || !Array.isArray(contract.dashboard?.assets)
     || contract.dashboard.assets.length === 0
     || contract.dashboard.assets.some(asset => typeof asset.path !== 'string' || !/^[\da-f]{64}$/i.test(String(asset.sha256)))
+    || contract.entry?.path !== 'entry.js'
+    || !/^[\da-f]{64}$/i.test(String(contract.entry.sha256))
     || !Array.isArray(contract.migrations?.files)
     || contract.migrations.files.length === 0
     || contract.migrations.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
+    || !Array.isArray(contract.nativeDependencies?.files)
+    || contract.nativeDependencies.files.length === 0
+    || contract.nativeDependencies.files.some(file => typeof file.path !== 'string' || !/^[\da-f]{64}$/i.test(String(file.sha256)))
   ) {
     throw new Error(`Packaged desktop contract does not own ${targetTriple}/Node.js ${packagedNodeVersion}`);
   }
   const dashboardAssets = contract.dashboard.assets;
+  const entry = contract.entry;
   const migrations = contract.migrations.files;
+  const nativeDependencies = contract.nativeDependencies.files;
   await validateFileContract(resolve(runtimeRoot, 'apps/web/dist/client'), dashboardAssets, 'Dashboard');
+  await validateFileContract(platformNodeRoot, [entry], 'entry');
+  await validateFileContract(dependenciesRoot, nativeDependencies, 'native dependency');
 
   const migrationNames = migrations.map(file => file.path);
   const canonicalMigrationsRoot = resolve(repositoryRoot, 'packages/gateway/migrations');
@@ -179,6 +201,10 @@ export const verifyPackagedApplication = async (options: {
   }
   if (loadedKeyringNative !== undefined && !nativeModules.includes(loadedKeyringNative)) {
     throw new Error(`Loaded Keyring native binding was not found in the packaged dependency tree: ${loadedKeyringNative}`);
+  }
+  const contractedNativeModules = nativeDependencies.map(file => resolve(dependenciesRoot, file.path));
+  if (JSON.stringify(nativeModules.sort()) !== JSON.stringify(contractedNativeModules.sort())) {
+    throw new Error('Packaged native dependency inventory differs from its owning bundle contract');
   }
   await Promise.all([
     assertSingleMachOArchitecture(appExecutable, expectedArchitecture),

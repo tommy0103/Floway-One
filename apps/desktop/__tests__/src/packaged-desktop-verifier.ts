@@ -1,31 +1,28 @@
-import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInstalledAppVerificationContext } from './support/installed-app.ts';
+import { createInstalledAppVerificationContext, writeContractedEntry } from './support/installed-app.ts';
+import { compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
+import { assertMigrationFailureSurface, assertPortAndStorageFailureSurfaces } from './support/packaged-faults.ts';
 import {
   assertPersonalRuntime,
-  assertUnexpectedSidecarExitClosesShell,
+  assertUnexpectedSidecarExitSurfacesFailure,
   errorChainIncludes,
   PERSONAL_FAILURE_PHASES,
-  personalEntrySource,
-  type CredentialIdentity,
 } from './support/personal-runtime.ts';
 import {
   appEnvironmentWithoutPortOverride,
   assertLoopbackPortReleased,
   captureApp,
-  observeProductionApp,
-  observeSetupFailureWithoutSidecar,
+  observePackagedFailureSurface,
   PERSONAL_DASHBOARD_PORT,
   processIsRunning,
   reserveNonDefaultLoopbackPort,
   terminateProcessGroup,
   waitForDirectChild,
-  waitForOutput,
 } from './support/process-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../src/failure-chain.ts';
 import { machOCpuTypeForArchitecture, type MachOArchitecture } from '../../src/mach-o.ts';
@@ -82,6 +79,7 @@ if (launchSupported) {
   const isolatedRoot = await mkdtemp(join(await realpath(tmpdir()), 'floway-desktop-installed-'));
   await withFailureSafeCleanup(async cleanup => {
     cleanup.defer('isolated installed application root', async () => await rm(isolatedRoot, { force: true, recursive: true }));
+    const nativeWindowProbe = await compileNativeWindowProbe(isolatedRoot);
     const installedApp = resolve(isolatedRoot, 'Applications/Floway.app');
     await mkdir(dirname(installedApp), { recursive: true });
     await rename(packaged.appRoot, installedApp);
@@ -111,11 +109,12 @@ if (launchSupported) {
     console.log('Floway production app completed the canonical migration set, Dashboard bootstrap exchange, authenticated control plane, health, assets, credential, and failure-safe cleanup');
     console.log('Floway normal Tauri application exit terminated and waited for its packaged runtime with no sidecar, listener, credential, or data root remaining');
 
-    await assertUnexpectedSidecarExitClosesShell(
+    await assertUnexpectedSidecarExitSurfacesFailure(
+      nativeWindowProbe,
       context,
       resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
     );
-    console.log('Floway production shell surfaced the original sidecar failure, exited non-zero, and left no listener or process');
+    console.log('Floway production shell retained unrestricted diagnostics in logs, introspected its applied Tauri window/tray state, exposed a CoreGraphics-visible window, and released the sidecar listener before verifier cleanup');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
@@ -128,7 +127,7 @@ if (launchSupported) {
       console.log(`Floway personal ${phase} fault left no app, sidecar, listener, credential, or data root`);
     }
 
-    await writeFile(context.entry, productionEntry);
+    await writeContractedEntry(context, productionEntry);
     const lazyDashboardAsset = packaged.dashboardAssets.find(asset => asset.path.startsWith('assets/'));
     if (lazyDashboardAsset === undefined) throw new Error('Packaged Dashboard contract names no lazy production asset');
     const installedLazyAsset = resolve(installedApp, 'Contents/Resources/runtime/apps/web/dist/client', lazyDashboardAsset.path);
@@ -136,11 +135,18 @@ if (launchSupported) {
       const missingLazyAsset = `${installedLazyAsset}.missing`;
       await rename(installedLazyAsset, missingLazyAsset);
       faultCleanup.defer('missing lazy Dashboard asset restoration', async () => await rename(missingLazyAsset, installedLazyAsset));
-      await observeSetupFailureWithoutSidecar(context.executable, [
-        'Floway desktop runtime resource is unavailable',
-        lazyDashboardAsset.path,
-        'No such file',
-      ]);
+      const expected = ['Floway desktop runtime resource is unavailable', lazyDashboardAsset.path, 'No such file'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-missing-asset'),
+        executable: context.executable,
+        expectedFragments: expected,
+        expectedLocale: 'zh-Hans',
+        failureKind: 'asset',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
     });
     console.log(`Floway production preflight rejected missing lazy Dashboard asset ${lazyDashboardAsset.path} without spawning a sidecar`);
@@ -152,52 +158,79 @@ if (launchSupported) {
       if (staleAsset === undefined) throw new Error('Stale-contract probe could not find its Dashboard asset');
       staleAsset.sha256 = '0'.repeat(64);
       await writeFile(context.contract, `${JSON.stringify(staleContract, undefined, 2)}\n`);
-      await observeSetupFailureWithoutSidecar(context.executable, ['Dashboard asset digest is stale', lazyDashboardAsset.path]);
+      const expected = ['Dashboard asset digest is stale', lazyDashboardAsset.path];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-stale-asset'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'asset',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
     });
     console.log('Floway production preflight rejected a stale Dashboard contract without spawning a sidecar');
 
-    const independentMigrations = context.migrationNames.filter(name => name !== '0084_protected_search_secret_columns.sql');
-    const [missingMigrationName, modifiedMigrationName] = independentMigrations;
-    if (missingMigrationName === undefined || modifiedMigrationName === undefined) {
-      throw new Error('Packaged migration contract needs two independent non-0084 migrations for fault verification');
-    }
-    const installedMissingMigration = resolve(context.migrations, missingMigrationName);
-    await withFailureSafeCleanup(async faultCleanup => {
-      const renamedMigration = `${installedMissingMigration}.missing`;
-      await rename(installedMissingMigration, renamedMigration);
-      faultCleanup.defer('missing migration restoration', async () => await rename(renamedMigration, installedMissingMigration));
-      await observeSetupFailureWithoutSidecar(context.executable, [
-        'Floway desktop runtime resource is unavailable',
-        missingMigrationName,
-        'No such file',
-      ]);
-      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-    });
-    console.log(`Floway production preflight rejected missing independent migration ${missingMigrationName} without spawning a sidecar`);
-
-    const installedModifiedMigration = resolve(context.migrations, modifiedMigrationName);
-    await withFailureSafeCleanup(async faultCleanup => {
-      const originalMigration = await readFile(installedModifiedMigration);
-      faultCleanup.defer('modified migration restoration', async () => await writeFile(installedModifiedMigration, originalMigration));
-      await writeFile(installedModifiedMigration, Buffer.concat([originalMigration, Buffer.from('\n-- tampered\n')]));
-      await observeSetupFailureWithoutSidecar(context.executable, ['migration file digest is stale', modifiedMigrationName]);
-      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-    });
-    console.log(`Floway production preflight rejected modified independent migration ${modifiedMigrationName} without spawning a sidecar`);
+    const migrationName = context.migrationNames.find(name => name !== '0084_protected_search_secret_columns.sql');
+    if (migrationName === undefined) throw new Error('Packaged migration contract needs an independent migration for fault verification');
+    await assertMigrationFailureSurface(
+      nativeWindowProbe,
+      context,
+      isolatedRoot,
+      migrationName,
+      productionEntry,
+      productionContract,
+    );
+    console.log(`Floway packaged runtime surfaced the original failure from invalid migration ${migrationName}`);
 
     const missingEntry = `${context.entry}.missing`;
     await withFailureSafeCleanup(async faultCleanup => {
       await rename(context.entry, missingEntry);
       faultCleanup.defer('missing-entry fault restoration', async () => await rename(missingEntry, context.entry));
-      await observeProductionApp(context.executable, ['Floway desktop runtime resource is unavailable', 'entry.js']);
+      const expected = ['Floway desktop runtime resource is unavailable', 'entry.js'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-missing-entry'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'compatibility',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
     });
 
-    await writeFile(context.entry, 'setInterval(() => {}, 60_000);\n');
+    await withFailureSafeCleanup(async faultCleanup => {
+      faultCleanup.defer('tampered-entry restoration', async () => await writeFile(context.entry, productionEntry));
+      await writeFile(context.entry, `${productionEntry}\nthrow new Error('uncontracted entry mutation');\n`);
+      const expected = ['entry digest is stale', context.entry];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-tampered-entry'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'compatibility',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
+    });
+    console.log('Floway production preflight rejected a tampered packaged entry with its exact integrity cause');
+
+    await writeContractedEntry(context, 'setInterval(() => {}, 60_000);\n');
     const blockingFailure = new Error('forced verifier failure with live packaged sidecar');
     try {
       await withFailureSafeCleanup(async blockingCleanup => {
-        const { child, output } = captureApp(context.executable, process.env);
+        const blockingHome = resolve(isolatedRoot, 'ShellData-blocking-cleanup');
+        await mkdir(blockingHome, { recursive: true });
+        blockingCleanup.defer('blocking shell application data', async () => await rm(blockingHome, { force: true, recursive: true }));
+        const { child, output } = captureApp(
+          context.executable,
+          appEnvironmentWithoutPortOverride(),
+          ['--data-dir', blockingHome],
+        );
         blockingCleanup.defer('blocking application process group', async () => await terminateProcessGroup(child));
         const sidecarPid = await waitForDirectChild(child, output);
         if (!processIsRunning(sidecarPid)) throw new Error('Packaged blocking sidecar did not reach a live state');
@@ -209,16 +242,25 @@ if (launchSupported) {
     console.log('Floway forced parent failure terminated its live packaged sidecar and process group');
 
     await withFailureSafeCleanup(async faultCleanup => {
-      const verificationRoot = resolve(isolatedRoot, 'PersonalData-keyring-fault');
-      const credentialIdentity: CredentialIdentity = {
-        service: `Floway desktop package verification ${randomUUID()}`,
-        account: `device-master-key-${randomUUID()}`,
-      };
+      const missingKeyring = `${context.keyringNative}.missing`;
+      await rename(context.keyringNative, missingKeyring);
+      faultCleanup.defer('missing Keyring binding restoration', async () => await rename(missingKeyring, context.keyringNative));
+      const expected = [context.keyringNative, 'No such file'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-missing-keyring'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'native-dependency',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
+    });
+    console.log('Floway production preflight classified a missing .node binding as a native dependency');
+
+    await withFailureSafeCleanup(async faultCleanup => {
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-      await mkdir(verificationRoot, { recursive: true });
-      faultCleanup.defer('Keyring-fault application data', async () => await rm(verificationRoot, { force: true, recursive: true }));
-      faultCleanup.defer('Keyring-fault listener', async () => await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT));
-      await writeFile(context.entry, personalEntrySource(verificationRoot, credentialIdentity));
       const keyringFile = await open(context.keyringNative, 'r+');
       faultCleanup.defer('exact loaded Keyring binding file handle', async () => await keyringFile.close());
       const originalKeyringHeader = Buffer.alloc(8);
@@ -229,13 +271,23 @@ if (launchSupported) {
       });
       await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
       await keyringFile.sync();
-      const { child, output } = captureApp(context.executable, appEnvironmentWithoutPortOverride());
-      faultCleanup.defer('Keyring-fault application process group', async () => await terminateProcessGroup(child));
-      await waitForOutput(child, output, ['Floway runtime exit']);
+      const expected = [context.keyringNative, 'native dependency digest is stale'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-keyring-fault'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'native-dependency',
+        forbiddenSnapshotText: expected,
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+        sidecarMustNotStart: true,
+      });
+      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
     });
-    console.log(`Floway corrupted the exact loaded Keyring binding and observed packaged sidecar failure: ${context.keyringNative}`);
+    console.log(`Floway corrupted the exact loaded Keyring binding and verified pre-launch native-dependency integrity recovery: ${context.keyringNative}`);
 
-    await writeFile(context.entry, productionEntry);
+    await writeContractedEntry(context, productionEntry);
     await withFailureSafeCleanup(async faultCleanup => {
       const nodeFile = await open(context.node, 'r+');
       faultCleanup.defer('wrong-architecture sidecar file handle', async () => await nodeFile.close());
@@ -252,8 +304,18 @@ if (launchSupported) {
       await nodeFile.sync();
       // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/errno.h#L226-L230
       // https://github.com/apple-oss-distributions/Libc/blob/71bbe350ab79eef58113991d817ccc6165061a64/gen/errlst.c#L165-L168
-      await observeProductionApp(context.executable, ['Bad CPU type in executable (os error 86)']);
+      const expected = ['Bad CPU type in executable (os error 86)'];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, 'ShellData-wrong-architecture'),
+        executable: context.executable,
+        expectedFragments: expected,
+        failureKind: 'native-dependency',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+      });
     });
+
+    await assertPortAndStorageFailureSurfaces(nativeWindowProbe, context, isolatedRoot, productionEntry);
   });
 }
 

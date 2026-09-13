@@ -25,6 +25,19 @@ export const SECTION_STACK_CLASS = 'grid gap-2';
 // `!` because Griffel's `Card` sheet is injected after the utility sheet.
 export const PANEL_STACK_CLASS = '!grid !gap-3';
 
+// The status and its heading are peer content inside one settings surface. The
+// 8px gap is SettingsCardVerticalHeaderContentSpacing, while wrapping preserves
+// the toolkit's narrow state instead of fixing a width at the call site.
+// https://github.com/CommunityToolkit/Windows/blob/c076d3dd722e43204ffbeb16057090f8498c8166/components/SettingsControls/src/SettingsCard/SettingsCard.xaml#L109
+// https://github.com/CommunityToolkit/Windows/blob/c076d3dd722e43204ffbeb16057090f8498c8166/components/SettingsControls/src/SettingsCard/SettingsCard.xaml#L312-L345
+export const STATUS_HEADER_CLASS = 'flex flex-wrap items-center justify-between gap-2';
+
+// The read-only values use SettingsCardPadding (16px) between columns and
+// SettingsCardVerticalHeaderContentSpacing (8px) between rows. The value column
+// owns the remaining width so long versions wrap without widening the page.
+// https://github.com/CommunityToolkit/Windows/blob/c076d3dd722e43204ffbeb16057090f8498c8166/components/SettingsControls/src/SettingsCard/SettingsCard.xaml#L103-L109
+export const STATUS_DETAILS_CLASS = 'grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2';
+
 // 680 because that is where `--floway-page-inset` and `--floway-panel-inset`
 // already step down, so columns collapse as the space around them narrows.
 export const TWO_COLUMN_FORM_CLASS = 'grid grid-cols-2 max-[680px]:grid-cols-1';

@@ -24,6 +24,7 @@ const developmentRoutes =
 
 export default [
   index(homeRoute.file),
+  route('desktop-status', 'routes/desktop-status.tsx'),
   route(dashboardRoute.path, dashboardRoute.file, [
     ...dashboardRoute.children.map(child =>
       'path' in child ? route(child.path, child.file) : index(child.file)),

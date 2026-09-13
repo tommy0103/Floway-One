@@ -28,10 +28,30 @@ path = "__tests__/src/navigation_test.rs"
 name = "sidecar_supervisor"
 path = "__tests__/src/sidecar_supervisor_test.rs"
 
+[[test]]
+name = "runtime_status"
+path = "__tests__/src/runtime_status_test.rs"
+
+[[test]]
+name = "sidecar_log"
+path = "__tests__/src/sidecar_log_test.rs"
+
+[[test]]
+name = "desktop_i18n"
+path = "__tests__/src/desktop_i18n_test.rs"
+
+[[test]]
+name = "desktop_paths"
+path = "__tests__/src/desktop_paths_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
+  "dep:block2",
   "dep:getrandom",
+  "dep:objc2",
+  "dep:objc2-core-foundation",
+  "dep:sys-locale",
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
@@ -42,6 +62,8 @@ desktop = [
 getrandom = { version = "=0.3.4", optional = true, features = ["std"] }
 # https://github.com/serde-rs/json/releases/tag/v1.0.151
 serde_json = { version = "=1.0.151" }
+# https://github.com/1Password/sys-locale/releases/tag/v0.3.2
+sys-locale = { version = "=0.3.2", optional = true }
 # https://github.com/RustCrypto/hashes/releases/tag/sha2-v0.10.9
 sha2 = { version = "=0.10.9" }
 # https://github.com/servo/rust-url/blob/v2.5.8/percent_encoding/Cargo.toml#L12-L13
@@ -49,9 +71,16 @@ percent-encoding = { version = "=2.3.2" }
 # https://github.com/servo/rust-url/releases/tag/v2.5.8
 url = { version = "=2.5.8" }
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.11.5
-tauri = { version = "=2.11.5", optional = true, features = [] }
+tauri = { version = "=2.11.5", optional = true, features = ["tray-icon"] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
 tauri-plugin-shell = { version = "=2.3.6", optional = true }
+[target.'cfg(target_os = "macos")'.dependencies]
+# https://github.com/madsmtm/objc2/releases/tag/block2-0.6.2
+block2 = { version = "=0.6.2", optional = true }
+# https://github.com/madsmtm/objc2/releases/tag/objc2-0.6.4
+objc2 = { version = "=0.6.4", optional = true }
+# https://github.com/madsmtm/objc2/releases/tag/frameworks-0.3.2
+objc2-core-foundation = { version = "=0.3.2", optional = true }
 [build-dependencies]
 # https://github.com/tauri-apps/tauri/releases/tag/tauri-build-v2.6.3
 tauri-build = { version = "=2.6.3", optional = true, features = [] }
