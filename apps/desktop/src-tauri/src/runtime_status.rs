@@ -159,6 +159,7 @@ pub enum RuntimePhase {
 
 #[derive(Debug)]
 pub struct RuntimeAttemptState {
+    failure_chain: Vec<String>,
     failure_kind: Option<FailureKind>,
     generation: u64,
     logs_available: bool,
@@ -183,12 +184,18 @@ impl DesktopRuntimeStatus {
             "logsAvailable": self.logs_available,
             "restartEnabled": self.restart_available,
             "revision": self.revision,
-            "state": match self.phase {
-                RuntimePhase::Failed => "failed",
-                RuntimePhase::Ready => "ready",
-                RuntimePhase::Starting => "starting",
-            },
+            "state": self.phase.as_str(),
         })
+    }
+}
+
+impl RuntimePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuntimePhase::Failed => "failed",
+            RuntimePhase::Ready => "ready",
+            RuntimePhase::Starting => "starting",
+        }
     }
 }
 
@@ -290,6 +297,7 @@ impl SidecarFailureDecoder {
 impl RuntimeAttemptState {
     pub fn new() -> Self {
         Self {
+            failure_chain: Vec::new(),
             failure_kind: None,
             generation: 0,
             logs_available: false,
@@ -308,6 +316,7 @@ impl RuntimeAttemptState {
             return None;
         }
         self.generation = self.generation.saturating_add(1);
+        self.failure_chain = Vec::new();
         self.failure_kind = None;
         self.phase = RuntimePhase::Starting;
         self.restart_available = false;
@@ -324,6 +333,7 @@ impl RuntimeAttemptState {
             return Ok(false);
         }
         effects(self)?;
+        self.failure_chain = Vec::new();
         self.failure_kind = None;
         self.phase = RuntimePhase::Ready;
         self.restart_available = false;
@@ -331,22 +341,24 @@ impl RuntimeAttemptState {
         Ok(true)
     }
 
-    pub fn mark_startup_failed(&mut self, generation: u64, kind: FailureKind) -> bool {
+    pub fn mark_startup_failed(&mut self, generation: u64, report: &FailureReport) -> bool {
         if self.generation != generation || self.phase != RuntimePhase::Starting {
             return false;
         }
-        self.failure_kind = Some(kind);
+        self.failure_chain = bounded_failure_chain(&report.chain);
+        self.failure_kind = Some(report.kind);
         self.phase = RuntimePhase::Failed;
         self.restart_available = false;
         self.revision = self.revision.saturating_add(1);
         true
     }
 
-    pub fn mark_failed(&mut self, generation: u64, kind: FailureKind) -> bool {
+    pub fn mark_failed(&mut self, generation: u64, report: &FailureReport) -> bool {
         if self.generation != generation || self.phase == RuntimePhase::Failed {
             return false;
         }
-        self.failure_kind = Some(kind);
+        self.failure_chain = bounded_failure_chain(&report.chain);
+        self.failure_kind = Some(report.kind);
         self.phase = RuntimePhase::Failed;
         self.restart_available = false;
         self.revision = self.revision.saturating_add(1);
@@ -378,6 +390,10 @@ impl RuntimeAttemptState {
         self.generation == generation && self.phase == RuntimePhase::Starting
     }
 
+    pub fn failure_chain(&self) -> Vec<String> {
+        self.failure_chain.clone()
+    }
+
     pub fn phase(&self) -> RuntimePhase {
         self.phase
     }
@@ -407,6 +423,23 @@ impl FailureReport {
         }
         Self { chain, kind }
     }
+}
+
+const FAILURE_CHAIN_MAXIMUM_ENTRIES: usize = 4;
+const FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS: usize = 400;
+
+fn bounded_failure_chain(chain: &[String]) -> Vec<String> {
+    chain
+        .iter()
+        .take(FAILURE_CHAIN_MAXIMUM_ENTRIES)
+        .map(|entry| {
+            entry
+                .chars()
+                .filter(|character| !character.is_control() || *character == '\n')
+                .take(FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS)
+                .collect()
+        })
+        .collect()
 }
 
 pub fn parse_sidecar_failure(line: &str) -> Option<FailureReport> {

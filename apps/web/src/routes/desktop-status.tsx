@@ -5,11 +5,12 @@ import { useSearchParams } from 'react-router';
 
 import { FlowayLogo } from '../components/logo';
 import { ErrorShell } from '../components/ui/error-shell';
+import { STATUS_HEADER_CLASS } from '../components/ui/layout';
 import { StatusBadge } from '../components/ui/status-badge';
 import { fluentComponents } from '../fluent';
 import { useTranslation, type TranslationKey } from '../i18n/translation';
 
-const { Button, ProgressBar } = fluentComponents;
+const { Button, ProgressBar, Text } = fluentComponents;
 
 const failureKeys = {
   asset: 'desktop.status.failures.asset',
@@ -27,6 +28,7 @@ const isFailureKind = (candidate: string): candidate is keyof typeof failureKeys
   Object.hasOwn(failureKeys, candidate);
 
 export interface DesktopStatusView {
+  readonly chain: readonly string[];
   readonly failureKind: keyof typeof failureKeys;
   readonly failureKey: (typeof failureKeys)[keyof typeof failureKeys];
   readonly logsAvailable: boolean;
@@ -45,6 +47,7 @@ const parseDesktopStatusValues = (
   restartEnabledCandidate: unknown = false,
   logsAvailableCandidate: unknown = false,
   revisionCandidate: unknown = 0,
+  chainCandidate: unknown = [],
 ): DesktopStatusView => {
   const state = stateCandidate === 'failed' ? 'failed' : 'starting';
   const candidate = typeof kindCandidate === 'string' ? kindCandidate : null;
@@ -56,7 +59,12 @@ const parseDesktopStatusValues = (
     && revisionCandidate >= 0
     ? revisionCandidate
     : 0;
+  const chain = (Array.isArray(chainCandidate) ? chainCandidate : [])
+    .filter((entry): entry is string => typeof entry === 'string')
+    .slice(0, 4)
+    .map(entry => entry.slice(0, 400));
   return {
+    chain: state === 'failed' ? chain : [],
     failureKind,
     failureKey: failureKeys[failureKind],
     logsAvailable: state === 'failed' && logsAvailableCandidate === true,
@@ -84,6 +92,7 @@ export default function DesktopStatus() {
     let unlisten: UnlistenFn | undefined;
     void (async () => {
       unlisten = await listen<{
+        readonly chain?: unknown;
         readonly kind?: unknown;
         readonly logsAvailable?: unknown;
         readonly restartEnabled?: unknown;
@@ -98,11 +107,13 @@ export default function DesktopStatus() {
             event.payload.restartEnabled,
             event.payload.logsAvailable,
             event.payload.revision,
+            event.payload.chain,
           );
           setStatus(current => next.revision > current.revision ? next : current);
         },
       );
       const current = await invoke<{
+        readonly chain?: unknown;
         readonly kind?: unknown;
         readonly logsAvailable?: unknown;
         readonly restartEnabled?: unknown;
@@ -116,6 +127,7 @@ export default function DesktopStatus() {
           current.restartEnabled,
           current.logsAvailable,
           current.revision,
+          current.chain,
         );
         setStatus(status => next.revision > status.revision ? next : status);
         setIpcReady(true);
@@ -187,7 +199,7 @@ export default function DesktopStatus() {
             </>
           : undefined}
         header={
-          <div className="flex w-full items-center justify-between">
+          <div className={STATUS_HEADER_CLASS}>
             <FlowayLogo />
             <StatusBadge tone={failed ? 'danger' : 'accent'}>
               {t(failed ? 'desktop.status.attention' : 'desktop.status.startingBadge')}
@@ -205,6 +217,12 @@ export default function DesktopStatus() {
         title={t(failed ? 'desktop.status.failedTitle' : 'desktop.status.startingTitle')}
       >
         {!failed && <ProgressBar aria-label={t('desktop.status.startingBadge')} className="w-full" thickness="large" />}
+        {failed && status.chain.length > 0
+          ? <div className="w-full" data-desktop-failure-chain>
+              <Text weight="semibold">{t('desktop.status.originalFailure')}</Text>
+              <pre className="m-0 whitespace-pre-wrap font-mono text-sm">{status.chain.join('\n\n')}</pre>
+            </div>
+          : null}
       </ErrorShell>
     </div>
   );

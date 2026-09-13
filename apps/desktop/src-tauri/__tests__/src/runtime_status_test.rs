@@ -7,9 +7,10 @@ mod runtime_status;
 
 use bundle_contract::RuntimeCompatibility;
 use runtime_status::{
-    DesktopStartupError, FailureKind, InitialStatusLoadGate, RecoverySurfaceOperation,
-    RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
-    apply_recovery_surface, parse_sidecar_failure, validate_health_response_for_test,
+    DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate,
+    RecoverySurfaceOperation, RuntimeAttemptState, RuntimeHealthError, RuntimePhase,
+    STARTUP_TIMEOUT, SidecarFailureDecoder, apply_recovery_surface, parse_sidecar_failure,
+    validate_health_response_for_test,
 };
 use std::error::Error;
 use std::io;
@@ -23,6 +24,10 @@ fn expected() -> RuntimeCompatibility {
         protocol_version: 1,
         release_version: "0.1.0".to_owned(),
     }
+}
+
+fn report(kind: FailureKind) -> FailureReport {
+    FailureReport::from_error(kind, &io::Error::other("forced test failure"))
 }
 
 fn response(body: &str) -> Vec<u8> {
@@ -106,7 +111,7 @@ fn decodes_a_structured_failure_split_across_stderr_events() {
 fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("first attempt must begin");
-    assert!(state.mark_startup_failed(first, FailureKind::Port));
+    assert!(state.mark_startup_failed(first, &report(FailureKind::Port)));
     assert!(state.complete_teardown(first));
     let second = state.begin().expect("failed runtime may restart");
 
@@ -123,8 +128,8 @@ fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
             .expect("ready transition must succeed")
     );
     assert_eq!(state.phase(), RuntimePhase::Ready);
-    assert!(!state.mark_startup_failed(first, FailureKind::Timeout));
-    assert!(state.mark_failed(second, FailureKind::UnexpectedExit));
+    assert!(!state.mark_startup_failed(first, &report(FailureKind::Timeout)));
+    assert!(state.mark_failed(second, &report(FailureKind::UnexpectedExit)));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 
@@ -140,7 +145,7 @@ fn a_ready_attempt_cannot_time_out_after_its_deadline() {
     );
     thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1));
 
-    assert!(!state.mark_startup_failed(generation, FailureKind::Timeout));
+    assert!(!state.mark_startup_failed(generation, &report(FailureKind::Timeout)));
     assert_eq!(state.phase(), RuntimePhase::Ready);
 }
 
@@ -168,7 +173,7 @@ fn ready_effects_finish_before_the_attempt_can_become_ready() {
 fn a_failed_attempt_rejects_all_late_ready_effects() {
     let mut state = RuntimeAttemptState::new();
     let generation = state.begin().expect("attempt must begin");
-    assert!(state.mark_startup_failed(generation, FailureKind::Migration));
+    assert!(state.mark_startup_failed(generation, &report(FailureKind::Migration)));
     let mut effects_ran = false;
 
     assert!(
@@ -210,7 +215,7 @@ fn termination_waiting_on_ready_effects_applies_failed_last() {
         failed_state
             .lock()
             .unwrap()
-            .mark_failed(generation, FailureKind::UnexpectedExit)
+            .mark_failed(generation, &report(FailureKind::UnexpectedExit))
     });
     finish_effects_tx.send(()).unwrap();
 
@@ -223,9 +228,9 @@ fn termination_waiting_on_ready_effects_applies_failed_last() {
 fn only_the_matching_starting_attempt_can_time_out() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("attempt must begin");
-    assert!(!state.mark_startup_failed(first.saturating_add(1), FailureKind::Timeout));
+    assert!(!state.mark_startup_failed(first.saturating_add(1), &report(FailureKind::Timeout)));
     assert!(state.is_starting(first));
-    assert!(state.mark_startup_failed(first, FailureKind::Timeout));
+    assert!(state.mark_startup_failed(first, &report(FailureKind::Timeout)));
     assert_eq!(state.phase(), RuntimePhase::Failed);
 }
 
@@ -268,7 +273,7 @@ fn an_initial_status_timeout_prevents_a_late_runtime_start() {
 fn restart_stays_unavailable_until_the_failed_attempt_finishes_teardown() {
     let mut state = RuntimeAttemptState::new();
     let generation = state.begin().expect("attempt must begin");
-    assert!(state.mark_failed(generation, FailureKind::Storage));
+    assert!(state.mark_failed(generation, &report(FailureKind::Storage)));
 
     assert!(!state.restart_available());
     assert!(state.begin().is_none());
@@ -296,7 +301,7 @@ fn status_snapshots_are_atomic_and_monotonically_revisioned() {
     assert!(!starting.restart_available);
     assert!(starting.logs_available);
 
-    assert!(state.mark_startup_failed(generation, FailureKind::Storage));
+    assert!(state.mark_startup_failed(generation, &report(FailureKind::Storage)));
     let failed = state.status();
     assert!(failed.revision > starting.revision);
     assert_eq!(failed.phase, RuntimePhase::Failed);

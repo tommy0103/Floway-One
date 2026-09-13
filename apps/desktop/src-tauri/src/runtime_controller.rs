@@ -266,18 +266,18 @@ impl DesktopController {
             .commit_ready(generation, |_attempt| effects())
     }
 
-    fn mark_startup_failed(&self, generation: u64, kind: FailureKind) -> bool {
+    fn mark_startup_failed(&self, generation: u64, report: &FailureReport) -> bool {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_startup_failed(generation, kind)
+            .mark_startup_failed(generation, report)
     }
 
-    fn mark_failed(&self, generation: u64, kind: FailureKind) -> bool {
+    fn mark_failed(&self, generation: u64, report: &FailureReport) -> bool {
         self.attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mark_failed(generation, kind)
+            .mark_failed(generation, report)
     }
 
     fn phase(&self) -> RuntimePhase {
@@ -299,6 +299,20 @@ impl DesktopController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .restart_available()
+    }
+
+    fn status_snapshot(&self) -> (DesktopRuntimeStatus, Vec<String>) {
+        let attempts = self
+            .attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (attempts.status(), attempts.failure_chain())
+    }
+
+    fn persist_lifecycle(&self, line: &str) {
+        if let Err(error) = self.append_log(SidecarStream::Stderr, format!("{line}\n").as_bytes()) {
+            eprintln!("Floway desktop could not persist its lifecycle log: {error}");
+        }
     }
 
     fn status(&self) -> DesktopRuntimeStatus {
@@ -334,12 +348,27 @@ impl DesktopController {
     }
 }
 
-fn desktop_status_value(status: DesktopRuntimeStatus) -> serde_json::Value {
-    status.to_wire_value()
+fn desktop_status_value(
+    status: DesktopRuntimeStatus,
+    failure_chain: Vec<String>,
+) -> serde_json::Value {
+    let mut value = status.to_wire_value();
+    value
+        .as_object_mut()
+        .expect("desktop status wire value must remain an object")
+        .insert("chain".to_owned(), serde_json::json!(failure_chain));
+    value
 }
 
-fn emit_desktop_status(app: &AppHandle, status: DesktopRuntimeStatus) -> Result<(), tauri::Error> {
-    app.emit(DESKTOP_STATUS_EVENT, desktop_status_value(status))
+fn emit_desktop_status(
+    app: &AppHandle,
+    controller: &DesktopController,
+) -> Result<(), tauri::Error> {
+    let (status, failure_chain) = controller.status_snapshot();
+    app.emit(
+        DESKTOP_STATUS_EVENT,
+        desktop_status_value(status, failure_chain),
+    )
 }
 
 fn status_url(controller: &DesktopController, report: Option<&FailureReport>) -> Url {
@@ -349,14 +378,7 @@ fn status_url(controller: &DesktopController, report: Option<&FailureReport>) ->
     let status = controller.status();
     {
         let mut query = url.query_pairs_mut();
-        query.append_pair(
-            "state",
-            match status.phase {
-                RuntimePhase::Failed => "failed",
-                RuntimePhase::Ready => "ready",
-                RuntimePhase::Starting => "starting",
-            },
-        );
+        query.append_pair("state", status.phase.as_str());
         if let Some(report) = report {
             query.append_pair("kind", report.kind.as_str());
         }
@@ -476,7 +498,7 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
         return;
     }
     debug_assert_eq!(status.failure_kind, Some(kind));
-    if let Err(error) = emit_desktop_status(app, status) {
+    if let Err(error) = emit_desktop_status(app, &controller) {
         print_error_chain(&error);
         app.exit(1);
         return;
@@ -500,11 +522,13 @@ fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop
     if let Err(error) = controller.append_log(SidecarStream::Stderr, detail.as_bytes()) {
         eprintln!("Floway desktop could not persist its runtime failure report: {error}");
     }
-    eprintln!(
+    let state_line = format!(
         "Floway desktop runtime state: failed kind={}",
         report.kind.as_str()
     );
-    if let Err(error) = emit_desktop_status(app, controller.status()) {
+    eprintln!("{state_line}");
+    controller.persist_lifecycle(&state_line);
+    if let Err(error) = emit_desktop_status(app, &controller) {
         print_error_chain(&error);
         app.exit(1);
     }
@@ -535,14 +559,14 @@ fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop
 
 fn fail_startup_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.mark_startup_failed(generation, report.kind) {
+    if controller.mark_startup_failed(generation, &report) {
         publish_failure(app, generation, report, stop);
     }
 }
 
 fn fail_current_attempt(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.mark_failed(generation, report.kind) {
+    if controller.mark_failed(generation, &report) {
         publish_failure(app, generation, report, stop);
     }
 }
@@ -588,13 +612,17 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
         }
         effects
     });
-    if let Err(error) = ready {
-        fail_startup_attempt(
-            app,
-            generation,
-            FailureReport::from_error(FailureKind::Asset, error.as_ref()),
-            true,
-        );
+    match ready {
+        Err(error) => {
+            fail_startup_attempt(
+                app,
+                generation,
+                FailureReport::from_error(FailureKind::Asset, error.as_ref()),
+                true,
+            );
+        }
+        Ok(true) => controller.persist_lifecycle("Floway desktop runtime state: ready"),
+        Ok(false) => {}
     }
 }
 
@@ -749,6 +777,7 @@ fn start_runtime(app: &AppHandle) {
     let Some(generation) = controller.begin_attempt() else {
         return;
     };
+    controller.persist_lifecycle("Floway desktop runtime state: starting");
     if let Err(error) = controller.tray.set_phase(
         RuntimePhase::Starting,
         false,
@@ -758,7 +787,7 @@ fn start_runtime(app: &AppHandle) {
         app.exit(1);
         return;
     }
-    if let Err(error) = emit_desktop_status(app, controller.status()) {
+    if let Err(error) = emit_desktop_status(app, &controller) {
         print_error_chain(&error);
     }
     if let Err(error) = show_status(app, None) {
@@ -838,7 +867,10 @@ fn start_runtime(app: &AppHandle) {
                 thread::sleep(STARTUP_TIMEOUT);
                 let error = io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "Floway runtime did not become healthy within 30 seconds",
+                    format!(
+                        "Floway runtime did not become healthy within {} seconds",
+                        STARTUP_TIMEOUT.as_secs()
+                    ),
                 );
                 fail_startup_attempt(
                     &timeout_app,
@@ -874,6 +906,7 @@ fn open_logs(app: &AppHandle) {
     if !controller.status().logs_available {
         return;
     }
+    controller.persist_lifecycle("Floway desktop operator opened its logs directory");
     #[allow(deprecated)]
     let result = fs::create_dir_all(&controller.logs_dir).and_then(|()| {
         app.shell()
@@ -888,6 +921,7 @@ fn open_logs(app: &AppHandle) {
 fn restart_failed_runtime(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>();
     if controller.phase() == RuntimePhase::Failed && controller.restart_available() {
+        controller.persist_lifecycle("Floway desktop operator restarted its runtime");
         start_runtime(app);
     }
 }
@@ -1041,7 +1075,8 @@ fn report_desktop_recovery_surface(
 #[tauri::command]
 fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
     let controller = app.state::<Arc<DesktopController>>();
-    desktop_status_value(controller.status())
+    let (status, failure_chain) = controller.status_snapshot();
+    desktop_status_value(status, failure_chain)
 }
 
 fn stop_packaged_process(app_handle: &AppHandle) {
@@ -1157,7 +1192,10 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                         .expect("the initial desktop status timeout must begin an attempt");
                     let error = io::Error::new(
                         io::ErrorKind::TimedOut,
-                        "Floway initial status document did not finish loading within 30 seconds",
+                        format!(
+                            "Floway initial status document did not finish loading within {} seconds",
+                            STARTUP_TIMEOUT.as_secs()
+                        ),
                     );
                     fail_startup_attempt(
                         &timeout_app,

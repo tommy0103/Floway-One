@@ -55,6 +55,7 @@ const zhHansCN = {
           unknown: '本机 Gateway 报告了意外故障。',
         },
         openLogs: '打开日志',
+        originalFailure: '原始错误',
         restart: '重启 Gateway',
         startingBadge: '正在启动',
         startingDescription: '正在检查打包的运行时、本机存储、数据库和 Dashboard，然后再打开控制面。',

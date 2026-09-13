@@ -276,6 +276,7 @@ export const observePackagedFailureSurface = async (options: {
   readonly expectedFragments: readonly string[];
   readonly expectedLocale?: 'en' | 'zh-Hans';
   readonly expectedLogsAvailable?: boolean;
+  readonly expectedRenderedFragments?: readonly string[];
   readonly failureKind: string;
   readonly forbiddenSnapshotText?: readonly string[];
   readonly nativeWindowProbe: string;
@@ -344,6 +345,7 @@ export const observePackagedFailureSurface = async (options: {
     dataRoot: options.applicationHome,
     expectedLocale: options.expectedLocale,
     expectedLogsAvailable: options.expectedLogsAvailable,
+    expectedRenderedFragments: options.expectedRenderedFragments,
     failureKind: options.failureKind,
     forbiddenSnapshotText: options.forbiddenSnapshotText ?? options.expectedFragments,
   });

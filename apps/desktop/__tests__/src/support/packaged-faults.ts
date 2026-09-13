@@ -44,6 +44,7 @@ export const assertPortAndStorageFailureSurfaces = async (
       applicationHome: resolve(isolatedRoot, 'ShellData-port-fault'),
       executable: context.executable,
       expectedFragments: expected,
+      expectedRenderedFragments: ['EADDRINUSE'],
       failureKind: 'port',
       nativeWindowProbe,
       persistedLogFragments: expected,

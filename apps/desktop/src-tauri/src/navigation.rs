@@ -30,111 +30,109 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
 }
 
 pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> {
-    (|| {
-        let fields = surface.as_object().ok_or_else(|| {
+    let fields = surface.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic must be an object",
+        )
+    })?;
+    if fields.len() != 6 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic has an invalid field count",
+        ));
+    }
+    let value = |key: &str| -> Result<&str, io::Error> {
+        fields.get(key).and_then(Value::as_str).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway recovery support diagnostic must be an object",
+                format!("Floway recovery support diagnostic has an invalid {key} field"),
+            )
+        })
+    };
+    let failure_kind = value("failureKind")?;
+    if !matches!(
+        failure_kind,
+        "asset"
+            | "compatibility"
+            | "migration"
+            | "native-dependency"
+            | "port"
+            | "storage"
+            | "timeout"
+            | "unexpected-exit"
+            | "unknown"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic has an unknown failure kind",
+        ));
+    }
+    let locale = value("locale")?;
+    if !matches!(locale, "en" | "zh-Hans") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic has an unknown locale",
+        ));
+    }
+    let restart_enabled = fields
+        .get("restartEnabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Floway recovery support diagnostic has an invalid restartEnabled field",
             )
         })?;
-        if fields.len() != 6 {
-            return Err(io::Error::new(
+    let logs_available = fields
+        .get("logsAvailable")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway recovery support diagnostic has an invalid field count",
-            ));
-        }
-        let value = |key: &str| -> Result<&str, io::Error> {
-            fields.get(key).and_then(Value::as_str).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Floway recovery support diagnostic has an invalid {key} field"),
-                )
-            })
-        };
-        let failure_kind = value("failureKind")?;
-        if !matches!(
-            failure_kind,
-            "asset"
-                | "compatibility"
-                | "migration"
-                | "native-dependency"
-                | "port"
-                | "storage"
-                | "timeout"
-                | "unexpected-exit"
-                | "unknown"
-        ) {
-            return Err(io::Error::new(
+                "Floway recovery support diagnostic has an invalid logsAvailable field",
+            )
+        })?;
+    let revision = fields
+        .get("revision")
+        .and_then(Value::as_u64)
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway recovery support diagnostic has an unknown failure kind",
-            ));
-        }
-        let locale = value("locale")?;
-        if !matches!(locale, "en" | "zh-Hans") {
-            return Err(io::Error::new(
+                "Floway recovery support diagnostic has an invalid revision field",
+            )
+        })?;
+    let actions = fields
+        .get("actions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Floway recovery support diagnostic has an unknown locale",
-            ));
-        }
-        let restart_enabled = fields
-            .get("restartEnabled")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Floway recovery support diagnostic has an invalid restartEnabled field",
-                )
-            })?;
-        let logs_available = fields
-            .get("logsAvailable")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Floway recovery support diagnostic has an invalid logsAvailable field",
-                )
-            })?;
-        let revision = fields
-            .get("revision")
-            .and_then(Value::as_u64)
-            .filter(|revision| *revision > 0)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Floway recovery support diagnostic has an invalid revision field",
-                )
-            })?;
-        let actions = fields
-            .get("actions")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Floway recovery support diagnostic has an invalid actions field",
-                )
-            })?;
-        let mut expected_actions = Vec::new();
-        if restart_enabled {
-            expected_actions.push(Value::String("restart".to_owned()));
-        }
-        if logs_available {
-            expected_actions.push(Value::String("open-logs".to_owned()));
-        }
-        if actions != &expected_actions {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Floway recovery support diagnostic actions do not match recovery readiness",
-            ));
-        }
-        Ok(json!({
-            "actions": actions,
-            "failureKind": failure_kind,
-            "logsAvailable": logs_available,
-            "locale": locale,
-            "restartEnabled": restart_enabled,
-            "revision": revision,
-        }))
-    })()
+                "Floway recovery support diagnostic has an invalid actions field",
+            )
+        })?;
+    let mut expected_actions = Vec::new();
+    if restart_enabled {
+        expected_actions.push(Value::String("restart".to_owned()));
+    }
+    if logs_available {
+        expected_actions.push(Value::String("open-logs".to_owned()));
+    }
+    if actions != &expected_actions {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support diagnostic actions do not match recovery readiness",
+        ));
+    }
+    Ok(json!({
+        "actions": actions,
+        "failureKind": failure_kind,
+        "logsAvailable": logs_available,
+        "locale": locale,
+        "restartEnabled": restart_enabled,
+        "revision": revision,
+    }))
 }
 
 pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {

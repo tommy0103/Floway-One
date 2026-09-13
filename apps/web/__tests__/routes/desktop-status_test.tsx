@@ -37,6 +37,7 @@ afterEach(async () => {
 
 test('defaults to a bounded startup state without requiring the sidecar', () => {
   expect(parseDesktopStatus(new URLSearchParams())).toEqual({
+    chain: [],
     failureKind: 'unknown',
     failureKey: 'desktop.status.failures.unknown',
     logsAvailable: false,
@@ -62,6 +63,7 @@ test('maps every shell failure code to typed localized recovery copy', () => {
       kind,
       state: 'failed',
     }))).toEqual({
+      chain: [],
       failureKind: kind,
       failureKey,
       logsAvailable: false,
@@ -75,6 +77,7 @@ test('maps every shell failure code to typed localized recovery copy', () => {
 test('rejects inherited and malformed failure kinds at the URL boundary', () => {
   for (const kind of ['constructor', 'toString', '__proto__', '', 'PORT']) {
     expect(parseDesktopStatus(new URLSearchParams({ kind, state: 'failed' }))).toEqual({
+      chain: [],
       failureKind: 'unknown',
       failureKey: 'desktop.status.failures.unknown',
       logsAvailable: false,
@@ -191,6 +194,48 @@ test('does not let an older status snapshot overwrite a newer runtime event', as
 
   await waitFor(() => expect(screen.getByText(/configured local port is unavailable/i)).toBeTruthy());
   expect(screen.queryByText(/starting the local gateway/i)).toBeNull();
+});
+
+test('renders the bounded original failure chain from the owning runtime status', async () => {
+  let publishStatus: ((event: { readonly payload: {
+    readonly chain?: readonly string[];
+    readonly kind?: string;
+    readonly logsAvailable: boolean;
+    readonly restartEnabled?: boolean;
+    readonly revision: number;
+    readonly state: string;
+  }; }) => void) | undefined;
+  tauri.isTauri.mockReturnValue(true);
+  tauri.listen.mockImplementation(async (_event, listener) => {
+    publishStatus = listener;
+    return vi.fn();
+  });
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') return { logsAvailable: true, revision: 1, state: 'starting' };
+    return undefined;
+  });
+  const router = createMemoryRouter([{
+    path: '/desktop-status',
+    element: <DesktopStatus />,
+  }], {
+    initialEntries: ['/desktop-status'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith('desktop_runtime_status'));
+  publishStatus?.({
+    payload: {
+      chain: ['Floway could not bind its local listener', 'EADDRINUSE 127.0.0.1:8788'],
+      kind: 'port',
+      logsAvailable: true,
+      restartEnabled: true,
+      revision: 3,
+      state: 'failed',
+    },
+  });
+
+  await waitFor(() => expect(screen.getByText(/EADDRINUSE 127\.0\.0\.1:8788/)).toBeTruthy());
+  expect(screen.getByText(/Original failure/i)).toBeTruthy();
 });
 
 test('discards a stale queued event delivered after a newer snapshot', async () => {

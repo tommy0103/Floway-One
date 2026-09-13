@@ -168,6 +168,7 @@ export const assertNativeFailureSurface = async (
     readonly dataRoot: string;
     readonly expectedLocale?: 'en' | 'zh-Hans';
     readonly expectedLogsAvailable?: boolean;
+    readonly expectedRenderedFragments?: readonly string[];
     readonly failureKind: string;
     readonly forbiddenSnapshotText: readonly string[];
   },
@@ -257,5 +258,9 @@ export const assertNativeFailureSurface = async (
   const hasLogsAction = renderedContains(recognized, copy.logs);
   if (hasLogsAction !== expectedLogsAvailable) {
     throw new Error('Rendered log action did not match availability');
+  }
+  const expectedRenderedFragments = options.expectedRenderedFragments ?? [];
+  if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {
+    throw new Error(`Rendered pixels omitted the original failure chain: ${JSON.stringify({ recognized, expectedRenderedFragments })}`);
   }
 };

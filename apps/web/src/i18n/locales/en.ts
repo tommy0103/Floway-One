@@ -57,6 +57,7 @@ const en = {
           unknown: 'The local Gateway reported an unexpected failure.',
         },
         openLogs: 'Open logs',
+        originalFailure: 'Original failure',
         restart: 'Restart Gateway',
         startingBadge: 'Starting',
         startingDescription: 'Checking the packaged runtime, local storage, database, and Dashboard before opening the control plane.',
