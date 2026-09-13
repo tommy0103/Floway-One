@@ -108,6 +108,23 @@ fn decodes_a_structured_failure_split_across_stderr_events() {
 }
 
 #[test]
+fn failure_chain_drops_stack_frames_and_stays_bounded() {
+    let line = "FLOWAY_DESKTOP_FAILURE {\"kind\":\"port\",\"chain\":[\"Floway could not open its endpoint\",\"Error: listen EADDRINUSE: address already in use 127.0.0.1:8788\\n    at Server.setupListenHandle (node:net:2167:16)\\n    at listenInCluster (node:net:2224:12)\"]}";
+    let report = parse_sidecar_failure(line).expect("sidecar failure must parse");
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+
+    assert!(state.mark_startup_failed(generation, &report));
+    assert_eq!(
+        state.failure_chain(),
+        [
+            "Floway could not open its endpoint".to_owned(),
+            "Error: listen EADDRINUSE: address already in use 127.0.0.1:8788".to_owned(),
+        ]
+    );
+}
+
+#[test]
 fn ignores_stale_readiness_and_failure_results_across_explicit_restarts() {
     let mut state = RuntimeAttemptState::new();
     let first = state.begin().expect("first attempt must begin");
