@@ -132,8 +132,8 @@ export default function DesktopStatus() {
         setStatus(status => next.revision > status.revision ? next : status);
         setIpcReady(true);
       } else unlisten();
-    })().catch(() => {
-      console.error('Floway could not synchronize the desktop runtime status');
+    })().catch((error: unknown) => {
+      console.error('Floway could not synchronize the desktop runtime status', error);
     });
     return () => {
       disposed = true;
@@ -166,8 +166,8 @@ export default function DesktopStatus() {
                 revision: status.revision,
               },
             });
-          } catch {
-            console.error('Floway could not report the rendered desktop recovery surface');
+          } catch (error) {
+            console.error('Floway could not report the rendered desktop recovery surface', error);
           }
         })();
       });

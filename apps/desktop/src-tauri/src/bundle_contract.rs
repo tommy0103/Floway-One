@@ -10,6 +10,14 @@ use sha2::{Digest, Sha256};
 const DESKTOP_BUNDLE_SCHEMA_VERSION: u64 = 4;
 pub(crate) const DESKTOP_COMPATIBILITY_VERSION: u64 = 1;
 
+fn is_exact_version(value: &str) -> bool {
+    let segments = value.split('.').collect::<Vec<_>>();
+    segments.len() == 3
+        && segments
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeCompatibility {
     pub contract_digest: String,
@@ -320,13 +328,7 @@ fn validate_contract(
     let release_version = compatibility
         .get("releaseVersion")
         .and_then(serde_json::Value::as_str)
-        .filter(|value| {
-            let segments = value.split('.').collect::<Vec<_>>();
-            segments.len() == 3
-                && segments.iter().all(|segment| {
-                    !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
-                })
-        })
+        .filter(|value| is_exact_version(value))
         .ok_or_else(|| {
             invalid_contract(
                 BundleResourceKind::Compatibility,
@@ -369,13 +371,7 @@ fn validate_contract(
     let version_is_exact = node
         .get("version")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| {
-            let segments = value.split('.').collect::<Vec<_>>();
-            segments.len() == 3
-                && segments.iter().all(|segment| {
-                    !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
-                })
-        });
+        .is_some_and(is_exact_version);
     if node.get("architecture").and_then(serde_json::Value::as_str) != Some(expected_architecture)
         || node.get("platform").and_then(serde_json::Value::as_str) != Some("darwin")
         || node.get("targetTriple").and_then(serde_json::Value::as_str) != Some(expected_target)
