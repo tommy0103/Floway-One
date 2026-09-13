@@ -142,39 +142,44 @@ export default function DesktopStatus() {
   }, []);
 
   // The support report evidences the rendered surface, so it waits until the
-  // browser has painted this committed state instead of racing the paint.
+  // browser has painted this committed state instead of racing the paint. A
+  // locked or throttled display never schedules frames, so a bounded fallback
+  // fires the report with the committed tree long settled; the snapshot render
+  // forces layout of the current document regardless of frame scheduling.
   useEffect(() => {
     if (!ipcReady || !failed || surface.current === null) return;
     if (!isTauri()) return;
     const locale = i18n.resolvedLanguage === 'zh-Hans' ? 'zh-Hans' : 'en';
     let cancelled = false;
-    const frame = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (cancelled) return;
-        void (async () => {
-          try {
-            await invoke('report_desktop_recovery_surface', {
-              surface: {
-                actions: [
-                  ...(status.restartEnabled ? ['restart'] : []),
-                  ...(status.logsAvailable ? ['open-logs'] : []),
-                ],
-                failureKind: status.failureKind,
-                logsAvailable: status.logsAvailable,
-                locale,
-                restartEnabled: status.restartEnabled,
-                revision: status.revision,
-              },
-            });
-          } catch (error) {
-            console.error('Floway could not report the rendered desktop recovery surface', error);
-          }
-        })();
-      });
-    });
+    const report = () => {
+      if (cancelled) return;
+      cancelled = true;
+      void (async () => {
+        try {
+          await invoke('report_desktop_recovery_surface', {
+            surface: {
+              actions: [
+                ...(status.restartEnabled ? ['restart'] : []),
+                ...(status.logsAvailable ? ['open-logs'] : []),
+              ],
+              failureKind: status.failureKind,
+              logsAvailable: status.logsAvailable,
+              locale,
+              restartEnabled: status.restartEnabled,
+              revision: status.revision,
+            },
+          });
+        } catch (error) {
+          console.error('Floway could not report the rendered desktop recovery surface', error);
+        }
+      })();
+    };
+    const frame = requestAnimationFrame(() => requestAnimationFrame(report));
+    const fallback = setTimeout(report, 250);
     return () => {
       cancelled = true;
       cancelAnimationFrame(frame);
+      clearTimeout(fallback);
     };
   }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.logsAvailable, status.restartEnabled, status.revision]);
 
