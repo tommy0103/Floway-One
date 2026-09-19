@@ -60,6 +60,7 @@ const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
 const RECOVERY_SNAPSHOT_FILE_NAME: &str = "recovery-surface.png";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const RESTART_SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 const TRAY_AUTOSTART_ID: &str = "tray-autostart";
 const TRAY_COPY_ADDRESS_ID: &str = "tray-copy-address";
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
@@ -1222,7 +1223,7 @@ fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), Box<dyn Error>> {
 fn toggle_autostart_from_menu(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>();
     // muda flips the native check state before delivering the menu event.
-    // https://github.com/tauri-apps/muda/blob/v0.17.1/src/items/check.rs#L31-L36
+    // https://github.com/tauri-apps/muda/blob/v0.19.3/src/platform_impl/macos/mod.rs#L1125-L1130
     let target = controller.tray.autostart_checked();
     if let Err(error) = set_autostart(app, target) {
         print_error_chain(error.as_ref());
@@ -1239,13 +1240,19 @@ fn restart_gateway(app: &AppHandle) -> Result<(), Box<dyn Error>> {
             controller.persist_lifecycle("Floway desktop operator restarted its runtime");
             let restart_app = app.clone();
             thread::spawn(move || {
-                if let Err(error) = restart_app
-                    .state::<Arc<DesktopController>>()
-                    .supervisor
-                    .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
-                {
-                    print_error_chain(&error);
-                    restart_app.exit(1);
+                let supervisor = &restart_app.state::<Arc<DesktopController>>().supervisor;
+                let settled = match supervisor.stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT) {
+                    Ok(settled) => settled,
+                    Err(error) => {
+                        print_error_chain(&error);
+                        restart_app.exit(1);
+                        return;
+                    }
+                };
+                // A simultaneous restart or quit may already be settling the
+                // runtime; wait for that teardown before respawning so the
+                // re-registration cannot race the previous child.
+                if !settled && !supervisor.wait_terminated(RESTART_SETTLE_TIMEOUT) {
                     return;
                 }
                 start_runtime(&restart_app);
@@ -1669,7 +1676,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             let status_url = window.url()?;
             // Closing the window only hides it; the shell, tray, and Gateway
             // keep running until an explicit quit.
-            // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/window/mod.rs#L1947-L1957
+            // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/app.rs#L111-L120
             let close_app = app_handle.clone();
             window.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {

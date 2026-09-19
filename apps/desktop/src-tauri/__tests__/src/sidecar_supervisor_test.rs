@@ -228,6 +228,41 @@ fn graceful_stop_reports_a_failed_signal_and_still_kills_the_child() {
 }
 
 #[test]
+fn wait_terminated_observes_a_stop_settled_elsewhere() {
+    let supervisor = PackageProcessSupervisor::new();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let kill_requested = Arc::new(AtomicBool::new(false));
+    let (stopped_sender, stopped_receiver) = mpsc::channel();
+    supervisor
+        .spawn_registered(|| -> Result<_, ForcedSpawnFailure> {
+            let mut child = observed_child(stopped_sender, &stop_requested, &kill_requested);
+            child.cooperate_with_stop_request = true;
+            Ok(((), child))
+        })
+        .expect("the first child must register");
+
+    let stop_supervisor = Arc::clone(&supervisor);
+    let stopper = thread::spawn(move || stop_supervisor.stop_gracefully(Duration::from_secs(5)));
+    let termination_supervisor = Arc::clone(&supervisor);
+    let termination = thread::spawn(move || {
+        stopped_receiver.recv().expect("graceful stop must arrive");
+        termination_supervisor.record_termination()
+    });
+    assert!(supervisor.wait_terminated(Duration::from_secs(5)));
+    assert!(
+        stopper
+            .join()
+            .expect("stopper thread must finish")
+            .expect("the cooperative child must settle")
+    );
+    assert!(
+        !termination
+            .join()
+            .expect("termination observer must finish")
+    );
+}
+
+#[test]
 fn graceful_stop_without_a_child_is_a_no_op() {
     let supervisor = PackageProcessSupervisor::new();
     assert!(
@@ -235,6 +270,7 @@ fn graceful_stop_without_a_child_is_a_no_op() {
             .stop_gracefully(Duration::from_millis(1))
             .expect("an empty supervisor owns nothing to stop")
     );
+    assert!(supervisor.wait_terminated(Duration::from_millis(1)));
 }
 
 #[test]

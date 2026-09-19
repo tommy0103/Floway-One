@@ -187,11 +187,12 @@ pub fn claim_shell_ownership(socket_path: &Path) -> io::Result<ShellOwnership> {
 }
 
 pub fn read_shell_command(stream: &UnixStream) -> io::Result<Option<ShellCommand>> {
-    // XNU rejects SO_RCVTIMEO with EINVAL on an accepted socket whose peer
-    // already fully disconnected. Ownership probes do exactly that, and our
-    // command clients half-close but stay connected for the reply, so an
-    // EINVAL peer is a dead probe whose reads drain to EOF without blocking.
-    // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L3102-L3138
+    // XNU rejects every sockopt with EINVAL once a socket has been shut down
+    // in both directions — exactly the state of an accepted channel whose
+    // probe peer already fully disconnected. Our command clients half-close
+    // but stay connected for the reply, so an EINVAL peer is a dead probe
+    // whose reads drain to EOF without blocking.
+    // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L4750-L4757
     if let Err(error) = stream.set_read_timeout(Some(CONTROL_IO_TIMEOUT)) {
         if error.kind() != io::ErrorKind::InvalidInput {
             return Err(error);

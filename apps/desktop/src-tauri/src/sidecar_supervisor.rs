@@ -231,6 +231,21 @@ impl PackageProcessSupervisor {
         }
     }
 
+    /// Waits for a stop started elsewhere to settle without requesting one.
+    pub(crate) fn wait_terminated(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| {
+                !matches!(*state, ProcessState::Empty | ProcessState::Terminated)
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        matches!(*state, ProcessState::Empty | ProcessState::Terminated)
+    }
+
     fn take_running_child(&self) -> Option<Box<dyn PackagedChild>> {
         let mut state = self
             .state
