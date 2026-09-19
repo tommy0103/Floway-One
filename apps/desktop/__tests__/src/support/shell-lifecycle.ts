@@ -38,7 +38,7 @@ import {
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 const execFileAsync = promisify(execFile);
-const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const sleep = async (milliseconds: number): Promise<void> => {
   await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
