@@ -312,7 +312,7 @@ describe('dashboard overview rendering', () => {
     expect(screen.getByText('No upstreams yet. Connect one to start routing requests.')).toBeTruthy();
     expect(screen.getByText('No API keys yet. Create one so clients can call this gateway.')).toBeTruthy();
     expect(screen.getByText('No requests recorded yet.')).toBeTruthy();
-    expect(screen.getByText('0 upstreams')).toBeTruthy();
+    expect(screen.queryByText('0 upstreams')).toBeNull();
     expect(screen.queryByText('Unreachable')).toBeNull();
   });
 });
