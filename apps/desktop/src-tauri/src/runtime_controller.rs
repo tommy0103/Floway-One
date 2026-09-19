@@ -97,6 +97,16 @@ fn ephemeral_bootstrap_token() -> Result<String, StartupAuthorityError> {
         .collect())
 }
 
+fn error_chain_text(error: &(dyn Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(&format!("\ncaused by: {cause}"));
+        source = cause.source();
+    }
+    text
+}
+
 fn print_error_chain(error: &(dyn Error + 'static)) {
     eprintln!("Floway desktop application failed: {error}");
     let mut source = error.source();
@@ -1329,8 +1339,9 @@ fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
         }
     };
     let reply = dispatch_shell_command(&app, command).unwrap_or_else(|error| {
-        print_error_chain(error.as_ref());
-        json!({ "ok": false })
+        let chain = error_chain_text(error.as_ref());
+        eprintln!("Floway desktop control command failed: {chain}");
+        json!({ "error": chain, "ok": false })
     });
     let accepted = reply.get("ok").and_then(Value::as_bool) == Some(true);
     if let Err(error) = write_shell_reply(&mut stream, &reply) {

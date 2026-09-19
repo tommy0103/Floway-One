@@ -112,8 +112,13 @@ fn enable_tolerates_a_not_loaded_bootout() {
 fn enable_rolls_back_its_plist_when_bootstrap_is_rejected() {
     let dir = test_dir("bootstrap-failure");
     let autostart = autostart(&dir);
-    let (run, _calls) =
-        recorded_launchctl(&[("bootstrap", "Bootstrap failed: 5: Input/output error")]);
+    let (run, _calls) = recorded_launchctl(&[
+        ("bootstrap", "Bootstrap failed: 5: Input/output error"),
+        (
+            "print",
+            "Could not find service \"dev.floway.one\" in domain",
+        ),
+    ]);
     let failure = autostart
         .enable_with(run)
         .expect_err("a rejected bootstrap must fail");
@@ -129,6 +134,25 @@ fn enable_rolls_back_its_plist_when_bootstrap_is_rejected() {
     }
     assert!(chain.contains("Bootstrap failed: 5: Input/output error"));
     assert!(!autostart.is_enabled());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn enable_accepts_a_registration_background_management_already_loaded() {
+    let dir = test_dir("already-loaded");
+    let autostart = autostart(&dir);
+    // BTM loads a new LaunchAgent as soon as its plist lands; the follow-up
+    // bootstrap then reports the job as already present.
+    let (run, calls) =
+        recorded_launchctl(&[("bootstrap", "Bootstrap failed: 5: Input/output error")]);
+    autostart
+        .enable_with(run)
+        .expect("an already-loaded registration must count as enabled");
+    assert!(autostart.is_enabled());
+    assert_eq!(
+        calls().last().expect("print must run")[..2],
+        ["print", "gui/501/dev.floway.one"]
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 

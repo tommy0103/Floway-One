@@ -268,8 +268,12 @@ pub fn send_shell_command(socket_path: &Path, command: ShellCommand) -> io::Resu
     if value.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(value);
     }
+    let reason = value
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("the running instance rejected the command without a reason");
     Err(io::Error::new(
         io::ErrorKind::ConnectionRefused,
-        "Floway desktop running instance rejected the command",
+        format!("Floway desktop running instance rejected the command: {reason}"),
     ))
 }

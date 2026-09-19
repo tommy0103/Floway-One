@@ -215,6 +215,13 @@ impl ShellAutostart {
             OsString::from(&self.launchctl_domain),
             plist_path.as_os_str().to_owned(),
         ]) {
+            // Modern macOS Background Task Management loads a new LaunchAgent
+            // as soon as its plist lands in ~/Library/LaunchAgents, so the
+            // registration may already be loaded from the file just written;
+            // the preceding bootout guarantees any loaded job came from it.
+            if self.is_loaded(&run) {
+                return Ok(());
+            }
             let removal = fs::remove_file(&plist_path);
             let error =
                 ShellAutostartError::launchctl("Floway could not register its login item", failure);
@@ -230,6 +237,10 @@ impl ShellAutostart {
             };
         }
         Ok(())
+    }
+
+    fn is_loaded(&self, run: &dyn Fn(&[OsString]) -> Result<(), LaunchctlFailure>) -> bool {
+        run(&[OsString::from("print"), self.bootout_target()]).is_ok()
     }
 
     pub(crate) fn disable_with(
