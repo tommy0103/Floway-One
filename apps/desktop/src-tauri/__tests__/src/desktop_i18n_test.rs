@@ -26,7 +26,11 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
     let simplified_chinese = messages_for(DesktopLocale::ZhHans);
 
     for message in [
+        english.copy_gateway_address,
+        english.launch_at_login,
+        english.open_floway,
         english.open_logs,
+        english.quit_floway,
         english.restart_gateway,
         english.status_needs_attention,
         english.status_running,
@@ -34,7 +38,11 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
         english.tooltip_needs_attention,
         english.tooltip_running,
         english.tooltip_starting,
+        simplified_chinese.copy_gateway_address,
+        simplified_chinese.launch_at_login,
+        simplified_chinese.open_floway,
         simplified_chinese.open_logs,
+        simplified_chinese.quit_floway,
         simplified_chinese.restart_gateway,
         simplified_chinese.status_needs_attention,
         simplified_chinese.status_running,
@@ -45,7 +53,11 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
     ] {
         assert!(!message.trim().is_empty());
     }
-    assert_eq!(simplified_chinese.open_logs, "打开日志");
+    assert_eq!(simplified_chinese.copy_gateway_address, "复制 Gateway 地址");
+    assert_eq!(simplified_chinese.launch_at_login, "开机启动");
+    assert_eq!(simplified_chinese.open_floway, "打开 Floway");
+    assert_eq!(simplified_chinese.open_logs, "打开日志目录");
+    assert_eq!(simplified_chinese.quit_floway, "退出 Floway");
     assert_eq!(simplified_chinese.restart_gateway, "重启 Gateway");
     assert_eq!(
         simplified_chinese.status_needs_attention,

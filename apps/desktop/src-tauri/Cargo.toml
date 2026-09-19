@@ -44,6 +44,14 @@ path = "__tests__/src/desktop_i18n_test.rs"
 name = "desktop_paths"
 path = "__tests__/src/desktop_paths_test.rs"
 
+[[test]]
+name = "shell_autostart"
+path = "__tests__/src/shell_autostart_test.rs"
+
+[[test]]
+name = "shell_singleton"
+path = "__tests__/src/shell_singleton_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [

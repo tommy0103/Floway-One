@@ -16,6 +16,10 @@ mod rendered_snapshot;
 #[cfg(feature = "desktop")]
 mod runtime_controller;
 #[cfg(feature = "desktop")]
+mod shell_autostart;
+#[cfg(feature = "desktop")]
+mod shell_singleton;
+#[cfg(feature = "desktop")]
 mod sidecar_supervisor;
 
 pub const NODE_SIDECAR_NAME: &str = "floway-node";

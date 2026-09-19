@@ -43,6 +43,10 @@ impl DesktopPaths {
         })
     }
 
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }
