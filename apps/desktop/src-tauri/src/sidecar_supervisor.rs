@@ -8,13 +8,32 @@ use std::time::Duration;
 use tauri_plugin_shell::process::CommandChild;
 
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const GRACEFUL_STOP_SIGNAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) trait PackagedChild: Send {
+    /// Asks the child to shut down on its own; the child may still be running
+    /// when this returns.
+    fn request_stop(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    /// Kills the child immediately.
     fn stop_now(self: Box<Self>) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 #[cfg(feature = "desktop")]
 impl PackagedChild for CommandChild {
+    fn request_stop(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // XNU owns the POSIX signal identities; SIGTERM reaches only the exact
+        // sidecar pid, which installs a graceful-stop handler when it runs as
+        // the packaged desktop sidecar.
+        // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/signal.h#L101-L104
+        // https://github.com/tauri-apps/plugins-workspace/blob/shell-v2.3.6/plugins/shell/src/process/mod.rs#L84-L90
+        let result = unsafe { libc::kill(self.pid() as libc::pid_t, libc::SIGTERM) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(Box::new(io::Error::last_os_error()) as Box<dyn Error + Send + Sync>)
+        }
+    }
+
     fn stop_now(self: Box<Self>) -> Result<(), Box<dyn Error + Send + Sync>> {
         (*self)
             .kill()
@@ -159,48 +178,97 @@ impl PackageProcessSupervisor {
     }
 
     pub(crate) fn stop_now(&self) -> Result<bool, ProcessStopError> {
-        let child = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let prior = std::mem::replace(&mut *state, ProcessState::StopRequested);
-            match prior {
-                ProcessState::Running(child) => child,
-                other => {
-                    *state = other;
-                    return Ok(false);
-                }
-            }
+        let Some(child) = self.take_running_child() else {
+            return Ok(false);
         };
         let mut failures = Vec::new();
-        // This is an immediate package-resource cleanup operation, not #17's
-        // future graceful explicit-quit policy.
+        // Failure teardown kills immediately: the runtime may be wedged and a
+        // graceful request cannot be trusted to settle it.
         // https://github.com/tauri-apps/plugins-workspace/blob/shell-v2.3.6/plugins/shell/src/process/mod.rs#L70-L86
         if let Err(source) = child.stop_now() {
             failures.push(source);
         }
-
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (state, timeout) = self
-            .changed
-            .wait_timeout_while(state, PROCESS_STOP_TIMEOUT, |state| {
-                !matches!(*state, ProcessState::Terminated)
-            })
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if timeout.timed_out() && !matches!(*state, ProcessState::Terminated) {
-            failures.push(Box::new(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Floway packaged runtime did not report termination within 10 seconds",
-            )) as Box<dyn Error + Send + Sync>);
-        }
+        self.wait_for_termination(PROCESS_STOP_TIMEOUT, &mut failures);
         if failures.is_empty() {
             Ok(true)
         } else {
             Err(ProcessStopError { failures })
+        }
+    }
+
+    /// Graceful explicit-quit stop: signal first, escalate to a kill only when
+    /// the child does not settle within the grace window.
+    pub(crate) fn stop_gracefully(&self, grace: Duration) -> Result<bool, ProcessStopError> {
+        let Some(child) = self.take_running_child() else {
+            return Ok(false);
+        };
+        let mut failures = Vec::new();
+        if let Err(source) = child.request_stop() {
+            failures.push(source);
+        } else {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (state, _) = self
+                .changed
+                .wait_timeout_while(state, grace, |state| {
+                    !matches!(*state, ProcessState::Terminated)
+                })
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if matches!(*state, ProcessState::Terminated) {
+                return Ok(true);
+            }
+        }
+        if let Err(source) = child.stop_now() {
+            failures.push(source);
+        }
+        self.wait_for_termination(PROCESS_STOP_TIMEOUT, &mut failures);
+        if failures.is_empty() {
+            Ok(true)
+        } else {
+            Err(ProcessStopError { failures })
+        }
+    }
+
+    fn take_running_child(&self) -> Option<Box<dyn PackagedChild>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior = std::mem::replace(&mut *state, ProcessState::StopRequested);
+        match prior {
+            ProcessState::Running(child) => Some(child),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    fn wait_for_termination(
+        &self,
+        timeout: Duration,
+        failures: &mut Vec<Box<dyn Error + Send + Sync>>,
+    ) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (state, elapsed) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| {
+                !matches!(*state, ProcessState::Terminated)
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if elapsed.timed_out() && !matches!(*state, ProcessState::Terminated) {
+            failures.push(Box::new(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "Floway packaged runtime did not report termination within {} seconds",
+                    timeout.as_secs()
+                ),
+            )) as Box<dyn Error + Send + Sync>);
         }
     }
 }
