@@ -29,6 +29,7 @@ impl LaunchctlFailure {
         self.stderr.contains("No such process")
     }
 
+    #[cfg(test)]
     pub(crate) fn for_test(args: &[OsString], status: &str, stderr: &str) -> Self {
         Self {
             args: args.to_vec(),

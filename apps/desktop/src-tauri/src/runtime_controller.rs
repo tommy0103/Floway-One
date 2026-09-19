@@ -3,17 +3,20 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use getrandom::fill;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use serde_json::{Value, json};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{NewWindowResponse, PageLoadEvent, PageLoadPayload};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
 use url::Url;
@@ -36,8 +39,17 @@ use crate::runtime_status::{
     RuntimeAttemptState, RuntimeHealthError, RuntimePhase, STARTUP_TIMEOUT, SidecarFailureDecoder,
     apply_recovery_surface, probe_compatible_runtime,
 };
+use crate::shell_autostart::{
+    ShellAutostart, launch_agents_dir, launchctl_domain, login_item_program_arguments,
+};
+use crate::shell_singleton::{
+    ShellCommand, ShellOwnership, claim_shell_ownership, control_socket_path,
+    parse_control_command, read_shell_command, send_shell_command, write_shell_reply,
+};
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
-use crate::sidecar_supervisor::{PackageProcessSupervisor, UnexpectedSidecarExitError};
+use crate::sidecar_supervisor::{
+    GRACEFUL_STOP_SIGNAL_TIMEOUT, PackageProcessSupervisor, UnexpectedSidecarExitError,
+};
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
@@ -48,7 +60,11 @@ const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
 const RECOVERY_SNAPSHOT_FILE_NAME: &str = "recovery-surface.png";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const TRAY_AUTOSTART_ID: &str = "tray-autostart";
+const TRAY_COPY_ADDRESS_ID: &str = "tray-copy-address";
 const TRAY_LOGS_ID: &str = "runtime-open-logs";
+const TRAY_OPEN_ID: &str = "tray-open";
+const TRAY_QUIT_ID: &str = "tray-quit";
 const TRAY_RESTART_ID: &str = "runtime-restart";
 
 #[derive(Debug)]
@@ -127,10 +143,21 @@ fn emit_page_load_diagnostic(payload: &PageLoadPayload<'_>) {
     }
 }
 
+struct TrayPhaseUpdate<'a> {
+    copy_enabled: bool,
+    logs_enabled: bool,
+    origin: Option<&'a str>,
+    restart_enabled: bool,
+}
+
 struct DesktopTray {
     _icon: TrayIcon<tauri::Wry>,
+    autostart: CheckMenuItem<tauri::Wry>,
+    copy_address: MenuItem<tauri::Wry>,
     logs: MenuItem<tauri::Wry>,
     messages: &'static DesktopMessages,
+    open: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
     restart: MenuItem<tauri::Wry>,
     status: MenuItem<tauri::Wry>,
 }
@@ -138,10 +165,18 @@ struct DesktopTray {
 impl DesktopTray {
     fn build(app: &AppHandle) -> Result<Self, Box<dyn Error>> {
         let messages = system_messages();
+        let open = MenuItem::with_id(app, TRAY_OPEN_ID, messages.open_floway, true, None::<&str>)?;
         let status = MenuItem::with_id(
             app,
             "runtime-status",
             messages.status_starting,
+            false,
+            None::<&str>,
+        )?;
+        let copy_address = MenuItem::with_id(
+            app,
+            TRAY_COPY_ADDRESS_ID,
+            messages.copy_gateway_address,
             false,
             None::<&str>,
         )?;
@@ -152,28 +187,78 @@ impl DesktopTray {
             false,
             None::<&str>,
         )?;
+        let autostart = CheckMenuItem::with_id(
+            app,
+            TRAY_AUTOSTART_ID,
+            messages.launch_at_login,
+            true,
+            false,
+            None::<&str>,
+        )?;
         let logs = MenuItem::with_id(app, TRAY_LOGS_ID, messages.open_logs, true, None::<&str>)?;
-        let menu = Menu::with_items(app, &[&status, &restart, &logs])?;
+        let quit = MenuItem::with_id(app, TRAY_QUIT_ID, messages.quit_floway, true, None::<&str>)?;
+        let menu = Menu::with_items(
+            app,
+            &[
+                &open,
+                &status,
+                &copy_address,
+                &restart,
+                &autostart,
+                &logs,
+                &quit,
+            ],
+        )?;
         // Tauri's tray builder owns native menu callbacks and supports runtime
         // tooltip updates on every desktop target.
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/tray/mod.rs#L203-L378
         let mut builder = TrayIconBuilder::with_id("floway-runtime")
             .menu(&menu)
+            // The spec binds window restore to the tray icon click, so the menu
+            // moves to the secondary click and the primary click reopens the
+            // main window.
+            .show_menu_on_left_click(false)
             .tooltip(messages.tooltip_starting);
         if let Some(icon) = app.default_window_icon() {
             builder = builder.icon(icon.clone());
         }
         let icon = builder
             .on_menu_event(|app, event| match event.id().as_ref() {
-                TRAY_RESTART_ID => restart_failed_runtime(app),
+                TRAY_OPEN_ID => activate_main_window(app),
+                TRAY_COPY_ADDRESS_ID => {
+                    if let Err(error) = copy_gateway_address(app) {
+                        print_error_chain(error.as_ref());
+                    }
+                }
+                TRAY_RESTART_ID => {
+                    if let Err(error) = restart_gateway(app) {
+                        print_error_chain(error.as_ref());
+                    }
+                }
+                TRAY_AUTOSTART_ID => toggle_autostart_from_menu(app),
                 TRAY_LOGS_ID => open_logs(app),
+                TRAY_QUIT_ID => quit_floway(app),
                 _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    activate_main_window(tray.app_handle());
+                }
             })
             .build(app)?;
         Ok(Self {
             _icon: icon,
+            autostart,
+            copy_address,
             logs,
             messages,
+            open,
+            quit,
             restart,
             status,
         })
@@ -182,24 +267,39 @@ impl DesktopTray {
     fn set_phase(
         &self,
         phase: RuntimePhase,
-        restart_enabled: bool,
-        logs_enabled: bool,
+        update: TrayPhaseUpdate<'_>,
     ) -> Result<(), Box<dyn Error>> {
         let (label, tooltip) = match phase {
             RuntimePhase::Starting => (
-                self.messages.status_starting,
+                self.messages.status_starting.to_owned(),
                 self.messages.tooltip_starting,
             ),
-            RuntimePhase::Ready => (self.messages.status_running, self.messages.tooltip_running),
+            RuntimePhase::Ready => (
+                match update.origin {
+                    Some(origin) => format!("{} — {origin}", self.messages.status_running),
+                    None => self.messages.status_running.to_owned(),
+                },
+                self.messages.tooltip_running,
+            ),
             RuntimePhase::Failed => (
-                self.messages.status_needs_attention,
+                self.messages.status_needs_attention.to_owned(),
                 self.messages.tooltip_needs_attention,
             ),
         };
         self.status.set_text(label)?;
-        self.restart.set_enabled(restart_enabled)?;
-        self.logs.set_enabled(logs_enabled)?;
+        self.copy_address.set_enabled(update.copy_enabled)?;
+        self.restart.set_enabled(update.restart_enabled)?;
+        self.logs.set_enabled(update.logs_enabled)?;
         self._icon.set_tooltip(Some(tooltip))?;
+        Ok(())
+    }
+
+    fn autostart_checked(&self) -> bool {
+        self.autostart.is_checked().unwrap_or(false)
+    }
+
+    fn set_autostart_checked(&self, checked: bool) -> Result<(), Box<dyn Error>> {
+        self.autostart.set_checked(checked)?;
         Ok(())
     }
 
@@ -207,9 +307,26 @@ impl DesktopTray {
         // These getters read the same native menu items updated by set_phase.
         // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/menu/normal.rs#L87-L106
         Ok(serde_json::json!({
+            "autostart": {
+                "checked": self.autostart_checked(),
+                "enabled": self.autostart.is_enabled()?,
+                "text": self.autostart.text()?,
+            },
+            "copyAddress": {
+                "enabled": self.copy_address.is_enabled()?,
+                "text": self.copy_address.text()?,
+            },
             "logs": {
                 "enabled": self.logs.is_enabled()?,
                 "text": self.logs.text()?,
+            },
+            "open": {
+                "enabled": self.open.is_enabled()?,
+                "text": self.open.text()?,
+            },
+            "quit": {
+                "enabled": self.quit.is_enabled()?,
+                "text": self.quit.text()?,
             },
             "restart": {
                 "enabled": self.restart.is_enabled()?,
@@ -225,7 +342,10 @@ impl DesktopTray {
 
 struct DesktopController {
     attempts: Mutex<RuntimeAttemptState>,
+    autostart: Mutex<Option<ShellAutostart>>,
     dashboard_policy: RwLock<Option<DashboardNavigationPolicy>>,
+    data_root: PathBuf,
+    gateway_origin: RwLock<Option<String>>,
     log: Mutex<Option<BoundedSidecarLog>>,
     logs_dir: PathBuf,
     pending_failure_surface: Mutex<Option<FailureKind>>,
@@ -243,6 +363,10 @@ impl DesktopController {
             .begin()?;
         *self
             .dashboard_policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .gateway_origin
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         Some(generation)
@@ -285,6 +409,13 @@ impl DesktopController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .phase()
+    }
+
+    fn gateway_origin(&self) -> Option<String> {
+        self.gateway_origin
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn complete_teardown(&self, generation: u64) -> bool {
@@ -490,8 +621,12 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
     let status = controller.status();
     if let Err(error) = controller.tray.set_phase(
         RuntimePhase::Failed,
-        status.restart_available,
-        status.logs_available,
+        TrayPhaseUpdate {
+            copy_enabled: false,
+            logs_enabled: status.logs_available,
+            origin: None,
+            restart_enabled: status.restart_available,
+        },
     ) {
         print_error_chain(error.as_ref());
         app.exit(1);
@@ -511,8 +646,12 @@ fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop
     let status = controller.status();
     if let Err(error) = controller.tray.set_phase(
         RuntimePhase::Failed,
-        status.restart_available,
-        status.logs_available,
+        TrayPhaseUpdate {
+            copy_enabled: false,
+            logs_enabled: status.logs_available,
+            origin: None,
+            restart_enabled: status.restart_available,
+        },
     ) {
         print_error_chain(error.as_ref());
         app.exit(1);
@@ -586,15 +725,26 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
         }
     };
     let dashboard_url = policy.bootstrap_url().clone();
+    let owned_origin = origin.to_owned();
     let ready = controller.commit_ready(generation, || {
         let effects = (|| -> Result<(), Box<dyn Error>> {
             *controller
                 .dashboard_policy
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(policy);
-            controller
-                .tray
-                .set_phase(RuntimePhase::Ready, false, true)?;
+            *controller
+                .gateway_origin
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(owned_origin.clone());
+            controller.tray.set_phase(
+                RuntimePhase::Ready,
+                TrayPhaseUpdate {
+                    copy_enabled: true,
+                    logs_enabled: true,
+                    origin: Some(owned_origin.as_str()),
+                    restart_enabled: true,
+                },
+            )?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .navigate(dashboard_url)
@@ -607,6 +757,10 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
         if effects.is_err() {
             *controller
                 .dashboard_policy
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            *controller
+                .gateway_origin
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         }
@@ -780,8 +934,12 @@ fn start_runtime(app: &AppHandle) {
     controller.persist_lifecycle("Floway desktop runtime state: starting");
     if let Err(error) = controller.tray.set_phase(
         RuntimePhase::Starting,
-        false,
-        controller.status().logs_available,
+        TrayPhaseUpdate {
+            copy_enabled: false,
+            logs_enabled: controller.status().logs_available,
+            origin: None,
+            restart_enabled: false,
+        },
     ) {
         print_error_chain(error.as_ref());
         app.exit(1);
@@ -918,11 +1076,355 @@ fn open_logs(app: &AppHandle) {
     }
 }
 
-fn restart_failed_runtime(app: &AppHandle) {
+fn main_window(app: &AppHandle) -> Result<tauri::WebviewWindow, Box<dyn Error>> {
+    app.get_webview_window("main").ok_or_else(|| {
+        Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway main window is unavailable",
+        )) as Box<dyn Error>
+    })
+}
+
+fn activate_main_window(app: &AppHandle) {
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let window = main_window(app)?;
+        window.show()?;
+        window.unminimize()?;
+        window.set_focus()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            app.state::<Arc<DesktopController>>()
+                .persist_lifecycle("Floway desktop restored its main window");
+        }
+        Err(error) => print_error_chain(error.as_ref()),
+    }
+}
+
+fn hide_main_window(app: &AppHandle) -> Result<(), Box<dyn Error>> {
+    let window = main_window(app)?;
+    window.hide()?;
+    app.state::<Arc<DesktopController>>()
+        .persist_lifecycle("Floway desktop hid its main window; the Gateway keeps running");
+    Ok(())
+}
+
+fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.phase() == RuntimePhase::Failed && controller.restart_available() {
-        controller.persist_lifecycle("Floway desktop operator restarted its runtime");
-        start_runtime(app);
+    let origin = controller.gateway_origin().ok_or_else(|| {
+        Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway desktop Gateway address is unavailable before the runtime is ready",
+        )) as Box<dyn Error>
+    })?;
+    // The general pasteboard belongs to the login session; pbcopy is the
+    // system clipboard writer and needs no accessibility grant.
+    // https://keith.github.io/xcode-man-pages/pbcopy.1.html
+    let mut pbcopy = Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|source| {
+            Box::new(io::Error::new(
+                source.kind(),
+                format!("Floway desktop could not start pbcopy: {source}"),
+            )) as Box<dyn Error>
+        })?;
+    pbcopy
+        .stdin
+        .as_mut()
+        .expect("pbcopy stdin must be piped")
+        .write_all(origin.as_bytes())
+        .map_err(|source| {
+            Box::new(io::Error::new(
+                source.kind(),
+                format!("Floway desktop could not write the Gateway address to pbcopy: {source}"),
+            )) as Box<dyn Error>
+        })?;
+    let status = pbcopy.wait().map_err(|source| {
+        Box::new(io::Error::new(
+            source.kind(),
+            format!("Floway desktop could not wait for pbcopy: {source}"),
+        )) as Box<dyn Error>
+    })?;
+    if !status.success() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Floway desktop pbcopy exited with {status}"),
+        )));
+    }
+    controller.persist_lifecycle("Floway desktop copied its Gateway address");
+    Ok(())
+}
+
+fn resolve_shell_autostart(app: &AppHandle) -> Result<ShellAutostart, Box<dyn Error>> {
+    // getuid cannot fail.
+    // https://man7.org/linux/man-pages/man2/getuid.2.html
+    let uid = unsafe { libc::getuid() };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or_else(|| {
+            Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Floway desktop could not resolve its home directory for login item registration",
+            )) as Box<dyn Error>
+        })?;
+    let executable = std::env::current_exe().map_err(|source| {
+        Box::new(io::Error::new(
+            source.kind(),
+            format!("Floway desktop could not resolve its own executable path: {source}"),
+        )) as Box<dyn Error>
+    })?;
+    let controller = app.state::<Arc<DesktopController>>();
+    if controller.data_root.as_os_str().is_empty() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Floway desktop has no usable data root for login item registration",
+        )));
+    }
+    Ok(ShellAutostart::new(
+        app.config().identifier.clone(),
+        launch_agents_dir(&home),
+        launchctl_domain(uid),
+        login_item_program_arguments(&executable, &controller.data_root),
+    ))
+}
+
+fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), Box<dyn Error>> {
+    let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    {
+        let mut autostart = controller
+            .autostart
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if autostart.is_none() {
+            *autostart = Some(resolve_shell_autostart(app)?);
+        }
+        let registration = autostart
+            .as_ref()
+            .expect("login item registration must resolve");
+        if enabled {
+            registration.enable()?;
+        } else {
+            registration.disable()?;
+        }
+    }
+    controller.tray.set_autostart_checked(enabled)?;
+    controller.persist_lifecycle(if enabled {
+        "Floway desktop enabled launch at login"
+    } else {
+        "Floway desktop disabled launch at login"
+    });
+    Ok(())
+}
+
+fn toggle_autostart_from_menu(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>();
+    // muda flips the native check state before delivering the menu event.
+    // https://github.com/tauri-apps/muda/blob/v0.17.1/src/items/check.rs#L31-L36
+    let target = controller.tray.autostart_checked();
+    if let Err(error) = set_autostart(app, target) {
+        print_error_chain(error.as_ref());
+        if let Err(revert) = controller.tray.set_autostart_checked(!target) {
+            print_error_chain(revert.as_ref());
+        }
+    }
+}
+
+fn restart_gateway(app: &AppHandle) -> Result<(), Box<dyn Error>> {
+    let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    match controller.phase() {
+        RuntimePhase::Ready => {
+            controller.persist_lifecycle("Floway desktop operator restarted its runtime");
+            let restart_app = app.clone();
+            thread::spawn(move || {
+                if let Err(error) = restart_app
+                    .state::<Arc<DesktopController>>()
+                    .supervisor
+                    .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
+                {
+                    print_error_chain(&error);
+                    restart_app.exit(1);
+                    return;
+                }
+                start_runtime(&restart_app);
+            });
+            Ok(())
+        }
+        RuntimePhase::Failed if controller.restart_available() => {
+            controller.persist_lifecycle("Floway desktop operator restarted its runtime");
+            start_runtime(app);
+            Ok(())
+        }
+        _ => Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Floway desktop Gateway cannot restart while it is starting",
+        ))),
+    }
+}
+
+fn quit_floway(app: &AppHandle) {
+    app.state::<Arc<DesktopController>>()
+        .persist_lifecycle("Floway desktop operator quit; stopping its runtime");
+    let quit_app = app.clone();
+    thread::spawn(move || {
+        stop_packaged_process(&quit_app);
+        quit_app.exit(0);
+    });
+}
+
+fn shell_status_snapshot(app: &AppHandle) -> Result<Value, Box<dyn Error>> {
+    let controller = app.state::<Arc<DesktopController>>();
+    let window = main_window(app)?;
+    Ok(json!({
+        "autostartEnabled": controller.tray.autostart_checked(),
+        "gatewayOrigin": controller.gateway_origin(),
+        "phase": controller.phase().as_str(),
+        "tray": controller.tray.diagnostic_snapshot()?,
+        "window": {
+            "title": window.title()?,
+            "visible": window.is_visible()?,
+        },
+    }))
+}
+
+fn dispatch_shell_command(app: &AppHandle, command: ShellCommand) -> Result<Value, Box<dyn Error>> {
+    match command {
+        ShellCommand::Activate => {
+            activate_main_window(app);
+            Ok(json!({ "ok": true }))
+        }
+        ShellCommand::CloseWindow => hide_main_window(app).map(|()| json!({ "ok": true })),
+        ShellCommand::CopyGatewayAddress => {
+            copy_gateway_address(app).map(|()| json!({ "ok": true }))
+        }
+        ShellCommand::Quit => Ok(json!({ "ok": true })),
+        ShellCommand::ReportStatus => {
+            shell_status_snapshot(app).map(|status| json!({ "ok": true, "status": status }))
+        }
+        ShellCommand::RestartGateway => restart_gateway(app).map(|()| json!({ "ok": true })),
+        ShellCommand::SetAutostart(enabled) => {
+            set_autostart(app, enabled).map(|()| json!({ "ok": true }))
+        }
+    }
+}
+
+fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
+    let command = match read_shell_command(&stream) {
+        Ok(Some(command)) => command,
+        // An ownership probe opens and closes the channel without a command.
+        Ok(None) => return,
+        Err(error) => {
+            print_error_chain(&error);
+            let _ = write_shell_reply(&mut stream, &json!({ "ok": false }));
+            return;
+        }
+    };
+    let reply = dispatch_shell_command(&app, command).unwrap_or_else(|error| {
+        print_error_chain(error.as_ref());
+        json!({ "ok": false })
+    });
+    let accepted = reply.get("ok").and_then(Value::as_bool) == Some(true);
+    if let Err(error) = write_shell_reply(&mut stream, &reply) {
+        print_error_chain(&error);
+        return;
+    }
+    // The quit reply must reach the caller before the shell begins stopping.
+    if accepted && command == ShellCommand::Quit {
+        quit_floway(&app);
+    }
+}
+
+fn serve_shell_commands(app: &AppHandle, listener: UnixListener) {
+    let server_app = app.clone();
+    thread::spawn(move || {
+        for connection in listener.incoming() {
+            match connection {
+                Ok(stream) => {
+                    let connection_app = server_app.clone();
+                    thread::spawn(move || handle_shell_command(connection_app, stream));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Floway desktop control channel could not accept a connection: {error}"
+                    )
+                }
+            }
+        }
+    });
+}
+
+fn hide_main_window_from_event(app: &AppHandle) {
+    if let Err(error) = hide_main_window(app) {
+        print_error_chain(error.as_ref());
+    }
+}
+
+#[derive(Debug)]
+struct ShellOwnershipError {
+    source: io::Error,
+}
+
+impl Display for ShellOwnershipError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Floway desktop could not claim single-instance ownership of its data root"
+        )
+    }
+}
+
+impl Error for ShellOwnershipError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Resolves the control-channel role of this process. A `--desktop-control`
+/// invocation forwards its command to the running owner and exits; a plain
+/// launch that finds a live owner activates that owner's window and exits;
+/// otherwise this process becomes the owner and receives the bound listener.
+fn establish_shell_role(data_root: &Path) -> UnixListener {
+    let socket_path = control_socket_path(data_root);
+    match parse_control_command(std::env::args_os()) {
+        Err(error) => {
+            print_error_chain(&error);
+            std::process::exit(1);
+        }
+        Ok(Some(command)) => match send_shell_command(&socket_path, command) {
+            Ok(reply) => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&reply).expect("control reply must encode")
+                );
+                std::process::exit(0);
+            }
+            Err(error) => {
+                print_error_chain(&error);
+                std::process::exit(1);
+            }
+        },
+        Ok(None) => {}
+    }
+    match claim_shell_ownership(&socket_path) {
+        Ok(ShellOwnership::Owner(listener)) => listener,
+        Ok(ShellOwnership::AlreadyRunning) => {
+            match send_shell_command(&socket_path, ShellCommand::Activate) {
+                Ok(_) => {
+                    eprintln!("Floway desktop is already running; activated the existing instance");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    print_error_chain(&error);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(source) => {
+            print_error_chain(&ShellOwnershipError { source });
+            std::process::exit(1);
+        }
     }
 }
 
@@ -930,7 +1432,11 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
     if let Some(action) = desktop_action(candidate) {
         match action {
             DesktopAction::OpenLogs => open_logs(app),
-            DesktopAction::Restart => restart_failed_runtime(app),
+            DesktopAction::Restart => {
+                if let Err(error) = restart_gateway(app) {
+                    print_error_chain(error.as_ref());
+                }
+            }
         }
         return false;
     }
@@ -1083,7 +1589,10 @@ fn stop_packaged_process(app_handle: &AppHandle) {
     let Some(controller) = app_handle.try_state::<Arc<DesktopController>>() else {
         return;
     };
-    match controller.supervisor.stop_now() {
+    match controller
+        .supervisor
+        .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
+    {
         Ok(true) => eprintln!("Floway desktop stopped and waited for its packaged runtime"),
         Ok(false) => {}
         Err(error) => {
@@ -1102,6 +1611,24 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            let desktop_paths: Result<DesktopPaths, Box<dyn Error>> = app
+                .path()
+                .data_dir()
+                .map_err(|error| Box::new(error) as Box<dyn Error>)
+                .and_then(|platform_data_dir| {
+                    DesktopPaths::from_args(platform_data_dir, std::env::args_os())
+                        .map_err(|error| Box::new(error) as Box<dyn Error>)
+                });
+            let (paths, paths_error) = match desktop_paths {
+                Ok(paths) => (Some(paths), None),
+                Err(error) => (None, Some(error)),
+            };
+            // The single-instance claim happens before any window exists: a
+            // repeated launch delegates to the live owner and exits, and a
+            // control invocation forwards its command and exits.
+            let listener = paths
+                .as_ref()
+                .map(|paths| establish_shell_role(paths.root()));
             // The local status route is bundled with the Dashboard build but
             // remains shell-owned. Only a compatible loopback runtime replaces it.
             // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/webview_window.rs#L57-L111
@@ -1140,23 +1667,27 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             .min_inner_size(520.0, 420.0)
             .build()?;
             let status_url = window.url()?;
-            let logs_dir: Result<PathBuf, Box<dyn Error>> = app
-                .path()
-                .data_dir()
-                .map_err(|error| Box::new(error) as Box<dyn Error>)
-                .and_then(|platform_data_dir| {
-                    DesktopPaths::from_args(platform_data_dir, std::env::args_os())
-                        .map(|paths| paths.logs())
-                        .map_err(|error| Box::new(error) as Box<dyn Error>)
-                });
-            let (logs_dir, logs_dir_error) = match logs_dir {
-                Ok(logs_dir) => (logs_dir, None),
-                Err(error) => (PathBuf::new(), Some(error)),
-            };
+            // Closing the window only hides it; the shell, tray, and Gateway
+            // keep running until an explicit quit.
+            // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/window/mod.rs#L1947-L1957
+            let close_app = app_handle.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    hide_main_window_from_event(&close_app);
+                }
+            });
+            let (logs_dir, data_root) = paths
+                .as_ref()
+                .map(|paths| (paths.logs(), paths.root().to_path_buf()))
+                .unwrap_or_default();
             let tray = DesktopTray::build(&app_handle)?;
             let controller = Arc::new(DesktopController {
                 attempts: Mutex::new(RuntimeAttemptState::new()),
+                autostart: Mutex::new(None),
                 dashboard_policy: RwLock::new(None),
+                data_root,
+                gateway_origin: RwLock::new(None),
                 log: Mutex::new(None),
                 logs_dir,
                 pending_failure_surface: Mutex::new(None),
@@ -1165,7 +1696,27 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 tray,
             });
             app.manage(controller);
-            if let Some(error) = logs_dir_error {
+            if let Some(listener) = listener {
+                serve_shell_commands(&app_handle, listener);
+            }
+            if paths_error.is_none() {
+                match resolve_shell_autostart(&app_handle) {
+                    Ok(registration) => {
+                        let controller = app_handle.state::<Arc<DesktopController>>();
+                        let enabled = registration.is_enabled();
+                        *controller
+                            .autostart
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            Some(registration);
+                        if let Err(error) = controller.tray.set_autostart_checked(enabled) {
+                            print_error_chain(error.as_ref());
+                        }
+                    }
+                    Err(error) => print_error_chain(error.as_ref()),
+                }
+            }
+            if let Some(error) = paths_error {
                 let controller = app_handle.state::<Arc<DesktopController>>();
                 let generation = controller
                     .begin_attempt()
@@ -1209,8 +1760,23 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         })
         .build(tauri::generate_context!())?
         .run(|app_handle, event| {
-            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-                stop_packaged_process(app_handle);
+            match event {
+                RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+                    stop_packaged_process(app_handle);
+                }
+                // macOS routes Dock-icon clicks and `open` relaunches of a
+                // running application here instead of starting a new process.
+                // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/app.rs#L275-L283
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows {
+                        activate_main_window(app_handle);
+                    }
+                }
+                _ => {}
             }
         });
     Ok(())
