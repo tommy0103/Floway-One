@@ -9,15 +9,18 @@ import { ScrollArea } from '../components/ui/scroll-area';
 import { useAuthStore } from '../stores/auth-store';
 
 export async function clientLoader() {
+  // Every signed-in entry aims at the dashboard root; its index route owns the
+  // landing decision (personal overview, server playground) because it is the
+  // one place that already reads the runtime profile.
   const bootstrapToken = takePersonalDashboardBootstrapToken();
   if (bootstrapToken !== null) {
     const result = await exchangePersonalDashboardBootstrap({ token: bootstrapToken });
     if (result.data) {
       useAuthStore.getState().primeFromLogin(result.data);
-      throw redirect('/dashboard/playground');
+      throw redirect('/dashboard');
     }
   }
-  if (getSessionToken()) throw redirect('/dashboard/playground');
+  if (getSessionToken()) throw redirect('/dashboard');
   return null;
 }
 
@@ -39,7 +42,7 @@ export async function clientAction({
   }
 
   useAuthStore.getState().primeFromLogin(result.data);
-  throw redirect('/dashboard/playground');
+  throw redirect('/dashboard');
 }
 
 export default function Home() {

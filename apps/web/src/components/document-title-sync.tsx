@@ -6,7 +6,6 @@ import { pageLabelKeys } from './sidebar/pages';
 
 const titleKeyForPathname = (pathname: string) => {
   if (pathname === '/') return 'auth.login.title';
-  if (pathname === '/dashboard') return 'dashboard.title';
   if (/^\/dashboard\/providers\/upstreams\/new\/[^/]+$/.test(pathname)) {
     return 'dashboard.upstreamEditor.documentTitleNew';
   }

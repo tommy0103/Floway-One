@@ -84,7 +84,6 @@ const zhHansCN = {
       ollama: 'Ollama',
     },
     dashboard: {
-      title: 'Dashboard',
       groups: {
         providers: '接入',
         services: '服务',
@@ -96,6 +95,7 @@ const zhHansCN = {
         open: '打开导航',
         close: '关闭导航',
         skip: '跳到主要内容',
+        overview: '概览',
         playground: '对话',
         upstreams: '上游',
         search: '搜索',
@@ -118,6 +118,7 @@ const zhHansCN = {
         action: '退出登录',
       },
       pages: {
+        overview: '查看本机网关是否健康、监听地址，以及需要处理的问题',
         playground: '在控制台中运行模型对话，并检查请求行为',
         upstreams:
             '管理模型提供商的路由优先级、可用状态、模型目录和连接配置',
@@ -130,6 +131,48 @@ const zhHansCN = {
         users: '管理控制台用户、权限、观测访问和上游范围',
         backupRestore: '下载此网关全部数据的完整副本，或从此前的导出中恢复',
         unavailable: '无法加载此视图',
+      },
+      overview: {
+        gateway: {
+          title: '网关',
+          healthy: '运行中',
+          unavailable: '无法连接',
+          endpoint: '接入地址',
+          copyEndpoint: '复制接入地址',
+          version: '版本',
+        },
+        upstreams: {
+          title: '上游',
+          totalLabel: '总数',
+          total_one: '{{count, number}} 个上游',
+          total_other: '{{count, number}} 个上游',
+          failingLabel: '异常',
+          failing_one: '{{count, number}} 个异常',
+          failing_other: '{{count, number}} 个异常',
+          noneFailing: '无',
+          empty: '还没有上游。接入一个上游以开始路由请求。',
+          open: '打开上游',
+        },
+        keys: {
+          title: 'API 密钥',
+          totalLabel: '总数',
+          total_one: '{{count, number}} 个 API 密钥',
+          total_other: '{{count, number}} 个 API 密钥',
+          lastUsedLabel: '最近使用',
+          lastUsedOn: '于 {{date}}',
+          neverUsed: '从未使用',
+          empty: '还没有 API 密钥。创建一个以便客户端调用此网关。',
+          open: '打开 API 密钥',
+        },
+        recentRequest: {
+          title: '最近请求',
+          captureOff: '请求捕获已关闭。在 API 密钥上开启转储保留以记录最近的请求。',
+          empty: '还没有记录到请求。',
+          open: '打开请求记录',
+        },
+        diagnostics: {
+          title: '诊断',
+        },
       },
       playground: {
         system: '自定义系统提示词',

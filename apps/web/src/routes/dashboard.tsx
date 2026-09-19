@@ -37,7 +37,7 @@ export async function clientLoader() {
   const user = await useAuthStore.getState().initialize();
   if (user) {
     const runtime = await loadRuntimeInfo();
-    return { capabilities: runtime.profile.capabilities };
+    return { capabilities: runtime.profile.capabilities, personal: runtime.profile.mode === 'personal' };
   }
   const error = useAuthStore.getState().error;
   if (error) throw new Error(error.message, { cause: error });
@@ -49,10 +49,10 @@ export async function clientLoader() {
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
   const user = useAuthStore(state => state.session?.user ?? null);
   if (!user) return <Navigate replace to="/" />;
-  return <DashboardShell capabilities={loaderData.capabilities} user={user} />;
+  return <DashboardShell capabilities={loaderData.capabilities} personal={loaderData.personal} user={user} />;
 }
 
-function DashboardShell({ capabilities, user }: { capabilities: DashboardRuntimeCapabilities; user: AuthUser }) {
+function DashboardShell({ capabilities, personal, user }: { capabilities: DashboardRuntimeCapabilities; personal: boolean; user: AuthUser }) {
   const { t } = useTranslation();
   const [navigationOpen, setNavigationOpen] = useState(false);
   // The entrance is started on the element, not declared in the sheet;
@@ -106,7 +106,7 @@ function DashboardShell({ capabilities, user }: { capabilities: DashboardRuntime
       </a>
       <div className="grid grid-cols-[clamp(240px,18vw,290px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] h-[100dvh] min-h-0 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[58px_minmax(0,1fr)]">
         <div className="min-h-0 max-[900px]:hidden">
-          <Sidebar capabilities={capabilities} user={user} />
+          <Sidebar capabilities={capabilities} personal={personal} user={user} />
         </div>
         <header className="hidden max-[900px]:flex items-center gap-3 border-b border-b-solid border-fui-divider px-4">
           <Button
@@ -139,7 +139,7 @@ function DashboardShell({ capabilities, user }: { capabilities: DashboardRuntime
         position="start"
       >
         <DrawerBody className="!p-0">
-          <Sidebar capabilities={capabilities} onNavigate={() => setNavigationOpen(false)} user={user} />
+          <Sidebar capabilities={capabilities} onNavigate={() => setNavigationOpen(false)} personal={personal} user={user} />
         </DrawerBody>
       </OverlayDrawer>
     </OutcomeToastProvider>

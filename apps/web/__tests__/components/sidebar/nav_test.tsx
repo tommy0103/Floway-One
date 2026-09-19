@@ -8,29 +8,31 @@ import { renderInApp } from '../../render';
 
 const user = { id: 1, username: 'admin', isAdmin: true, upstreamIds: null };
 
-const renderSidebar = (capabilities: DashboardRuntimeCapabilities) => {
+const renderSidebar = (capabilities: DashboardRuntimeCapabilities, personal: boolean) => {
   const router = createMemoryRouter([{
     path: '*',
-    Component: () => <Sidebar capabilities={capabilities} user={user} />,
+    Component: () => <Sidebar capabilities={capabilities} personal={personal} user={user} />,
   }], { initialEntries: ['/dashboard/playground'] });
   return renderInApp(<RouterProvider router={router} />);
 };
 
 describe('Sidebar runtime capabilities', () => {
   it('omits Users and identifies the local owner in personal mode', () => {
-    renderSidebar({ userManagement: false, remoteAccess: false, desktopIntegration: true });
+    renderSidebar({ userManagement: false, remoteAccess: false, desktopIntegration: true }, true);
 
     expect(screen.queryByText('Users')).toBeNull();
+    expect(screen.getByText('Overview')).toBeTruthy();
     expect(screen.getByText('Backup / Restore')).toBeTruthy();
     expect(screen.getByText('Local owner')).toBeTruthy();
     expect(screen.queryByText('admin')).toBeNull();
   });
 
   it('retains Users and the signed-in username in server mode', () => {
-    renderSidebar({ userManagement: true, remoteAccess: true, desktopIntegration: false });
+    renderSidebar({ userManagement: true, remoteAccess: true, desktopIntegration: false }, false);
 
     expect(screen.getByText('Users')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
     expect(screen.queryByText('Local owner')).toBeNull();
+    expect(screen.queryByText('Overview')).toBeNull();
   });
 });
