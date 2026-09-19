@@ -1,9 +1,9 @@
-import { isTauri } from '@tauri-apps/api/core';
 import {
   CheckmarkCircleRegular,
   DismissCircleRegular,
   WarningRegular,
 } from '@fluentui/react-icons';
+import { isTauri } from '@tauri-apps/api/core';
 import { useCallback, useState } from 'react';
 import { redirect } from 'react-router';
 
@@ -123,18 +123,18 @@ export default function DashboardOverview({ loaderData }: Route.ComponentProps) 
           {snapshot.upstreamsError !== null
             ? <OutcomeMessageBar>{snapshot.upstreamsError}</OutcomeMessageBar>
             : snapshot.upstreams !== null && <>
-                <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.totalLabel')}</dt>
-                  <dd className="m-0">{t('dashboard.overview.upstreams.total', { count: snapshot.upstreams.total })}</dd>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.failingLabel')}</dt>
-                  <dd className="m-0">{snapshot.upstreams.failing === 0
-                    ? t('dashboard.overview.upstreams.noneFailing')
-                    : t('dashboard.overview.upstreams.failing', { count: snapshot.upstreams.failing })}</dd>
-                </dl>
-                {snapshot.upstreams.total === 0 && (
-                  <Text size={200} className="text-fui-fg2">{t('dashboard.overview.upstreams.empty')}</Text>
-                )}
-              </>}
+              <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
+                <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.totalLabel')}</dt>
+                <dd className="m-0">{t('dashboard.overview.upstreams.total', { count: snapshot.upstreams.total })}</dd>
+                <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.failingLabel')}</dt>
+                <dd className="m-0">{snapshot.upstreams.failing === 0
+                  ? t('dashboard.overview.upstreams.noneFailing')
+                  : t('dashboard.overview.upstreams.failing', { count: snapshot.upstreams.failing })}</dd>
+              </dl>
+              {snapshot.upstreams.total === 0 && (
+                <Text size={200} className="text-fui-fg2">{t('dashboard.overview.upstreams.empty')}</Text>
+              )}
+            </>}
           <div>
             <RouteLink to="/dashboard/providers/upstreams">
               <OpenLinkLabel>{t('dashboard.overview.upstreams.open')}</OpenLinkLabel>
@@ -147,18 +147,18 @@ export default function DashboardOverview({ loaderData }: Route.ComponentProps) 
           {snapshot.keysError !== null
             ? <OutcomeMessageBar>{snapshot.keysError}</OutcomeMessageBar>
             : snapshot.keys !== null && <>
-                <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.keys.totalLabel')}</dt>
-                  <dd className="m-0">{t('dashboard.overview.keys.total', { count: snapshot.keys.total })}</dd>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.keys.lastUsedLabel')}</dt>
-                  <dd className="m-0">{snapshot.keys.lastUsedAt === null
-                    ? t('dashboard.overview.keys.neverUsed')
-                    : relativeTime(snapshot.keys.lastUsedAt, locale, { now }) ?? t('dashboard.overview.keys.lastUsedOn', { date: shortDate(snapshot.keys.lastUsedAt, locale) })}</dd>
-                </dl>
-                {snapshot.keys.total === 0 && (
-                  <Text size={200} className="text-fui-fg2">{t('dashboard.overview.keys.empty')}</Text>
-                )}
-              </>}
+              <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
+                <dt className="text-fui-fg2">{t('dashboard.overview.keys.totalLabel')}</dt>
+                <dd className="m-0">{t('dashboard.overview.keys.total', { count: snapshot.keys.total })}</dd>
+                <dt className="text-fui-fg2">{t('dashboard.overview.keys.lastUsedLabel')}</dt>
+                <dd className="m-0">{snapshot.keys.lastUsedAt === null
+                  ? t('dashboard.overview.keys.neverUsed')
+                  : relativeTime(snapshot.keys.lastUsedAt, locale, { now }) ?? t('dashboard.overview.keys.lastUsedOn', { date: shortDate(snapshot.keys.lastUsedAt, locale) })}</dd>
+              </dl>
+              {snapshot.keys.total === 0 && (
+                <Text size={200} className="text-fui-fg2">{t('dashboard.overview.keys.empty')}</Text>
+              )}
+            </>}
           <div>
             <RouteLink to="/dashboard/services/api-keys">
               <OpenLinkLabel>{t('dashboard.overview.keys.open')}</OpenLinkLabel>
