@@ -319,7 +319,10 @@ export const assertDesktopShellLifecycle = async (
     const autostartEnabled = await reportShellStatus(context, applicationHome);
     assertReadyShellStatus(autostartEnabled, origin, { autostartEnabled: true, windowVisible: true });
     // Launchd runs the login item at once (RunAtLoad); that delegate sees the
-    // live owner, activates it, and exits without a second gateway.
+    // live owner, activates it, and exits without a second gateway. Give the
+    // delegate a moment to appear before waiting for it to leave, so the
+    // observation cannot pass before launchd even spawned it.
+    await sleep(3_000);
     await waitForSingleShellProcess(context.executable, shellPid, 20_000);
     const childrenAfterAutostart = await directChildPids(shellPid);
     if (childrenAfterAutostart.length !== 1 || childrenAfterAutostart[0] !== restartedSidecarPid) {
