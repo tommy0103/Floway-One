@@ -10,7 +10,7 @@ const desktopRoot = resolve(import.meta.dirname, '../..');
 test('packaged verifier orchestrates cohesive test-support modules', async () => {
   const source = await readFile(resolve(desktopRoot, '__tests__/src/packaged-desktop-verifier.ts'), 'utf8');
   expect(source.split('\n').length).toBeLessThan(350);
-  for (const module of ['installed-app', 'native-surface', 'package-contract', 'packaged-faults', 'personal-runtime', 'process-lifecycle']) {
+  for (const module of ['installed-app', 'native-surface', 'package-contract', 'packaged-faults', 'personal-runtime', 'process-lifecycle', 'shell-lifecycle']) {
     expect(source).toContain(`./support/${module}.ts`);
   }
   for (const lowLevelBoundary of ['node:sqlite', 'node:net', 'ChildProcessByStdio', 'parseDependencyAssociations']) {

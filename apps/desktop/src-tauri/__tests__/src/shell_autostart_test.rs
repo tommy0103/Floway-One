@@ -30,7 +30,7 @@ fn autostart(dir: &Path) -> ShellAutostart {
         launchctl_domain(501),
         login_item_program_arguments(
             Path::new("/Applications/Floway.app/Contents/MacOS/floway-one"),
-            Path::new("/Users/test/Library/Application Support/dev.floway.one/Floway One"),
+            Path::new("/Users/test/Library/Application Support/dev.floway.one/data"),
         ),
     )
 }
@@ -70,7 +70,7 @@ fn login_item_plist_escapes_and_lists_every_program_argument() {
     assert!(plist.contains("<key>Label</key>\n  <string>dev.floway.one</string>"));
     assert!(plist.contains("<string>/Applications/Floway.app/Contents/MacOS/floway-one</string>"));
     assert!(plist.contains("<string>--data-dir</string>"));
-    assert!(plist.contains("Application Support/dev.floway.one/Floway One"));
+    assert!(plist.contains("Application Support/dev.floway.one/data"));
     assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
     let recorded = calls();
     assert_eq!(recorded.len(), 2);

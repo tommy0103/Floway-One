@@ -79,13 +79,21 @@ export const runCredentialScript = async (
   });
 };
 
+export const SLOW_VERIFY_ROUTE = '/__desktop_verifier__/slow';
+export const SLOW_VERIFY_RESPONSE = 'Floway slow verifier response';
+
 export const personalEntrySource = (
   dataRoot: string,
   credentialIdentity: CredentialIdentity,
   afterStartup = '',
-): string => `
+  options: { readonly slowVerifyRoute?: boolean } = {},
+): string => {
+  const slowVerifyRouteImport = options.slowVerifyRoute
+    ? 'import { createLocalApp } from \'./src/local-app.js\';\n'
+    : '';
+  return `
 import { createOperatingSystemCredential } from './src/device-master-key.js';
-import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
+${slowVerifyRouteImport}import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
@@ -95,7 +103,19 @@ try {
     resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
       dataDir: ${JSON.stringify(dataRoot)},
       stableUserHome: ${JSON.stringify(dataRoot)},
-    }),
+    }),${options.slowVerifyRoute ? `
+    createLocalApp: (localAppOptions) => {
+      const localApp = createLocalApp(localAppOptions);
+      return {
+        fetch: async (request, ...rest) => {
+          if (new URL(request.url).pathname === ${JSON.stringify(SLOW_VERIFY_ROUTE)}) {
+            await new Promise(resolveSlow => setTimeout(resolveSlow, 2_000));
+            return new Response(${JSON.stringify(SLOW_VERIFY_RESPONSE)}, { status: 200 });
+          }
+          return await localApp.fetch(request, ...rest);
+        },
+      };
+    },` : ''}
     createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
       const credential = await createOperatingSystemCredential(
         ${JSON.stringify(credentialIdentity)},
@@ -109,6 +129,7 @@ try {
 }
 ${afterStartup}
 `;
+};
 
 const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual: PersonalFailurePhase): void => {
   if (expected === actual) throw new Error(`forced personal runtime ${actual} phase failure`);
@@ -213,7 +234,7 @@ const assertDashboardBootstrapAndControlPlane = async (
   }
 };
 
-const waitForHealthyRuntime = async (
+export const waitForHealthyRuntime = async (
   child: CapturedChild,
   output: () => string,
   origin: string,
