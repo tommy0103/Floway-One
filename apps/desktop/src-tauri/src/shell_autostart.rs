@@ -214,24 +214,34 @@ impl ShellAutostart {
         .map_err(ShellAutostartError::wrap(
             "Floway could not write its login item",
         ))?;
-        self.bootout(&run)?;
-        if let Err(failure) = run(&[
-            OsString::from("bootstrap"),
-            OsString::from(&self.launchctl_domain),
-            plist_path.as_os_str().to_owned(),
-        ]) {
-            // Modern macOS Background Task Management loads a new LaunchAgent
-            // as soon as its plist lands in ~/Library/LaunchAgents, so the
-            // registration may already be loaded from the file just written;
-            // the preceding bootout guarantees any loaded job came from it.
-            if self.is_loaded(&run) {
-                return Ok(());
+        let result = (|| {
+            self.bootout(&run)?;
+            if let Err(failure) = run(&[
+                OsString::from("bootstrap"),
+                OsString::from(&self.launchctl_domain),
+                plist_path.as_os_str().to_owned(),
+            ]) {
+                // Modern macOS Background Task Management loads a new
+                // LaunchAgent as soon as its plist lands in
+                // ~/Library/LaunchAgents, so the registration may already be
+                // loaded from the file just written; the preceding bootout
+                // guarantees any loaded job came from it.
+                if self.is_loaded(&run) {
+                    return Ok(());
+                }
+                return Err(ShellAutostartError::launchctl(
+                    "Floway could not register its login item",
+                    failure,
+                ));
             }
-            let removal = fs::remove_file(&plist_path);
-            let error =
-                ShellAutostartError::launchctl("Floway could not register its login item", failure);
-            return match removal {
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // Any failed stage after the write rolls the file back so a
+            // half-written registration can never linger for the next launch.
+            return match fs::remove_file(&plist_path) {
                 Ok(()) => Err(error),
+                Err(source) if source.kind() == io::ErrorKind::NotFound => Err(error),
                 Err(source) => Err(ShellAutostartError {
                     message: "Floway could not register its login item or roll back its registration file",
                     source: Box::new(io::Error::new(

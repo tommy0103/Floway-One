@@ -157,6 +157,25 @@ fn enable_accepts_a_registration_background_management_already_loaded() {
 }
 
 #[test]
+fn enable_rolls_back_its_plist_when_the_prior_unload_fails() {
+    let dir = test_dir("bootout-failure");
+    let autostart = autostart(&dir);
+    let (run, calls) =
+        recorded_launchctl(&[("bootout", "Boot-out failed: 1: Operation not permitted")]);
+    let failure = autostart
+        .enable_with(run)
+        .expect_err("a failed prior unload must fail");
+    assert_eq!(
+        failure.to_string(),
+        "Floway could not unload its previous login item"
+    );
+    assert!(!autostart.is_enabled());
+    // No bootstrap may be attempted after a failed unload.
+    assert_eq!(calls().len(), 1);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn disable_unloads_and_removes_the_registration() {
     let dir = test_dir("disable");
     let autostart = autostart(&dir);

@@ -105,7 +105,7 @@ if (launchSupported) {
     // restore it exactly when verification ends.
     const loginItemLabel = await readLoginItemLabel();
     const loginItem = await captureLoginItem(loginItemLabel);
-    cleanup.defer('operator login item restoration', async () => await restoreLoginItem(loginItem));
+    cleanup.defer('operator login item restoration', async () => await restoreLoginItem(loginItem, loginItemLabel));
 
     const customPort = await reserveNonDefaultLoopbackPort();
     await assertPersonalRuntime(

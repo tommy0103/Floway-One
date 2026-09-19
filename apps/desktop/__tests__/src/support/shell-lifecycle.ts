@@ -147,8 +147,18 @@ export const captureLoginItem = async (label: string): Promise<LoginItemCapture>
   return { plist, plistPath };
 };
 
-export const restoreLoginItem = async (capture: LoginItemCapture): Promise<void> => {
-  if (capture.plist === null) return;
+export const restoreLoginItem = async (capture: LoginItemCapture, label: string): Promise<void> => {
+  // Unload whatever the run left behind before restoring the captured state,
+  // so a mid-scenario registration can never linger or mix with the restored
+  // one.
+  await execFileAsync(LAUNCHCTL, [
+    'bootout',
+    `gui/${currentUid()}/${label}`,
+  ]).catch(() => {});
+  if (capture.plist === null) {
+    await rm(capture.plistPath, { force: true });
+    return;
+  }
   await writeFile(capture.plistPath, capture.plist);
   await execFileAsync(LAUNCHCTL, [
     'bootstrap',
