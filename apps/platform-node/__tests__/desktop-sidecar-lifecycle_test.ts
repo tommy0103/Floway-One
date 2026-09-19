@@ -13,6 +13,7 @@ import {
 } from '../src/desktop-sidecar-lifecycle.ts';
 
 const LIFECYCLE_CHILD = fileURLToPath(new URL('./fixtures/desktop-sidecar-lifecycle-child.ts', import.meta.url));
+const APP_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DESKTOP_CONTRACT_ENV = 'FLOWAY_DESKTOP_CONTRACT';
 
 interface RecordedHost {
@@ -140,6 +141,7 @@ type ArmedChild = ChildProcessByStdio<Writable, Readable, Readable>;
 
 const armLifecycleChild = async (environment: NodeJS.ProcessEnv): Promise<{ child: ArmedChild; output: () => string }> => {
   const child = spawn(process.execPath, ['--import', 'tsx', LIFECYCLE_CHILD], {
+    cwd: APP_ROOT,
     env: environment,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
