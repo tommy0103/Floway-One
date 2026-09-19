@@ -1,8 +1,3 @@
-import {
-  CheckmarkCircleRegular,
-  DismissCircleRegular,
-  WarningRegular,
-} from '@fluentui/react-icons';
 import { isTauri } from '@tauri-apps/api/core';
 import { useCallback, useState } from 'react';
 import { redirect } from 'react-router';
@@ -12,8 +7,14 @@ import { useTranslation } from '../i18n/translation';
 import type { Route } from './+types/dashboard-overview';
 import { requireDashboardSession } from './guards';
 import { loadRuntimeInfo } from '../api/runtime-info';
-import { loadOverviewSnapshot, type OverviewSnapshot } from '../components/overview/data';
+import {
+  loadOverviewSnapshot,
+  mergeOverviewSnapshot,
+  type OverviewSnapshot,
+} from '../components/overview/data';
+import { FailureLine, OverviewPanel } from '../components/overview/panel';
 import { errorLabel, requestSeverity } from '../components/requests/format';
+import { RequestSeverityIcon } from '../components/requests/severity-icon';
 import { ActionRow } from '../components/ui/action-row';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { HttpStatusBadge } from '../components/ui/http-badge';
@@ -21,12 +22,10 @@ import {
   PANEL_STACK_CLASS,
   STATUS_DETAILS_CLASS,
   STATUS_HEADER_CLASS,
-  TWO_COLUMN_FORM_CLASS,
 } from '../components/ui/layout';
-import { OpenLinkLabel } from '../components/ui/open-link-label';
-import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
+import { OpenLogsButton } from '../components/ui/open-logs-button';
 import { Panel } from '../components/ui/panel';
-import { RouteLink, useRouteAddress } from '../components/ui/route-link';
+import { useRouteAddress } from '../components/ui/route-link';
 import { SectionHeader } from '../components/ui/section-header';
 import { StatusBadge } from '../components/ui/status-badge';
 import { TooltipIconButton } from '../components/ui/tooltip-icon-button';
@@ -75,32 +74,43 @@ export default function DashboardOverview({ loaderData }: Route.ComponentProps) 
   const [replacement, setReplacement] = useState<{ source: LoaderData; snapshot: OverviewSnapshot } | null>(null);
   const snapshot = replacement?.source === loaderData ? replacement.snapshot : loaderData.snapshot;
 
-  const reload = useCallback(async (signal: AbortSignal) => {
+  const reload = useCallback(async (signal: AbortSignal, { background }: { background: boolean }) => {
     const next = await loadOverviewSnapshot(signal);
     if (signal.aborted) return;
-    setReplacement({ source: loaderData, snapshot: next });
+    setReplacement(current => ({
+      source: loaderData,
+      snapshot: mergeOverviewSnapshot(
+        current?.source === loaderData ? current.snapshot : loaderData.snapshot,
+        next,
+        { background },
+      ),
+    }));
   }, [loaderData]);
   const { poll } = useRefresh(reload);
   usePollWhileVisible(poll);
 
   const endpointOutcome = outcomeFor('endpoint');
+  const healthy = snapshot.health.value !== null;
 
   return (
     <section className="dashboard-page max-w-[960px]">
       <DashboardPageHeader description={t('dashboard.pages.overview')} title={t('dashboard.nav.overview')} />
 
+      {/* The gateway panel cannot take the shared OverviewPanel shape: the
+          endpoint and the version are page facts that must stay on screen even
+          when the health reading has failed. */}
       <Panel className={`${PANEL_STACK_CLASS} w-full`}>
         <div className={STATUS_HEADER_CLASS}>
           <SectionHeader level={2} title={t('dashboard.overview.gateway.title')} />
-          <StatusBadge tone={snapshot.health.ok ? 'success' : 'danger'}>
-            {t(snapshot.health.ok ? 'dashboard.overview.gateway.healthy' : 'dashboard.overview.gateway.unavailable')}
+          <StatusBadge tone={healthy ? 'success' : 'danger'}>
+            {t(healthy ? 'dashboard.overview.gateway.healthy' : 'dashboard.overview.gateway.unavailable')}
           </StatusBadge>
         </div>
-        {snapshot.health.error !== null && <OutcomeMessageBar>{snapshot.health.error}</OutcomeMessageBar>}
+        {snapshot.health.failure !== null && <FailureLine failure={snapshot.health.failure} />}
         <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
           <dt className="text-fui-fg2">{t('dashboard.overview.gateway.endpoint')}</dt>
           <dd className="m-0 font-mono flex items-center gap-1 min-w-0">
-            <span className="truncate">{loaderData.endpoint}</span>
+            <span className="truncate min-w-0">{loaderData.endpoint}</span>
             <TooltipIconButton
               icon={copyOutcomeIcon(endpointOutcome)}
               label={copyLabel(endpointOutcome, t('dashboard.overview.gateway.copyEndpoint'))}
@@ -112,66 +122,55 @@ export default function DashboardOverview({ loaderData }: Route.ComponentProps) 
         </dl>
       </Panel>
 
-      <div className={`${TWO_COLUMN_FORM_CLASS} gap-[18px]`}>
-        <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-          <div className={STATUS_HEADER_CLASS}>
-            <SectionHeader level={2} title={t('dashboard.overview.upstreams.title')} />
-            {snapshot.upstreams !== null && snapshot.upstreams.failing > 0 && (
-              <StatusBadge tone="danger">{t('dashboard.overview.upstreams.failing', { count: snapshot.upstreams.failing })}</StatusBadge>
-            )}
-          </div>
-          {snapshot.upstreamsError !== null
-            ? <OutcomeMessageBar>{snapshot.upstreamsError}</OutcomeMessageBar>
-            : snapshot.upstreams !== null && (snapshot.upstreams.total === 0
-              ? <Text size={200} className="text-fui-fg2">{t('dashboard.overview.upstreams.empty')}</Text>
-              : <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.totalLabel')}</dt>
-                  <dd className="m-0">{t('dashboard.overview.upstreams.total', { count: snapshot.upstreams.total })}</dd>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.failingLabel')}</dt>
-                  <dd className="m-0">{snapshot.upstreams.failing === 0
-                    ? t('dashboard.overview.upstreams.noneFailing')
-                    : t('dashboard.overview.upstreams.failing', { count: snapshot.upstreams.failing })}</dd>
-                </dl>)}
-          <div>
-            <RouteLink to="/dashboard/providers/upstreams">
-              <OpenLinkLabel>{t('dashboard.overview.upstreams.open')}</OpenLinkLabel>
-            </RouteLink>
-          </div>
-        </Panel>
+      <div className="dashboard-page-columns">
+        <OverviewPanel
+          badge={snapshot.upstreams.value !== null && snapshot.upstreams.value.failing > 0
+            ? <StatusBadge tone="danger">{t('dashboard.overview.upstreams.failing', { count: snapshot.upstreams.value.failing })}</StatusBadge>
+            : undefined}
+          openLabel={t('dashboard.overview.upstreams.open')}
+          openTo="/dashboard/providers/upstreams"
+          region={snapshot.upstreams}
+          title={t('dashboard.overview.upstreams.title')}
+        >
+          {upstreams => upstreams.total === 0
+            ? <Text size={200} className="text-fui-fg2">{t('dashboard.overview.upstreams.empty')}</Text>
+            : <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
+                <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.totalLabel')}</dt>
+                <dd className="m-0">{t('dashboard.overview.upstreams.total', { count: upstreams.total })}</dd>
+                <dt className="text-fui-fg2">{t('dashboard.overview.upstreams.failingLabel')}</dt>
+                <dd className="m-0">{upstreams.failing === 0
+                  ? t('dashboard.overview.upstreams.noneFailing')
+                  : t('dashboard.overview.upstreams.failing', { count: upstreams.failing })}</dd>
+              </dl>}
+        </OverviewPanel>
 
-        <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-          <SectionHeader level={2} title={t('dashboard.overview.keys.title')} />
-          {snapshot.keysError !== null
-            ? <OutcomeMessageBar>{snapshot.keysError}</OutcomeMessageBar>
-            : snapshot.keys !== null && (snapshot.keys.total === 0
-              ? <Text size={200} className="text-fui-fg2">{t('dashboard.overview.keys.empty')}</Text>
-              : <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.keys.totalLabel')}</dt>
-                  <dd className="m-0">{t('dashboard.overview.keys.total', { count: snapshot.keys.total })}</dd>
-                  <dt className="text-fui-fg2">{t('dashboard.overview.keys.lastUsedLabel')}</dt>
-                  <dd className="m-0">{snapshot.keys.lastUsedAt === null
-                    ? t('dashboard.overview.keys.neverUsed')
-                    : relativeTime(snapshot.keys.lastUsedAt, locale, { now }) ?? t('dashboard.overview.keys.lastUsedOn', { date: shortDate(snapshot.keys.lastUsedAt, locale) })}</dd>
-                </dl>)}
-          <div>
-            <RouteLink to="/dashboard/services/api-keys">
-              <OpenLinkLabel>{t('dashboard.overview.keys.open')}</OpenLinkLabel>
-            </RouteLink>
-          </div>
-        </Panel>
+        <OverviewPanel
+          openLabel={t('dashboard.overview.keys.open')}
+          openTo="/dashboard/services/api-keys"
+          region={snapshot.keys}
+          title={t('dashboard.overview.keys.title')}
+        >
+          {keys => keys.total === 0
+            ? <Text size={200} className="text-fui-fg2">{t('dashboard.overview.keys.empty')}</Text>
+            : <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
+                <dt className="text-fui-fg2">{t('dashboard.overview.keys.totalLabel')}</dt>
+                <dd className="m-0">{t('dashboard.overview.keys.total', { count: keys.total })}</dd>
+                <dt className="text-fui-fg2">{t('dashboard.overview.keys.lastUsedLabel')}</dt>
+                <dd className="m-0">{keys.lastUsedAt === null
+                  ? t('dashboard.overview.keys.neverUsed')
+                  : relativeTime(keys.lastUsedAt, locale, { now }) ?? t('dashboard.overview.keys.lastUsedOn', { date: shortDate(keys.lastUsedAt, locale) })}</dd>
+              </dl>}
+        </OverviewPanel>
       </div>
 
-      <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-        <SectionHeader level={2} title={t('dashboard.overview.recentRequest.title')} />
-        {snapshot.recentRequestError !== null
-          ? <OutcomeMessageBar>{snapshot.recentRequestError}</OutcomeMessageBar>
-          : snapshot.recentRequest !== null && <RecentRequestReading locale={locale} now={now} reading={snapshot.recentRequest} />}
-        <div>
-          <RouteLink to="/dashboard/monitor/requests">
-            <OpenLinkLabel>{t('dashboard.overview.recentRequest.open')}</OpenLinkLabel>
-          </RouteLink>
-        </div>
-      </Panel>
+      <OverviewPanel
+        openLabel={t('dashboard.overview.recentRequest.open')}
+        openTo="/dashboard/monitor/requests"
+        region={snapshot.recentRequest}
+        title={t('dashboard.overview.recentRequest.title')}
+      >
+        {reading => <RecentRequestReading locale={locale} now={now} reading={reading} />}
+      </OverviewPanel>
 
       <Panel className={`${PANEL_STACK_CLASS} w-full`}>
         <SectionHeader level={2} title={t('dashboard.overview.diagnostics.title')} />
@@ -179,7 +178,7 @@ export default function DashboardOverview({ loaderData }: Route.ComponentProps) 
           <DiagnosticsButton to="/dashboard/monitor/requests">{t('dashboard.nav.requests')}</DiagnosticsButton>
           <DiagnosticsButton to="/dashboard/monitor/usage">{t('dashboard.nav.usage')}</DiagnosticsButton>
           <DiagnosticsButton to="/dashboard/monitor/performance">{t('dashboard.nav.performance')}</DiagnosticsButton>
-          {isTauri() && <Button as="a" href="floway-action://open-logs">{t('dashboard.settings.desktop.openLogs')}</Button>}
+          {isTauri() && <OpenLogsButton />}
         </ActionRow>
       </Panel>
     </section>
@@ -194,7 +193,7 @@ function DiagnosticsButton({ children, to }: { children: string; to: string }) {
 function RecentRequestReading({ locale, now, reading }: {
   locale: string;
   now: number;
-  reading: Exclude<OverviewSnapshot['recentRequest'], null>;
+  reading: Exclude<OverviewSnapshot['recentRequest']['value'], null>;
 }) {
   const { t } = useTranslation();
   if (reading.kind === 'capture-off') {
@@ -205,14 +204,10 @@ function RecentRequestReading({ locale, now, reading }: {
   }
   const { record } = reading;
   const severity = requestSeverity(record.status, record.error);
-  const StatusIcon = severity === 'success' ? CheckmarkCircleRegular : severity === 'warning' ? WarningRegular : DismissCircleRegular;
-  const severityClass = severity === 'success'
-    ? 'text-[var(--winui-system-fill-success)]'
-    : severity === 'warning' ? 'text-[var(--winui-system-fill-caution)]' : 'text-[var(--winui-system-fill-critical)]';
   const failure = errorLabel(record.error, record.status);
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <StatusIcon aria-hidden="true" className={`block flex-none ${severityClass}`} fontSize={20} />
+      <RequestSeverityIcon severity={severity} />
       <span className="sr-only">{t(`dashboard.requests.status.${severity}`)}</span>
       <Text size={300} className="min-w-0 font-mono" truncate wrap={false}>
         {record.model ?? t('dashboard.requests.unknownModel')}

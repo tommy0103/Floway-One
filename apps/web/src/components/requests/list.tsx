@@ -1,8 +1,6 @@
 import {
   ArrowDownloadRegular,
   ArrowUploadRegular,
-  CheckmarkCircleRegular,
-  DismissCircleRegular,
   TimerRegular,
 } from '@fluentui/react-icons';
 import { useCallback, useMemo, useState } from 'react';
@@ -11,6 +9,7 @@ import { List } from 'react-window';
 import type { ListImperativeAPI, RowComponentProps } from 'react-window';
 
 import { errorLabel, requestSeverity, totalTokens } from './format';
+import { RequestSeverityIcon, useRequestSeverityClasses } from './severity-icon';
 import type { ApiKey } from '../../api/types';
 import { fluentComponents } from '../../fluent';
 import { useTranslation } from '../../i18n/translation';
@@ -136,13 +135,6 @@ const useStyles = makeStyles({
       '& *': { color: 'HighlightText' },
     },
   },
-  // WinUI's SystemFillColorCritical, Success and Caution, each tuned per theme
-  // dictionary, so none of the three is restated for dark.
-  // https://github.com/microsoft/microsoft-ui-xaml/blob/188f602b27cdb47572b28c380e9c087b02e1ccee/controls/dev/CommonStyles/Common_themeresources_any.xaml#L280-L282
-  // https://github.com/microsoft/microsoft-ui-xaml/blob/188f602b27cdb47572b28c380e9c087b02e1ccee/controls/dev/CommonStyles/Common_themeresources_any.xaml#L76-L78
-  error: { color: 'var(--winui-system-fill-critical)' },
-  success: { color: 'var(--winui-system-fill-success)' },
-  warning: { color: 'var(--winui-system-fill-caution)' },
 });
 
 interface RequestListProps {
@@ -181,13 +173,13 @@ function RequestRowContent({ addressOfRecord, index, now, onSelect, record, reco
   style: CSSProperties;
 }) {
   const s = useStyles();
+  const severityClasses = useRequestSeverityClasses();
   const { t } = useTranslation();
   const locale = useLocale();
   const address = useRouteAddress(addressOfRecord(record.id), () => onSelect(record.id));
   const severity = requestSeverity(record.status, record.error);
   const tokens = totalTokens(record);
   const rowError = errorLabel(record.error, record.status);
-  const StatusIcon = severity === 'success' ? CheckmarkCircleRegular : DismissCircleRegular;
   const selected = selectedId === record.id;
 
   const handleKeyDown = (event: KeyboardEvent<HTMLAnchorElement>) => {
@@ -215,7 +207,7 @@ function RequestRowContent({ addressOfRecord, index, now, onSelect, record, reco
       tabIndex={selected || (selectedId === null && index === 0) ? 0 : -1}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <StatusIcon aria-hidden="true" className={`${s[severity]} block flex-none`} fontSize={22} />
+        <RequestSeverityIcon severity={severity} />
         <span className="sr-only">{t(`dashboard.requests.status.${severity}`)}</span>
         <Text size={300} className="min-w-0 font-mono" truncate wrap={false}>
           {record.model ?? t('dashboard.requests.unknownModel')}
@@ -260,7 +252,7 @@ function RequestRowContent({ addressOfRecord, index, now, onSelect, record, reco
         </Tooltip>
         {rowError
           ? <TruncationTooltip content={rowError} relationship="label">
-              {measureRef => <Text size={200} className={mergeClasses('ml-auto', s.error)} ref={measureRef} truncate wrap={false}>{rowError}</Text>}
+              {measureRef => <Text size={200} className={mergeClasses('ml-auto', severityClasses.error)} ref={measureRef} truncate wrap={false}>{rowError}</Text>}
             </TruncationTooltip>
           : <Text size={200} className="ml-auto text-fui-fg3" truncate wrap={false}>
               {tokens === null ? NO_READING : `${formatCompactCount(tokens, locale)} tok`}

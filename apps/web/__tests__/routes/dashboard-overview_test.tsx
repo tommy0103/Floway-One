@@ -3,12 +3,14 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import packageManifest from '../../package.json' with { type: 'json' };
-import type { OverviewSnapshot } from '../../src/components/overview/data';
+import type { OverviewRegion, OverviewSnapshot } from '../../src/components/overview/data';
+import { RequestSeverityIcon } from '../../src/components/requests/severity-icon';
 import { copyToClipboard } from '../../src/components/ui/copy-to-clipboard';
 import DashboardOverview, { clientLoader } from '../../src/routes/dashboard-overview';
 import { useAuthStore } from '../../src/stores/auth-store';
 import { stubLocalStorage } from '../local-storage-stub';
 import { renderInApp } from '../render';
+import { advance, settle } from '../settle';
 
 vi.mock('../../src/components/ui/copy-to-clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
 
@@ -18,6 +20,7 @@ afterEach(() => {
   useAuthStore.getState().clear();
   vi.unstubAllGlobals();
   vi.mocked(copyToClipboard).mockClear();
+  vi.useRealTimers();
 });
 
 const PERSONAL_RUNTIME = {
@@ -140,12 +143,12 @@ describe('dashboard overview clientLoader', () => {
 
     expect(data.endpoint).toBe(window.location.origin);
     expect(data.version).toBe(packageManifest.version);
-    expect(data.snapshot.health).toEqual({ ok: true, error: null });
+    expect(data.snapshot.health).toEqual({ value: { ok: true }, failure: null });
     // The disabled upstream's stale catalog error is operator history, not a
     // current failure.
-    expect(data.snapshot.upstreams).toEqual({ total: 3, failing: 1 });
-    expect(data.snapshot.keys).toEqual({ total: 3, lastUsedAt: '2026-08-05T11:00:00.000Z' });
-    expect(data.snapshot.recentRequest).toEqual({ kind: 'record', record: dumpRecord('rec-new', 200) });
+    expect(data.snapshot.upstreams).toEqual({ value: { total: 3, failing: 1 }, failure: null });
+    expect(data.snapshot.keys).toEqual({ value: { total: 3, lastUsedAt: '2026-08-05T11:00:00.000Z' }, failure: null });
+    expect(data.snapshot.recentRequest).toEqual({ value: { kind: 'record', record: dumpRecord('rec-new', 200) }, failure: null });
   });
 
   it('keeps the server-mode landing on the playground', async () => {
@@ -166,8 +169,8 @@ describe('dashboard overview clientLoader', () => {
 
     const data = await clientLoader();
 
-    expect(data.snapshot.upstreams).toBeNull();
-    expect(data.snapshot.upstreamsError).toBe('upstream storage unavailable');
+    expect(data.snapshot.upstreams.value).toBeNull();
+    expect(data.snapshot.upstreams.failure).toEqual({ at: expect.any(Number), message: 'upstream storage unavailable' });
   });
 
   it('fails the key and recent-request regions together when keys fail to load', async () => {
@@ -176,10 +179,10 @@ describe('dashboard overview clientLoader', () => {
 
     const data = await clientLoader();
 
-    expect(data.snapshot.keys).toBeNull();
-    expect(data.snapshot.keysError).toBe('key storage unavailable');
-    expect(data.snapshot.recentRequest).toBeNull();
-    expect(data.snapshot.recentRequestError).toBe('key storage unavailable');
+    expect(data.snapshot.keys.value).toBeNull();
+    expect(data.snapshot.keys.failure?.message).toBe('key storage unavailable');
+    expect(data.snapshot.recentRequest.value).toBeNull();
+    expect(data.snapshot.recentRequest.failure?.message).toBe('key storage unavailable');
   });
 
   it('marks the gateway unreachable when the health probe fails', async () => {
@@ -188,8 +191,18 @@ describe('dashboard overview clientLoader', () => {
 
     const data = await clientLoader();
 
-    expect(data.snapshot.health.ok).toBe(false);
-    expect(data.snapshot.health.error).toBe('fetch failed');
+    expect(data.snapshot.health.value).toBeNull();
+    expect(data.snapshot.health.failure?.message).toBe('fetch failed');
+  });
+
+  it('carries no made-up message when the health answer is outside its contract', async () => {
+    primeOwner();
+    stubOverviewGateway({ health: () => Response.json({ status: 'degraded' }) });
+
+    const data = await clientLoader();
+
+    expect(data.snapshot.health.value).toBeNull();
+    expect(data.snapshot.health.failure?.message).toBeNull();
   });
 
   it('reports capture-off without probing records when no key retains dumps', async () => {
@@ -198,7 +211,7 @@ describe('dashboard overview clientLoader', () => {
 
     const data = await clientLoader();
 
-    expect(data.snapshot.recentRequest).toEqual({ kind: 'capture-off' });
+    expect(data.snapshot.recentRequest.value).toEqual({ kind: 'capture-off' });
     const requested = fetch.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname);
     expect(requested.some(path => path.includes('/api/dump/'))).toBe(false);
   });
@@ -212,19 +225,20 @@ describe('dashboard overview clientLoader', () => {
 
     const data = await clientLoader();
 
-    expect(data.snapshot.recentRequest).toBeNull();
-    expect(data.snapshot.recentRequestError).toBe('Key not found');
+    expect(data.snapshot.recentRequest.value).toBeNull();
+    expect(data.snapshot.recentRequest.failure?.message).toBe('Key not found');
   });
 });
 
+const region = <T,>(value: T): OverviewRegion<T> => ({ value, failure: null });
+const failedRegion = <T,>(message: string, at = 1_000): OverviewRegion<T> => ({ value: null, failure: { at, message } });
+
 const snapshot = (overrides: Partial<OverviewSnapshot> = {}): OverviewSnapshot => ({
-  health: { ok: true, error: null },
-  upstreams: { total: 2, failing: 1 },
-  upstreamsError: null,
-  keys: { total: 2, lastUsedAt: '2026-08-05T11:00:00.000Z' },
-  keysError: null,
-  recentRequest: { kind: 'record', record: dumpRecord('rec-1', Date.now() - 60_000) },
-  recentRequestError: null,
+  gatheredAt: 1_000,
+  health: region({ ok: true }),
+  upstreams: region({ total: 2, failing: 1 }),
+  keys: region({ total: 2, lastUsedAt: '2026-08-05T11:00:00.000Z' }),
+  recentRequest: region({ kind: 'record', record: dumpRecord('rec-1', Date.now() - 60_000) }),
   ...overrides,
 });
 
@@ -268,6 +282,17 @@ describe('dashboard overview rendering', () => {
     expect(screen.queryByRole('link', { name: 'Open logs' })).toBeNull();
   });
 
+  it('reads a request outcome through the shared severity icon', () => {
+    const record = dumpRecord('rec-warn', Date.now() - 60_000, { status: 429 });
+    renderPage(loaderData(snapshot({ recentRequest: region({ kind: 'record', record }) })));
+    const { container: shared } = renderInApp(<RequestSeverityIcon severity="warning" />);
+
+    const row = screen.getByText('Request warning').parentElement!;
+    const glyphOf = (root: ParentNode) => root.querySelector('svg path')?.getAttribute('d');
+    expect(glyphOf(row)).toBeTruthy();
+    expect(glyphOf(row)).toBe(glyphOf(shared));
+  });
+
   it('copies the bare endpoint without any credential', async () => {
     renderPage(loaderData());
 
@@ -279,13 +304,10 @@ describe('dashboard overview rendering', () => {
 
   it('renders unreachable health and region failures as failures, never zeros', () => {
     renderPage(loaderData(snapshot({
-      health: { ok: false, error: 'fetch failed' },
-      upstreams: null,
-      upstreamsError: 'upstream storage unavailable',
-      keys: null,
-      keysError: 'key storage unavailable',
-      recentRequest: null,
-      recentRequestError: 'key storage unavailable',
+      health: failedRegion('fetch failed'),
+      upstreams: failedRegion('upstream storage unavailable'),
+      keys: failedRegion('key storage unavailable'),
+      recentRequest: failedRegion('key storage unavailable'),
     })));
 
     expect(screen.getByText('Unreachable')).toBeTruthy();
@@ -296,17 +318,26 @@ describe('dashboard overview rendering', () => {
     expect(screen.queryByText('0 API keys')).toBeNull();
   });
 
+  it('renders the shared unavailable line when the gateway has no words of its own', () => {
+    renderPage(loaderData(snapshot({
+      health: { value: null, failure: { at: 1_000, message: null } },
+    })));
+
+    expect(screen.getByText('Unreachable')).toBeTruthy();
+    expect(screen.getByText('This view could not be loaded')).toBeTruthy();
+  });
+
   it('states when request capture is off', () => {
-    renderPage(loaderData(snapshot({ recentRequest: { kind: 'capture-off' } })));
+    renderPage(loaderData(snapshot({ recentRequest: region({ kind: 'capture-off' }) })));
 
     expect(screen.getByText('Request capture is off. Enable dump retention on an API key to record recent requests.')).toBeTruthy();
   });
 
   it('states a genuinely empty deployment without reading as a failure', () => {
     renderPage(loaderData(snapshot({
-      upstreams: { total: 0, failing: 0 },
-      keys: { total: 0, lastUsedAt: null },
-      recentRequest: { kind: 'no-records' },
+      upstreams: region({ total: 0, failing: 0 }),
+      keys: region({ total: 0, lastUsedAt: null }),
+      recentRequest: region({ kind: 'no-records' }),
     })));
 
     expect(screen.getByText('No upstreams yet. Connect one to start routing requests.')).toBeTruthy();
@@ -314,5 +345,51 @@ describe('dashboard overview rendering', () => {
     expect(screen.getByText('No requests recorded yet.')).toBeTruthy();
     expect(screen.queryByText('0 upstreams')).toBeNull();
     expect(screen.queryByText('Unreachable')).toBeNull();
+  });
+});
+
+describe('dashboard overview background refresh', () => {
+  const pollOnce = async () => {
+    await advance(60_000);
+    await settle();
+  };
+
+  it('keeps an unread failure through background polls and lets a success resolve it', async () => {
+    vi.useFakeTimers();
+    let upstreamsResponse = () => Response.json({ error: 'second failure' }, { status: 500 });
+    stubOverviewGateway({ upstreams: () => upstreamsResponse() });
+    renderPage(loaderData(snapshot({ upstreams: failedRegion('first failure') })));
+    expect(screen.getByText('first failure')).toBeTruthy();
+
+    // A background run that fails again must not swap the message nobody has read.
+    await pollOnce();
+    expect(screen.getByText('first failure')).toBeTruthy();
+    expect(screen.queryByText('second failure')).toBeNull();
+
+    // A background success resolves the region: the failure is gone because
+    // the reading it reported no longer holds, not because it was hidden.
+    upstreamsResponse = () => Response.json([upstream('up-1')]);
+    await pollOnce();
+    expect(screen.queryByText('first failure')).toBeNull();
+    expect(screen.getByText('1 upstream')).toBeTruthy();
+  });
+
+  it('shows a background failure that has not been seen, and replaces it on a foreground run', async () => {
+    vi.useFakeTimers();
+    let upstreamsResponse = () => Response.json({ error: 'fresh background failure' }, { status: 500 });
+    stubOverviewGateway({ upstreams: () => upstreamsResponse() });
+    renderPage(loaderData());
+
+    await pollOnce();
+    expect(screen.getByText('fresh background failure')).toBeTruthy();
+    expect(screen.queryByText('2 upstreams')).toBeNull();
+
+    // The return to the tab is a foreground run: what it finds is what the
+    // operator is looking at, so it commits even another failure.
+    upstreamsResponse = () => Response.json({ error: 'foreground failure' }, { status: 500 });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await settle();
+    expect(screen.getByText('foreground failure')).toBeTruthy();
+    expect(screen.queryByText('fresh background failure')).toBeNull();
   });
 });

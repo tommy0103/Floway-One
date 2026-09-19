@@ -15,6 +15,7 @@ import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Input } from '../components/ui/fluent-form-controls';
 import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS, STATUS_HEADER_CLASS } from '../components/ui/layout';
+import { OpenLogsButton } from '../components/ui/open-logs-button';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { useOutcomeToasts } from '../components/ui/outcome-toast';
 import { Panel } from '../components/ui/panel';
@@ -144,9 +145,7 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
         </dl>
         {isTauri() && (
           <div>
-            <Button as="a" href="floway-action://open-logs">
-              {t('dashboard.settings.desktop.openLogs')}
-            </Button>
+            <OpenLogsButton />
           </div>
         )}
       </Panel>}
