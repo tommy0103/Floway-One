@@ -49,7 +49,7 @@ impl Display for LaunchctlFailure {
             .join(" ");
         write!(
             formatter,
-            "launchctl {args} exited with {}: {}",
+            "launchctl {args} {}: {}",
             self.status,
             self.stderr.trim()
         )
@@ -92,13 +92,18 @@ impl ShellAutostartError {
     }
 }
 
+// launchctl ships at /bin/launchctl on macOS; /usr/bin/launchctl does not
+// exist.
+// https://keith.github.io/xcode-man-pages/launchctl.1.html
+const LAUNCHCTL_PATH: &str = "/bin/launchctl";
+
 fn run_launchctl(args: &[OsString]) -> Result<(), LaunchctlFailure> {
-    let output = Command::new("/usr/bin/launchctl")
+    let output = Command::new(LAUNCHCTL_PATH)
         .args(args)
         .output()
         .map_err(|source| LaunchctlFailure {
             args: args.to_vec(),
-            status: "a spawn failure".to_owned(),
+            status: "could not be spawned".to_owned(),
             stderr: source.to_string(),
         })?;
     if output.status.success() {
@@ -106,7 +111,7 @@ fn run_launchctl(args: &[OsString]) -> Result<(), LaunchctlFailure> {
     }
     Err(LaunchctlFailure {
         args: args.to_vec(),
-        status: output.status.to_string(),
+        status: format!("exited with {status}", status = output.status),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }

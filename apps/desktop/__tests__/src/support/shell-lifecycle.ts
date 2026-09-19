@@ -39,6 +39,9 @@ import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 const execFileAsync = promisify(execFile);
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+// launchctl ships at /bin/launchctl on macOS; /usr/bin/launchctl does not exist.
+// https://keith.github.io/xcode-man-pages/launchctl.1.html
+const LAUNCHCTL = '/bin/launchctl';
 
 const sleep = async (milliseconds: number): Promise<void> => {
   await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
@@ -135,7 +138,7 @@ export const captureLoginItem = async (label: string): Promise<LoginItemCapture>
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   if (plist !== null) {
-    await execFileAsync('/usr/bin/launchctl', [
+    await execFileAsync(LAUNCHCTL, [
       'bootout',
       `gui/${currentUid()}/${label}`,
     ]).catch(() => {});
@@ -147,7 +150,7 @@ export const captureLoginItem = async (label: string): Promise<LoginItemCapture>
 export const restoreLoginItem = async (capture: LoginItemCapture): Promise<void> => {
   if (capture.plist === null) return;
   await writeFile(capture.plistPath, capture.plist);
-  await execFileAsync('/usr/bin/launchctl', [
+  await execFileAsync(LAUNCHCTL, [
     'bootstrap',
     `gui/${currentUid()}`,
     capture.plistPath,
@@ -315,7 +318,7 @@ export const assertDesktopShellLifecycle = async (
         throw new Error(`Floway login item plist omitted ${JSON.stringify(fragment)}`);
       }
     }
-    await execFileAsync('/usr/bin/launchctl', ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
+    await execFileAsync(LAUNCHCTL, ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
     const autostartEnabled = await reportShellStatus(context, applicationHome);
     assertReadyShellStatus(autostartEnabled, origin, { autostartEnabled: true, windowVisible: true });
     // Launchd runs the login item at once (RunAtLoad); that delegate sees the
@@ -339,7 +342,7 @@ export const assertDesktopShellLifecycle = async (
     );
     let printRejected = false;
     try {
-      await execFileAsync('/usr/bin/launchctl', ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
+      await execFileAsync(LAUNCHCTL, ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
     } catch {
       printRejected = true;
     }
