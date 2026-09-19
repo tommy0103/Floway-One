@@ -108,12 +108,10 @@ fn error_chain_text(error: &(dyn Error + 'static)) -> String {
 }
 
 fn print_error_chain(error: &(dyn Error + 'static)) {
-    eprintln!("Floway desktop application failed: {error}");
-    let mut source = error.source();
-    while let Some(cause) = source {
-        eprintln!("caused by: {cause}");
-        source = cause.source();
-    }
+    eprintln!(
+        "Floway desktop application failed: {}",
+        error_chain_text(error)
+    );
 }
 
 fn classify_bundle_failure(error: &BundleResourceError) -> FailureKind {
@@ -159,6 +157,17 @@ struct TrayPhaseUpdate<'a> {
     logs_enabled: bool,
     origin: Option<&'a str>,
     restart_enabled: bool,
+}
+
+impl TrayPhaseUpdate<'_> {
+    fn failed(status: &DesktopRuntimeStatus) -> Self {
+        Self {
+            copy_enabled: false,
+            logs_enabled: status.logs_available,
+            origin: None,
+            restart_enabled: status.restart_available,
+        }
+    }
 }
 
 struct DesktopTray {
@@ -630,15 +639,10 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
         return;
     }
     let status = controller.status();
-    if let Err(error) = controller.tray.set_phase(
-        RuntimePhase::Failed,
-        TrayPhaseUpdate {
-            copy_enabled: false,
-            logs_enabled: status.logs_available,
-            origin: None,
-            restart_enabled: status.restart_available,
-        },
-    ) {
+    if let Err(error) = controller
+        .tray
+        .set_phase(RuntimePhase::Failed, TrayPhaseUpdate::failed(&status))
+    {
         print_error_chain(error.as_ref());
         app.exit(1);
         return;
@@ -655,15 +659,10 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
 fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
     let status = controller.status();
-    if let Err(error) = controller.tray.set_phase(
-        RuntimePhase::Failed,
-        TrayPhaseUpdate {
-            copy_enabled: false,
-            logs_enabled: status.logs_available,
-            origin: None,
-            restart_enabled: status.restart_available,
-        },
-    ) {
+    if let Err(error) = controller
+        .tray
+        .set_phase(RuntimePhase::Failed, TrayPhaseUpdate::failed(&status))
+    {
         print_error_chain(error.as_ref());
         app.exit(1);
     }
@@ -1121,6 +1120,16 @@ fn hide_main_window(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Drives the production close gesture: `WebviewWindow::close` emits
+/// `WindowEvent::CloseRequested`, and the shell's window-event handler
+/// prevents the close and hides the window — the exact chain the native
+/// close button takes.
+/// https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/window/mod.rs#L1791-L1795
+fn close_main_window(app: &AppHandle) -> Result<(), Box<dyn Error>> {
+    main_window(app)?.close()?;
+    Ok(())
+}
+
 fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     let controller = app.state::<Arc<DesktopController>>();
     let origin = controller.gateway_origin().ok_or_else(|| {
@@ -1170,7 +1179,7 @@ fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
 
 fn resolve_shell_autostart(app: &AppHandle) -> Result<ShellAutostart, Box<dyn Error>> {
     // getuid cannot fail.
-    // https://man7.org/linux/man-pages/man2/getuid.2.html
+    // https://keith.github.io/xcode-man-pages/getuid.2.html
     let uid = unsafe { libc::getuid() };
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -1312,7 +1321,7 @@ fn dispatch_shell_command(app: &AppHandle, command: ShellCommand) -> Result<Valu
             activate_main_window(app);
             Ok(json!({ "ok": true }))
         }
-        ShellCommand::CloseWindow => hide_main_window(app).map(|()| json!({ "ok": true })),
+        ShellCommand::CloseWindow => close_main_window(app).map(|()| json!({ "ok": true })),
         ShellCommand::CopyGatewayAddress => {
             copy_gateway_address(app).map(|()| json!({ "ok": true }))
         }

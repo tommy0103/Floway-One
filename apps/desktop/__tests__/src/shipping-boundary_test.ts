@@ -91,9 +91,12 @@ test('desktop lifetime policy lives in its owning modules without plugins or sig
   expect(supervisor).not.toContain('CloseRequested');
   expect(supervisor).not.toContain('.hide()');
   // Window, tray, singleton, and quit policy stay in the runtime controller.
-  expect(controller).toContain('WindowEvent::CloseRequested');
-  expect(controller).toContain('api.prevent_close()');
-  expect(controller).toContain('.hide()');
+  // The CloseRequested→prevent_close→hide chain itself is proven dynamically
+  // by the packaged gate driving window.close() through the control channel,
+  // so no static close-path assertion belongs here; only the production
+  // routing of the control verb stays pinned.
+  expect(controller).toContain('fn close_main_window(');
+  expect(controller).toContain('ShellCommand::CloseWindow => close_main_window(app)');
   expect(controller).toContain('establish_shell_role(');
   expect(controller).toContain('RunEvent::Reopen');
   expect(controller).toContain('stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)');

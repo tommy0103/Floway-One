@@ -42,6 +42,10 @@ const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 // launchctl ships at /bin/launchctl on macOS; /usr/bin/launchctl does not exist.
 // https://keith.github.io/xcode-man-pages/launchctl.1.html
 const LAUNCHCTL = '/bin/launchctl';
+// https://keith.github.io/xcode-man-pages/pgrep.1.html
+const PGREP = '/usr/bin/pgrep';
+// https://keith.github.io/xcode-man-pages/pbpaste.1.html
+const PBPASTE = '/usr/bin/pbpaste';
 
 const sleep = async (milliseconds: number): Promise<void> => {
   await new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
@@ -182,20 +186,24 @@ const waitForReplacementSidecar = async (
   throw new Error(`Floway production app did not start a replacement sidecar\n${output()}`);
 };
 
-const waitForSingleShellProcess = async (
+const shellProcessPids = async (executable: string): Promise<number[]> => {
+  const { stdout } = await execFileAsync(PGREP, ['-x', basename(executable)])
+    .catch(() => ({ stdout: '', stderr: '' }));
+  return stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+};
+
+const waitForShellProcessCount = async (
   executable: string,
-  ownerPid: number,
+  expected: number,
   timeoutMs: number,
+  failure: string,
 ): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const { stdout } = await execFileAsync('/usr/bin/pgrep', ['-x', basename(executable)])
-      .catch(() => ({ stdout: '', stderr: '' }));
-    const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number);
-    if (pids.length === 1 && pids[0] === ownerPid) return;
-    await sleep(100);
+    if ((await shellProcessPids(executable)).length === expected) return;
+    await sleep(50);
   }
-  throw new Error('Floway login item delegate did not exit; a second shell process remains');
+  throw new Error(failure);
 };
 
 const readOwnerSessionToken = (databasePath: string) => (): string | undefined => {
@@ -303,7 +311,7 @@ export const assertDesktopShellLifecycle = async (
     console.log('Floway repeated launch delegated activation to the running instance and started no second gateway');
 
     await sendDesktopControl(context.executable, applicationHome, 'copy-gateway-address');
-    const { stdout: pasted } = await execFileAsync('/usr/bin/pbpaste', [], { timeout: 10_000 });
+    const { stdout: pasted } = await execFileAsync(PBPASTE, [], { timeout: 10_000 });
     if (pasted !== origin) {
       throw new Error(`Floway clipboard held ${JSON.stringify(pasted)} instead of ${origin}`);
     }
@@ -331,12 +339,22 @@ export const assertDesktopShellLifecycle = async (
     await execFileAsync(LAUNCHCTL, ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
     const autostartEnabled = await reportShellStatus(context, applicationHome);
     assertReadyShellStatus(autostartEnabled, origin, { autostartEnabled: true, windowVisible: true });
-    // Launchd runs the login item at once (RunAtLoad); that delegate sees the
-    // live owner, activates it, and exits without a second gateway. Give the
-    // delegate a moment to appear before waiting for it to leave, so the
-    // observation cannot pass before launchd even spawned it.
-    await sleep(3_000);
-    await waitForSingleShellProcess(context.executable, shellPid, 20_000);
+    // The registration carries RunAtLoad, so launchd spawns the login item
+    // delegate at once: the delegate must appear, delegate to the live owner,
+    // and exit — never start a second gateway. Both transitions are observed
+    // positively; a delegate that never spawns or never exits fails here.
+    await waitForShellProcessCount(
+      context.executable,
+      2,
+      20_000,
+      'Floway login item delegate never spawned after registration',
+    );
+    await waitForShellProcessCount(
+      context.executable,
+      1,
+      20_000,
+      'Floway login item delegate did not exit after delegating to its owner',
+    );
     const childrenAfterAutostart = await directChildPids(shellPid);
     if (childrenAfterAutostart.length !== 1 || childrenAfterAutostart[0] !== restartedSidecarPid) {
       throw new Error(`Floway login item delegate changed gateway ownership: ${childrenAfterAutostart.join(', ')}`);
@@ -419,6 +437,16 @@ export const assertForcedTerminationReapsSidecar = async (
       throw new Error(`Floway shell observed ${child.exitCode ?? child.signalCode} instead of the forced SIGKILL`);
     }
     await waitForProcessStopped(sidecarPid);
+    // The sidecar's own durable stderr log is written synchronously through
+    // the personal logging tee, so its owner-lifetime line landed before the
+    // process exited even though the shell was already dead.
+    const sidecarStderrLog = await readFile(
+      resolve(applicationHome, 'logs', 'floway.stderr.log'),
+      'utf8',
+    );
+    if (!sidecarStderrLog.includes('Floway desktop sidecar is exiting because its owner shell is gone')) {
+      throw new Error('Floway sidecar exited after the forced shell kill without its owner-lifetime line');
+    }
     await assertLoopbackPortReleased(port);
     console.log('Floway forced shell termination reaped its sidecar through the owner-lifetime channel');
 
