@@ -99,6 +99,8 @@ export const recoveryCopy = {
 
 export const compileNativeWindowProbe = async (outputDirectory: string): Promise<string> => {
   const executable = resolve(outputDirectory, 'floway-native-window');
+  // The per-run module cache is always cold, and a loaded host can push the
+  // Vision/CryptoKit compile past two minutes.
   await execFileAsync('/usr/bin/xcrun', [
     'swiftc',
     '-module-cache-path',
@@ -106,7 +108,7 @@ export const compileNativeWindowProbe = async (outputDirectory: string): Promise
     source,
     '-o',
     executable,
-  ], { timeout: 60_000 });
+  ], { timeout: 180_000 });
   return executable;
 };
 

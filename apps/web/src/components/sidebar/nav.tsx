@@ -10,7 +10,7 @@ import { fluentComponents } from '../../fluent';
 import { pageNavigation } from '../../lib/page-navigation';
 import { FlowayLogo } from '../logo';
 import { NavSelectionIndicator } from './nav-selection-indicator';
-import { accountPage, dashboardPageAvailable, dashboardPages, navGroups } from './pages';
+import { accountPage, dashboardPageAvailable, dashboardPageForPathname, navGroups } from './pages';
 import { useTranslation } from '../../i18n/translation';
 import { useAuthStore } from '../../stores/auth-store';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -88,9 +88,10 @@ function SidebarLink({ children, icon, onNavigate, pending, to }: {
 
 const AccountIcon = accountPage.icon;
 
-export function Sidebar({ capabilities, onNavigate, user }: {
+export function Sidebar({ capabilities, onNavigate, personal, user }: {
   capabilities: DashboardRuntimeCapabilities;
   onNavigate?: () => void;
+  personal: boolean;
   user: AuthUser;
 }) {
   const { t } = useTranslation();
@@ -109,8 +110,7 @@ export function Sidebar({ capabilities, onNavigate, user }: {
   // collide on them; the separators React puts in useId() are illegal inside
   // url(#…).
   const iconIdPrefix = useId().replace(/[^a-zA-Z0-9]/g, '');
-  const valueForPath = (path: string) =>
-    dashboardPages.find(page => path === page.to || path.startsWith(`${page.to}/`))?.to ?? '';
+  const valueForPath = (path: string) => dashboardPageForPathname(path)?.to ?? '';
   const selectedValue = valueForPath(pathname);
   const pendingValue = navigation.location ? valueForPath(navigation.location.pathname) : '';
 
@@ -144,6 +144,7 @@ export function Sidebar({ capabilities, onNavigate, user }: {
               if (group.adminOnly && !user.isAdmin) return null;
               const items = group.items.filter(item =>
                 (!item.adminOnly || user.isAdmin)
+                && (!item.personalOnly || personal)
                 && dashboardPageAvailable(item, capabilities));
               if (items.length === 0) return null;
               return <div key={group.labelKey ?? groupIndex}>

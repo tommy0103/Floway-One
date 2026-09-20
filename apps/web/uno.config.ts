@@ -22,6 +22,10 @@ export default defineConfig({
     // min-content — one long message bar then pushes the whole page past the
     // viewport. The explicit track floors that column at zero.
     'dashboard-page': 'grid gap-[18px] min-w-0 grid-cols-[minmax(0,1fr)]',
+    // A page section stacking panels two abreast: the dashboard-page rhythm
+    // above (the 18px is the app's own page rhythm — no upstream states it),
+    // collapsing where --floway-page-inset steps down in global.css.
+    'dashboard-page-columns': 'grid gap-[18px] min-w-0 grid-cols-2 max-[680px]:grid-cols-1',
     'text-fui-fg1': 'text-[var(--colorNeutralForeground1)]',
     'text-fui-fg2': 'text-[var(--colorNeutralForeground2)]',
     'text-fui-fg3': 'text-[var(--colorNeutralForeground3)]',

@@ -36,7 +36,7 @@ test('clears the fragment before exchanging it and primes the normal owner sessi
 
   expect(redirectResponse).toBeInstanceOf(Response);
   expect((redirectResponse as Response).status).toBe(302);
-  expect((redirectResponse as Response).headers.get('location')).toBe('/dashboard/playground');
+  expect((redirectResponse as Response).headers.get('location')).toBe('/dashboard');
   expect(getSessionToken()).toBe(SESSION_TOKEN);
   expect(useAuthStore.getState().session?.user.id).toBe(1);
   expect(window.location.href).not.toContain(BOOTSTRAP_TOKEN);

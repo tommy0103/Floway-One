@@ -86,7 +86,6 @@ const en = {
       ollama: 'Ollama',
     },
     dashboard: {
-      title: 'Dashboard',
       groups: {
         providers: 'Providers',
         services: 'Services',
@@ -98,6 +97,7 @@ const en = {
         open: 'Open navigation',
         close: 'Close navigation',
         skip: 'Skip to main content',
+        overview: 'Overview',
         playground: 'Playground',
         upstreams: 'Upstreams',
         search: 'Search',
@@ -120,6 +120,8 @@ const en = {
         action: 'Sign out',
       },
       pages: {
+        overview:
+            'Check whether this local gateway is healthy, where it is listening, and what needs attention',
         playground:
             'Run model conversations and inspect request behavior from the control plane',
         upstreams:
@@ -141,6 +143,48 @@ const en = {
         backupRestore:
             'Download a full copy of everything this gateway holds, or restore it from an earlier export',
         unavailable: 'This view could not be loaded',
+      },
+      overview: {
+        gateway: {
+          title: 'Gateway',
+          healthy: 'Running',
+          unavailable: 'Unreachable',
+          endpoint: 'Endpoint',
+          copyEndpoint: 'Copy endpoint',
+          version: 'Version',
+        },
+        upstreams: {
+          title: 'Upstreams',
+          totalLabel: 'Total',
+          total_one: '{{count, number}} upstream',
+          total_other: '{{count, number}} upstreams',
+          failingLabel: 'Failing',
+          failing_one: '{{count, number}} failing',
+          failing_other: '{{count, number}} failing',
+          noneFailing: 'None',
+          empty: 'No upstreams yet. Connect one to start routing requests.',
+          open: 'Open upstreams',
+        },
+        keys: {
+          title: 'API Keys',
+          totalLabel: 'Total',
+          total_one: '{{count, number}} API key',
+          total_other: '{{count, number}} API keys',
+          lastUsedLabel: 'Last used',
+          lastUsedOn: 'on {{date}}',
+          neverUsed: 'Never',
+          empty: 'No API keys yet. Create one so clients can call this gateway.',
+          open: 'Open API Keys',
+        },
+        recentRequest: {
+          title: 'Recent Request',
+          captureOff: 'Request capture is off. Enable dump retention on an API key to record recent requests.',
+          empty: 'No requests recorded yet.',
+          open: 'Open requests',
+        },
+        diagnostics: {
+          title: 'Diagnostics',
+        },
       },
       playground: {
         system: 'Custom system prompt',

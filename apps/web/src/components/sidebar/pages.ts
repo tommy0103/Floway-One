@@ -6,6 +6,7 @@ import {
   DataPie20Color,
   DocumentText20Color,
   Gauge20Color,
+  Home20Color,
   People20Color,
   Person20Color,
   PersonKey20Color,
@@ -22,6 +23,8 @@ export interface DashboardPage {
   labelKey: string;
   icon: FluentIcon;
   adminOnly?: boolean;
+  /** Shown only under the personal runtime profile; see nav.tsx for the gate. */
+  personalOnly?: boolean;
   requiredCapability?: keyof DashboardRuntimeCapabilities;
 }
 
@@ -43,6 +46,16 @@ export const usersPage: DashboardPage = {
   requiredCapability: 'userManagement',
 };
 
+// The personal profile's landing page, addressed by the dashboard index route.
+// Its `to` is the dashboard root itself, which every other destination
+// prefixes, so selection matching treats it as exact-only (see nav.tsx).
+export const overviewPage: DashboardPage = {
+  to: '/dashboard',
+  labelKey: 'dashboard.nav.overview',
+  icon: Home20Color,
+  personalOnly: true,
+};
+
 // The sidebar carries Fluent's multi-colour glyphs, where WinUI's
 // NavigationView draws monochrome ones and moves the icon and the label to the
 // same brush in every visual state. These assets hard-code their gradient
@@ -55,6 +68,7 @@ export const usersPage: DashboardPage = {
 export const navGroups: NavGroup[] = [
   {
     items: [
+      overviewPage,
       { to: '/dashboard/playground', labelKey: 'dashboard.nav.playground', icon: Chat20Color },
     ],
   },
@@ -105,3 +119,11 @@ export const accountPage: DashboardPage = {
 export const dashboardPages: DashboardPage[] = [...navGroups.flatMap(group => group.items), accountPage];
 
 export const pageLabelKeys = new Map(dashboardPages.map(page => [page.to, page.labelKey]));
+
+// The page a pathname selects. Every page owns a subtree and answers a prefix
+// match, except the overview: it sits on the dashboard root itself, which is a
+// prefix of every destination, so it answers an exact match alone.
+export const dashboardPageForPathname = (pathname: string): DashboardPage | undefined =>
+  dashboardPages.find(page => page.to === overviewPage.to
+    ? pathname === page.to
+    : pathname === page.to || pathname.startsWith(`${page.to}/`));
