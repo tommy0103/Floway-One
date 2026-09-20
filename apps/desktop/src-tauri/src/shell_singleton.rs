@@ -245,6 +245,20 @@ pub fn write_shell_reply(stream: &mut UnixStream, reply: &Value) -> io::Result<(
     stream.shutdown(std::net::Shutdown::Write)
 }
 
+// The write-half shutdown only signals the end of the command; XNU clears
+// SS_ISCONNECTED on a Unix stream pair as soon as either side fully closes,
+// so an owner that already read the command, replied, and closed turns this
+// final courtesy into ENOTCONN even though the exchange succeeded. The reply
+// read that follows decides the real outcome.
+// https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L1771-L1778
+pub fn finish_command_write_side(stream: &UnixStream) -> io::Result<()> {
+    match stream.shutdown(std::net::Shutdown::Write) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn send_shell_command(socket_path: &Path, command: ShellCommand) -> io::Result<Value> {
     let mut stream = UnixStream::connect(socket_path).map_err(|source| {
         io::Error::new(
@@ -254,7 +268,7 @@ pub fn send_shell_command(socket_path: &Path, command: ShellCommand) -> io::Resu
     })?;
     stream.set_read_timeout(Some(CONTROL_IO_TIMEOUT))?;
     stream.write_all(&encode_command(command))?;
-    stream.shutdown(std::net::Shutdown::Write)?;
+    finish_command_write_side(&stream)?;
     let mut response = Vec::new();
     stream
         .take(MAXIMUM_CONTROL_MESSAGE_BYTES + 1)

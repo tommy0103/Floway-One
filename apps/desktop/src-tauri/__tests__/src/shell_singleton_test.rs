@@ -13,7 +13,8 @@ mod shell_singleton;
 
 use shell_singleton::{
     ShellCommand, ShellOwnership, claim_shell_ownership, control_socket_path,
-    parse_control_command, read_shell_command, send_shell_command, write_shell_reply,
+    finish_command_write_side, parse_control_command, read_shell_command, send_shell_command,
+    write_shell_reply,
 };
 
 fn test_dir(label: &str) -> PathBuf {
@@ -245,6 +246,24 @@ fn malformed_and_unknown_commands_are_rejected() {
         assert!(read_shell_command(&stream).is_err());
     }
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn command_half_close_tolerates_an_owner_that_finished_first() {
+    let (client, server) = UnixStream::pair().expect("socket pair must exist");
+    drop(server);
+    // Establish the platform premise: with the peer fully closed, XNU reports
+    // the write-half shutdown as not-connected instead of a harmless no-op.
+    // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L1771-L1778
+    assert_eq!(
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect_err("a closed peer must surface as not-connected")
+            .kind(),
+        std::io::ErrorKind::NotConnected,
+    );
+    finish_command_write_side(&client)
+        .expect("an owner that already finished must not fail the exchange");
 }
 
 #[test]
