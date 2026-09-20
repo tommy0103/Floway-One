@@ -104,8 +104,11 @@ export const buildUpdatedApplication = async (options: {
     'apps/desktop/src-tauri/tauri.conf.json',
   ].map(relative => resolve(repositoryRoot, relative));
   const cargoManifest = resolve(repositoryRoot, 'apps/desktop/src-tauri/Cargo.toml');
+  // The bumped build rewrites Cargo.lock too; save and restore it with the
+  // other authorities so the working tree never keeps a version bump.
+  const cargoLock = resolve(repositoryRoot, 'apps/desktop/src-tauri/Cargo.lock');
   const originals = new Map<string, string>();
-  for (const path of [...jsonAuthorities, cargoManifest]) {
+  for (const path of [...jsonAuthorities, cargoManifest, cargoLock]) {
     originals.set(path, await readFile(path, 'utf8'));
   }
   const updatedApp = resolve(desktopRoot, 'src-tauri/target', targetTriple, 'debug/bundle/macos/Floway.app');
