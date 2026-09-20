@@ -52,6 +52,14 @@ path = "__tests__/src/shell_autostart_test.rs"
 name = "shell_singleton"
 path = "__tests__/src/shell_singleton_test.rs"
 
+[[test]]
+name = "update_channel"
+path = "__tests__/src/update_channel_test.rs"
+
+[[test]]
+name = "update_state"
+path = "__tests__/src/update_state_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
@@ -64,6 +72,7 @@ desktop = [
   "dep:tauri",
   "dep:tauri-build",
   "dep:tauri-plugin-shell",
+  "dep:tauri-plugin-updater",
 ]
 
 [dependencies]
@@ -85,6 +94,8 @@ url = { version = "=2.5.8" }
 tauri = { version = "=2.11.5", optional = true, features = ["tray-icon"] }
 # https://github.com/tauri-apps/plugins-workspace/releases/tag/shell-v2.3.6
 tauri-plugin-shell = { version = "=2.3.6", optional = true }
+# https://github.com/tauri-apps/plugins-workspace/releases/tag/updater-v2.12.0
+tauri-plugin-updater = { version = "=2.12.0", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # https://github.com/madsmtm/objc2/releases/tag/block2-0.6.2
 block2 = { version = "=0.6.2", optional = true }

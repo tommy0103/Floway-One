@@ -8,6 +8,8 @@ mod navigation;
 mod runtime_status;
 #[cfg(feature = "desktop")]
 mod sidecar_log;
+mod update_channel;
+mod update_state;
 
 #[cfg(feature = "desktop")]
 mod app;
@@ -21,6 +23,8 @@ mod shell_autostart;
 mod shell_singleton;
 #[cfg(feature = "desktop")]
 mod sidecar_supervisor;
+#[cfg(feature = "desktop")]
+mod update_controller;
 
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
 
@@ -38,3 +42,12 @@ pub use navigation::{
 };
 #[cfg(feature = "desktop")]
 pub use runtime_status::InitialStatusLoadGate;
+pub use update_channel::{
+    UPDATE_CHANNEL_FILE_NAME, UPDATE_DIRECTORY_NAME, UPDATE_RECOVERY_POINT_FILE_NAME,
+    UpdateChannel, UpdaterAuthority, load_update_channel, parse_update_channel,
+    parse_updater_endpoints, previous_release_page_url, resolve_updater_authority,
+};
+pub use update_state::{
+    BeginInstallError, DesktopUpdateState, MarkHealthyOutcome, PendingUpdateHealth, StagedUpdate,
+    UPDATE_STATE_FILE_NAME, UpdateFailure, UpdateFailurePhase,
+};
