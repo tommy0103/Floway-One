@@ -1276,7 +1276,12 @@ fn run_install_sequence(app: &AppHandle) {
         controller.phase(),
         RuntimePhase::Ready | RuntimePhase::Starting
     );
-    if runtime_active && controller.supervisor.stop_now().is_err() {
+    if runtime_active
+        && controller
+            .supervisor
+            .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
+            .is_err()
+    {
         let error = io::Error::other(
             "Floway could not stop its packaged runtime before installing an update",
         );
