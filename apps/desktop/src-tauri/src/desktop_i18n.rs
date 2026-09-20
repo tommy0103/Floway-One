@@ -6,7 +6,11 @@ pub enum DesktopLocale {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct DesktopMessages {
+    pub copy_gateway_address: &'static str,
+    pub launch_at_login: &'static str,
+    pub open_floway: &'static str,
     pub open_logs: &'static str,
+    pub quit_floway: &'static str,
     pub restart_gateway: &'static str,
     pub status_needs_attention: &'static str,
     pub status_running: &'static str,
@@ -17,7 +21,11 @@ pub struct DesktopMessages {
 }
 
 const EN: DesktopMessages = DesktopMessages {
-    open_logs: "Open Logs",
+    copy_gateway_address: "Copy Gateway Address",
+    launch_at_login: "Launch at Login",
+    open_floway: "Open Floway",
+    open_logs: "Open Logs Directory",
+    quit_floway: "Quit Floway",
     restart_gateway: "Restart Gateway",
     status_needs_attention: "Gateway: Needs attention",
     status_running: "Gateway: Running",
@@ -28,7 +36,11 @@ const EN: DesktopMessages = DesktopMessages {
 };
 
 const ZH_HANS: DesktopMessages = DesktopMessages {
-    open_logs: "打开日志",
+    copy_gateway_address: "复制 Gateway 地址",
+    launch_at_login: "开机启动",
+    open_floway: "打开 Floway",
+    open_logs: "打开日志目录",
+    quit_floway: "退出 Floway",
     restart_gateway: "重启 Gateway",
     status_needs_attention: "Gateway：需要处理",
     status_running: "Gateway：运行中",

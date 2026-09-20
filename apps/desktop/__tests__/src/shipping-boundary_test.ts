@@ -17,6 +17,8 @@ test('shipping desktop and Node sources contain no verification modes or environ
     'apps/desktop/src-tauri/src/rendered_snapshot.rs',
     'apps/desktop/src-tauri/src/runtime_controller.rs',
     'apps/desktop/src-tauri/src/runtime_status.rs',
+    'apps/desktop/src-tauri/src/shell_autostart.rs',
+    'apps/desktop/src-tauri/src/shell_singleton.rs',
     'apps/desktop/src-tauri/src/sidecar_log.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
@@ -28,10 +30,13 @@ test('shipping desktop and Node sources contain no verification modes or environ
     _renderedSnapshot,
     runtimeController,
     _runtimeStatus,
+    _shellAutostart,
+    _shellSingleton,
     _sidecarLog,
     supervisor,
   ] = desktopSources;
   const nodeSources = await Promise.all([
+    'apps/platform-node/src/desktop-sidecar-lifecycle.ts',
     'apps/platform-node/src/device-master-key.ts',
     'apps/platform-node/src/run-node-entry.ts',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
@@ -70,29 +75,46 @@ test('the Node entry does not relabel every untyped startup failure as a native 
   expect(entry).not.toContain("reportDesktopStartupFailure(failure, 'native-dependency')");
 });
 
-test('runtime recovery adds no general application lifetime policy', async () => {
-  const sources = await Promise.all([
+test('desktop lifetime policy lives in its owning modules without plugins or signal crates', async () => {
+  const [app, controller, shellAutostart, shellSingleton, supervisor, cargoManifest] = await Promise.all([
     'apps/desktop/src-tauri/src/app.rs',
     'apps/desktop/src-tauri/src/runtime_controller.rs',
+    'apps/desktop/src-tauri/src/shell_autostart.rs',
+    'apps/desktop/src-tauri/src/shell_singleton.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
     'apps/desktop/src-tauri/Cargo.toml',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
-  const combined = sources.join('\n');
+  const combined = [app, controller, shellAutostart, shellSingleton, supervisor, cargoManifest].join('\n');
+  // The supervisor owns only packaged-process stop policy.
+  expect(supervisor).toContain('libc::SIGTERM');
+  expect(supervisor).toContain('stop_gracefully');
+  expect(supervisor).not.toContain('CloseRequested');
+  expect(supervisor).not.toContain('.hide()');
+  // Window, tray, singleton, and quit policy stay in the runtime controller.
+  // The CloseRequested→prevent_close→hide chain itself is proven dynamically
+  // by the packaged gate driving window.close() through the control channel,
+  // so no static close-path assertion belongs here; only the production
+  // routing of the control verb stays pinned.
+  expect(controller).toContain('fn close_main_window(');
+  expect(controller).toContain('ShellCommand::CloseWindow => close_main_window(app)');
+  expect(controller).toContain('establish_shell_role(');
+  expect(controller).toContain('RunEvent::Reopen');
+  expect(controller).toContain('stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)');
+  // Singleton ownership and the login item have their own modules.
+  expect(shellSingleton).toContain('claim_shell_ownership');
+  expect(shellAutostart).toContain('launchctl');
   for (const deferredPolicy of [
     'signal_hook',
-    'SIGTERM',
     'GRACEFUL_SHUTDOWN',
-    'SingleInstance',
-    'Autostart',
-    'CloseRequested',
-    '.hide()',
     'GRACEFUL_QUIT',
+    'tauri-plugin-single-instance',
+    'tauri-plugin-autostart',
+    'SingleInstance',
   ]) {
     expect(combined).not.toContain(deferredPolicy);
   }
   expect(combined).toContain('Owns only packaged child registration, termination, and teardown settlement.');
   expect(combined).toContain('TrayIconBuilder');
-  expect(combined).toContain('restart_failed_runtime');
   expect(combined).toContain('RunEvent::ExitRequested');
   expect(combined).toContain('ProcessState::StopRequested');
   expect(combined).toContain('ProcessState::Terminated');

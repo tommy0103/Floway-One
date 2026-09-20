@@ -14,14 +14,24 @@ interface MenuItemSnapshot {
   readonly text: string;
 }
 
+interface CheckMenuItemSnapshot extends MenuItemSnapshot {
+  readonly checked: boolean;
+}
+
+export interface TraySnapshot {
+  readonly autostart: CheckMenuItemSnapshot;
+  readonly copyAddress: MenuItemSnapshot;
+  readonly logs: MenuItemSnapshot;
+  readonly open: MenuItemSnapshot;
+  readonly quit: MenuItemSnapshot;
+  readonly restart: MenuItemSnapshot;
+  readonly status: MenuItemSnapshot;
+}
+
 interface RuntimeSurfaceSnapshot {
   readonly failureKind: string;
   readonly phase: string;
-  readonly tray: {
-    readonly logs: MenuItemSnapshot;
-    readonly restart: MenuItemSnapshot;
-    readonly status: MenuItemSnapshot;
-  };
+  readonly tray: TraySnapshot;
   readonly window: {
     readonly failureKind: string;
     readonly route: string;
@@ -47,16 +57,61 @@ interface RecoverySurfaceSnapshot {
 
 export const labels = {
   en: {
-    logs: 'Open Logs',
+    autostart: 'Launch at Login',
+    copyAddress: 'Copy Gateway Address',
+    logs: 'Open Logs Directory',
+    open: 'Open Floway',
+    quit: 'Quit Floway',
     restart: 'Restart Gateway',
     status: 'Gateway: Needs attention',
+    statusReady: 'Gateway: Running',
   },
   'zh-Hans': {
-    logs: '打开日志',
+    autostart: '开机启动',
+    copyAddress: '复制 Gateway 地址',
+    logs: '打开日志目录',
+    open: '打开 Floway',
+    quit: '退出 Floway',
     restart: '重启 Gateway',
     status: 'Gateway：需要处理',
+    statusReady: 'Gateway：运行中',
   },
 } as const;
+
+export type DesktopLocale = keyof typeof labels;
+
+export const assertTraySnapshot = (
+  tray: TraySnapshot,
+  expected: {
+    readonly autostartChecked: boolean;
+    readonly copyAddressEnabled: boolean;
+    readonly locale: DesktopLocale;
+    readonly logsEnabled: boolean;
+    readonly restartEnabled: boolean;
+    readonly statusText: string;
+  },
+): void => {
+  const expectedLabels = labels[expected.locale];
+  const mismatches: string[] = [];
+  const check = (name: string, item: MenuItemSnapshot, text: string, enabled: boolean): void => {
+    if (item.text !== text || item.enabled !== enabled) {
+      mismatches.push(`${name}: expected ${JSON.stringify({ enabled, text })}, received ${JSON.stringify(item)}`);
+    }
+  };
+  check('open', tray.open, expectedLabels.open, true);
+  check('status', tray.status, expected.statusText, false);
+  check('copyAddress', tray.copyAddress, expectedLabels.copyAddress, expected.copyAddressEnabled);
+  check('restart', tray.restart, expectedLabels.restart, expected.restartEnabled);
+  check('autostart', tray.autostart, expectedLabels.autostart, true);
+  if (tray.autostart.checked !== expected.autostartChecked) {
+    mismatches.push(`autostart.checked: expected ${expected.autostartChecked}, received ${tray.autostart.checked}`);
+  }
+  check('logs', tray.logs, expectedLabels.logs, expected.logsEnabled);
+  check('quit', tray.quit, expectedLabels.quit, true);
+  if (mismatches.length > 0) {
+    throw new Error(`Floway tray snapshot diverged from its contract: ${mismatches.join('; ')}`);
+  }
+};
 
 export const recoveryCopy = {
   en: {
@@ -179,7 +234,6 @@ export const assertNativeFailureSurface = async (
   const { encoded: recoveryEncoded, snapshot: recovery } = parseRecoverySurfaceSnapshot(output);
   const expectedLocale = options.expectedLocale ?? 'en';
   const expectedLogsAvailable = options.expectedLogsAvailable ?? true;
-  const expectedLabels = labels[expectedLocale];
   for (const forbidden of options.forbiddenSnapshotText) {
     if (encoded.includes(forbidden) || recoveryEncoded.includes(forbidden)) {
       throw new Error(`Floway surface diagnostic exposed unrestricted text: ${JSON.stringify(forbidden)}`);
@@ -193,15 +247,17 @@ export const assertNativeFailureSurface = async (
     || snapshot.window.state !== 'failed'
     || snapshot.window.title !== 'Floway'
     || !snapshot.window.visible
-    || snapshot.tray.status.text !== expectedLabels.status
-    || snapshot.tray.status.enabled
-    || snapshot.tray.restart.text !== expectedLabels.restart
-    || !snapshot.tray.restart.enabled
-    || snapshot.tray.logs.text !== expectedLabels.logs
-    || snapshot.tray.logs.enabled !== expectedLogsAvailable
   ) {
     throw new Error(`Floway actual-object surface diagnostic is incomplete: ${JSON.stringify(snapshot)}`);
   }
+  assertTraySnapshot(snapshot.tray, {
+    autostartChecked: false,
+    copyAddressEnabled: false,
+    locale: expectedLocale,
+    logsEnabled: expectedLogsAvailable,
+    restartEnabled: true,
+    statusText: labels[expectedLocale].status,
+  });
   if (
     recovery.failureKind !== options.failureKind
     || recovery.logsAvailable !== expectedLogsAvailable

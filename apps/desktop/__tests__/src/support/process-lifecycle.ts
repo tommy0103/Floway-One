@@ -52,7 +52,7 @@ const waitForProcessGroupStopped = async (groupId: number): Promise<void> => {
   throw new Error(`Packaged verification left process group ${groupId} running`);
 };
 
-const directChildPids = async (parentPid: number): Promise<number[]> => {
+export const directChildPids = async (parentPid: number): Promise<number[]> => {
   try {
     const { stdout } = await execFileAsync('pgrep', ['-P', String(parentPid)]);
     return stdout.trim().split(/\s+/).filter(Boolean).map(Number);
@@ -154,12 +154,72 @@ export const captureApp = (
 };
 
 export const requestNormalApplicationExit = async (appRoot: string): Promise<void> => {
-  // A standard application quit request reaches Tauri's RunEvent::ExitRequested
-  // without defining #17's tray, window-close, signal, or graceful-quit policy.
+  // A standard application quit request reaches Tauri's RunEvent::ExitRequested,
+  // where the shell gracefully stops its packaged runtime before exiting.
   await execFileAsync('/usr/bin/osascript', [
     '-e',
     `tell application ${JSON.stringify(appRoot)} to quit`,
   ]);
+};
+
+export const forceKillProcess = (pid: number): void => {
+  process.kill(pid, FORCE_KILL_SIGNAL);
+};
+
+export const observeVisibleWindowCount = async (
+  nativeWindowProbe: string,
+  pid: number,
+): Promise<number> => {
+  const { stdout } = await execFileAsync(nativeWindowProbe, [String(pid)], { timeout: 30_000 });
+  const observed = JSON.parse(stdout) as { pid?: unknown; visibleWindowCount?: unknown };
+  if (observed.pid !== pid || typeof observed.visibleWindowCount !== 'number') {
+    throw new Error(`Floway native window probe returned an invalid payload: ${stdout}`);
+  }
+  return observed.visibleWindowCount;
+};
+
+export const waitForWindowVisibility = async (
+  nativeWindowProbe: string,
+  pid: number,
+  visible: boolean,
+  timeoutMs = 10_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const count = await observeVisibleWindowCount(nativeWindowProbe, pid);
+    if (visible ? count >= 1 : count === 0) return;
+    await new Promise(resolveWait => setTimeout(resolveWait, 100));
+  }
+  throw new Error(`Floway window visibility did not reach ${visible ? 'visible' : 'hidden'} for process ${pid}`);
+};
+
+export interface DesktopControlReply {
+  readonly ok?: unknown;
+  readonly status?: unknown;
+}
+
+export const sendDesktopControl = async (
+  executable: string,
+  applicationHome: string,
+  command: string,
+  environment: NodeJS.ProcessEnv = appEnvironmentWithoutPortOverride(),
+): Promise<DesktopControlReply> => {
+  const { stdout, stderr } = await execFileAsync(executable, [
+    ...desktopAppArguments(applicationHome),
+    '--desktop-control',
+    command,
+  ], { env: environment, timeout: 30_000 });
+  const line = stdout.trim().split('\n').filter(Boolean).at(-1) ?? '';
+  let reply: DesktopControlReply;
+  try {
+    reply = JSON.parse(line) as DesktopControlReply;
+  } catch (cause) {
+    throw new Error(`Floway desktop control ${command} returned no reply\n${stdout}\n${stderr}`, { cause });
+  }
+  if (reply.ok !== true) {
+    throw new Error(`Floway desktop control ${command} was rejected\n${stdout}\n${stderr}`);
+  }
+  return reply;
 };
 
 // The personal runtime owns this stable port, and the desktop Dashboard origin

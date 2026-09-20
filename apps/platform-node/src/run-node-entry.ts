@@ -14,6 +14,7 @@ import {
   loadDesktopRuntimeCompatibility,
   type DesktopRuntimeCompatibility,
 } from './desktop-runtime-compatibility.ts';
+import { installDesktopSidecarLifecycle } from './desktop-sidecar-lifecycle.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
@@ -184,6 +185,10 @@ const startNodeListener = async (
 };
 
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
+  // Install the owner-lifetime and graceful-stop channels before any startup
+  // work so a shell death during migrations or listener setup still reaps this
+  // sidecar.
+  installDesktopSidecarLifecycle();
   // Strip bootstrap authority at the first entry boundary. Personal path
   // resolution and storage hardening can launch platform helpers (PowerShell on
   // Windows), so they must only ever inherit an environment with no live token.

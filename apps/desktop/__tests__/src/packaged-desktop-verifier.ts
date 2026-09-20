@@ -24,6 +24,13 @@ import {
   terminateProcessGroup,
   waitForDirectChild,
 } from './support/process-lifecycle.ts';
+import {
+  assertDesktopShellLifecycle,
+  assertForcedTerminationReapsSidecar,
+  captureLoginItem,
+  readLoginItemLabel,
+  restoreLoginItem,
+} from './support/shell-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../src/failure-chain.ts';
 import { machOCpuTypeForArchitecture, type MachOArchitecture } from '../../src/mach-o.ts';
 import {
@@ -93,6 +100,13 @@ if (launchSupported) {
     cleanup.defer('production runtime entry restoration', async () => await writeFile(context.entry, productionEntry));
     cleanup.defer('production bundle contract restoration', async () => await writeFile(context.contract, productionContract));
 
+    // The login item is per-app global state; park any operator registration
+    // so every scenario observes a deterministic unchecked baseline, and
+    // restore it exactly when verification ends.
+    const loginItemLabel = await readLoginItemLabel();
+    const loginItem = await captureLoginItem(loginItemLabel);
+    cleanup.defer('operator login item restoration', async () => await restoreLoginItem(loginItem, loginItemLabel));
+
     const customPort = await reserveNonDefaultLoopbackPort();
     await assertPersonalRuntime(
       context,
@@ -115,6 +129,12 @@ if (launchSupported) {
       resolve(isolatedRoot, 'PersonalData-unexpected-sidecar-exit'),
     );
     console.log('Floway production shell retained unrestricted diagnostics in logs, introspected its applied Tauri window/tray state, exposed a CoreGraphics-visible window, and released the sidecar listener before verifier cleanup');
+
+    await assertDesktopShellLifecycle(nativeWindowProbe, context, isolatedRoot);
+    console.log('Floway production shell kept the Gateway live through window hide, tray restore, repeated-launch delegation, restart, launch-at-login toggles, and graceful quit');
+
+    await assertForcedTerminationReapsSidecar(context, isolatedRoot);
+    console.log('Floway forced shell termination reaped its sidecar through the owner-lifetime channel and relaunched without a port conflict');
 
     for (const phase of PERSONAL_FAILURE_PHASES) {
       const verificationRoot = resolve(isolatedRoot, `PersonalData-fault-${phase}`);
@@ -321,6 +341,6 @@ if (launchSupported) {
 
 console.log(
   launchSupported
-    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, canonical migrations, embedded Node/Keyring/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, secure Dashboard bootstrap/control-plane, native sharp, and assets`
+    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, canonical migrations, embedded Node/Keyring/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, secure Dashboard bootstrap/control-plane, native sharp, assets, and window/tray/singleton/owner-lifetime behavior`
     : `Packaged Floway desktop app ${targetTriple} passed static thin architecture, canonical-migration, locked-dependency, native-module, and Dashboard verification; this host cannot execute that target`,
 );
