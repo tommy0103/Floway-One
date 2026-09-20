@@ -824,6 +824,7 @@ impl DesktopUpdateController {
             .env(DESKTOP_DATA_ROOT_ENV, data_root)
             .env("FLOWAY_PROFILE", "personal")
             .env("NODE_ENV", "production")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -833,6 +834,12 @@ impl DesktopUpdateController {
                     format!("Floway could not start its recovery point child: {source}"),
                 )
             })?;
+        // The sidecar lifecycle channel treats stdin EOF as a forced owner
+        // termination, so the write half stays open in this shell for the
+        // child's whole lifetime — the same contract the process supervisor
+        // keeps for the packaged runtime. Dropping it after the child exits
+        // mirrors the reap-on-shell-death path.
+        let _child_stdin = child.stdin.take();
         let stdout = child.stdout.take().map(|mut pipe| {
             thread::spawn(move || {
                 let mut captured = Vec::new();
