@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { basename, dirname, resolve } from 'node:path';
 
 export const UPDATE_VERIFICATION_VERSION = '0.2.0';

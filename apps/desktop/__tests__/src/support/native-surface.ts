@@ -387,8 +387,7 @@ export const assertUpdateRecoverySurface = async (
     || recovery.renderedSnapshot.byteLength < 1
     || !/^[0-9a-f]{64}$/.test(recovery.renderedSnapshot.sha256)
     || JSON.stringify(recovery.actions) !== JSON.stringify(['restart', 'open-logs', 'download-previous-version'])
-    || update === undefined
-    || update.previousVersionDownload !== true
+    || update?.previousVersionDownload !== true
     || update.recoveryPointAvailable !== true
     || update.version !== options.updateVersion
   ) {

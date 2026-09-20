@@ -1203,7 +1203,11 @@ fn install_staged_update_requested() -> bool {
 // request can be served while the application bundle is being replaced.
 fn run_install_sequence(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if controller.phase() == RuntimePhase::Ready && controller.supervisor.stop_now().is_err() {
+    let runtime_active = matches!(
+        controller.phase(),
+        RuntimePhase::Ready | RuntimePhase::Starting
+    );
+    if runtime_active && controller.supervisor.stop_now().is_err() {
         let error = io::Error::other(
             "Floway could not stop its packaged runtime before installing an update",
         );
@@ -1229,7 +1233,7 @@ fn run_install_sequence(app: &AppHandle) {
             let (_phase, chain, _version) = error.report();
             let chained = io::Error::other(chain.join("\n\ncaused by: "));
             let report = FailureReport::from_error(FailureKind::Unknown, &chained);
-            if controller.phase() == RuntimePhase::Ready {
+            if runtime_active {
                 fail_current_attempt(app, controller.current_generation(), report, false);
             } else if controller.phase() == RuntimePhase::Failed && !controller.restart_available()
             {

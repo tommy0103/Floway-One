@@ -7,7 +7,6 @@ import { createInstalledAppVerificationContext, writeContractedEntry } from './s
 import { compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
 import { assertMigrationFailureSurface, assertPortAndStorageFailureSurfaces } from './support/packaged-faults.ts';
-import { assertPackagedUpdateFlows } from './support/update-flows.ts';
 import {
   assertPersonalRuntime,
   assertUnexpectedSidecarExitSurfacesFailure,
@@ -32,6 +31,7 @@ import {
   readLoginItemLabel,
   restoreLoginItem,
 } from './support/shell-lifecycle.ts';
+import { assertPackagedUpdateFlows } from './support/update-flows.ts';
 import { withFailureSafeCleanup } from '../../src/failure-chain.ts';
 import { machOCpuTypeForArchitecture, type MachOArchitecture } from '../../src/mach-o.ts';
 import {
