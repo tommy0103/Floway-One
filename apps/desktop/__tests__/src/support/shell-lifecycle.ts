@@ -192,18 +192,35 @@ const shellProcessPids = async (executable: string): Promise<number[]> => {
   return stdout.trim().split(/\s+/).filter(Boolean).map(Number);
 };
 
-const waitForShellProcessCount = async (
-  executable: string,
-  expected: number,
-  timeoutMs: number,
-  failure: string,
-): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if ((await shellProcessPids(executable)).length === expected) return;
-    await sleep(50);
+interface LoginItemJobState {
+  readonly lastExitCode: string | null;
+  readonly runs: number;
+  readonly state: string;
+}
+
+const readLoginItemJobState = async (label: string): Promise<LoginItemJobState> => {
+  const { stdout } = await execFileAsync(LAUNCHCTL, ['print', `gui/${currentUid()}/${label}`], { timeout: 10_000 });
+  const state = /^\s*state = (.+)$/m.exec(stdout)?.[1]?.trim();
+  const runs = /^\s*runs = (\d+)$/m.exec(stdout)?.[1];
+  const lastExitCode = /^\s*last exit code = (.+)$/m.exec(stdout)?.[1]?.trim();
+  if (state === undefined || runs === undefined) {
+    throw new Error(`Floway login item launchd state is unreadable: ${stdout}`);
   }
-  throw new Error(failure);
+  return { lastExitCode: lastExitCode ?? null, runs: Number(runs), state };
+};
+
+const waitForLoginItemDelegateRun = async (label: string, timeoutMs: number): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  let observed = 'the job was never loaded';
+  while (Date.now() < deadline) {
+    const job = await readLoginItemJobState(label).catch(() => null);
+    if (job !== null) {
+      observed = `state=${job.state} runs=${job.runs} lastExitCode=${job.lastExitCode ?? 'none'}`;
+      if (job.runs >= 1 && job.state === 'not running' && job.lastExitCode === '0') return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`Floway login item delegate did not complete its launchd run: ${observed}`);
 };
 
 const readOwnerSessionToken = (databasePath: string) => (): string | undefined => {
@@ -340,21 +357,17 @@ export const assertDesktopShellLifecycle = async (
     const autostartEnabled = await reportShellStatus(context, applicationHome);
     assertReadyShellStatus(autostartEnabled, origin, { autostartEnabled: true, windowVisible: true });
     // The registration carries RunAtLoad, so launchd spawns the login item
-    // delegate at once: the delegate must appear, delegate to the live owner,
-    // and exit — never start a second gateway. Both transitions are observed
-    // positively; a delegate that never spawns or never exits fails here.
-    await waitForShellProcessCount(
-      context.executable,
-      2,
-      20_000,
-      'Floway login item delegate never spawned after registration',
-    );
-    await waitForShellProcessCount(
-      context.executable,
-      1,
-      20_000,
-      'Floway login item delegate did not exit after delegating to its owner',
-    );
+    // delegate the moment the job loads. The delegate finds the live owner,
+    // activates it, and exits — a path that returns before any window exists
+    // and therefore completes well inside any process-sampling interval, so
+    // observe launchd's own job accounting instead of racing pgrep. A
+    // completed run with exit code 0 is only reachable through a successful
+    // delegation: an owning launch never exits and every failure path exits 1.
+    await waitForLoginItemDelegateRun(label, 30_000);
+    const shellPidsAfterAutostart = await shellProcessPids(context.executable);
+    if (shellPidsAfterAutostart.length !== 1 || shellPidsAfterAutostart[0] !== shellPid) {
+      throw new Error(`Floway login item delegate left extra shell processes: ${shellPidsAfterAutostart.join(', ')}`);
+    }
     const childrenAfterAutostart = await directChildPids(shellPid);
     if (childrenAfterAutostart.length !== 1 || childrenAfterAutostart[0] !== restartedSidecarPid) {
       throw new Error(`Floway login item delegate changed gateway ownership: ${childrenAfterAutostart.join(', ')}`);
