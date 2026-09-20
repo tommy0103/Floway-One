@@ -89,8 +89,11 @@ export const signUpdateArtifact = async (
 };
 
 // The Tauri updater's macOS installer skips the first tar path component, so
-// the archive carries the .app directory at its root.
+// the archive carries the .app directory at its root. bsdtar must not emit
+// AppleDouble (._*) entries for extended attributes — the updater's extractor
+// cannot unpack them.
 // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs
+// https://github.com/libarchive/libarchive/blob/v3.8.4/tar/util.c#L63-L70
 export const packageApplicationArchive = async (
   applicationRoot: string,
   outputPath: string,
@@ -98,6 +101,7 @@ export const packageApplicationArchive = async (
   await rm(outputPath, { force: true });
   await new Promise<void>((resolveTar, rejectTar) => {
     const child = spawn('tar', ['-czf', outputPath, '-C', dirname(applicationRoot), basename(applicationRoot)], {
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
