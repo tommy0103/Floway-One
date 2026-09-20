@@ -337,19 +337,11 @@ if (launchSupported) {
     });
 
     await assertPortAndStorageFailureSurfaces(nativeWindowProbe, context, isolatedRoot, productionEntry);
-    if (process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE === undefined) {
-      throw new Error('Packaged update verification requires FLOWAY_DESKTOP_NODE_EXECUTABLE');
-    }
     await assertPackagedUpdateFlows(nativeWindowProbe, {
-      context,
-      desktopRoot,
-      installedApp,
-      isolatedRoot,
+      context, desktopRoot, installedApp, isolatedRoot,
       keyringRelativePath: relative(packaged.appRoot, packaged.loadedKeyringNative!),
-      migrationNames: packaged.migrationNames,
-      nodeExecutable: process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE,
-      repositoryRoot,
-      targetTriple,
+      migrationNames: packaged.migrationNames, nodeExecutable: process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE,
+      repositoryRoot, targetTriple,
     });
     console.log('Floway signed staged updates installed behind a device-protected recovery point, and every signature, migration, and post-update health failure preserved the recovery path');
   });

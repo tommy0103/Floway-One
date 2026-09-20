@@ -725,26 +725,31 @@ export const tamperAddInvalidMigration = async (
 
 export const assertPackagedUpdateFlows = async (
   nativeWindowProbe: string,
-  scenarioBase: Omit<UpdateScenarioContext, 'pristineApp' | 'server' | 'signingKey' | 'updatedApp' | 'updateTarget'>,
+  scenarioBase: Omit<UpdateScenarioContext, 'pristineApp' | 'server' | 'signingKey' | 'updatedApp' | 'updateTarget' | 'nodeExecutable'> & { readonly nodeExecutable: string | undefined },
 ): Promise<void> => {
-  const signingDir = resolve(scenarioBase.isolatedRoot, 'update-signing');
-  const signingKey = await generateUpdateSigningKey(scenarioBase.repositoryRoot, signingDir);
+  const { nodeExecutable } = scenarioBase;
+  if (nodeExecutable === undefined) {
+    throw new Error('Packaged update verification requires FLOWAY_DESKTOP_NODE_EXECUTABLE');
+  }
+  const base = { ...scenarioBase, nodeExecutable };
+  const signingDir = resolve(base.isolatedRoot, 'update-signing');
+  const signingKey = await generateUpdateSigningKey(base.repositoryRoot, signingDir);
   const server = await UpdateFixtureServer.start();
-  const pristineApp = resolve(scenarioBase.isolatedRoot, 'Floway-pristine.app');
-  await cloneApplication(scenarioBase.installedApp, pristineApp);
+  const pristineApp = resolve(base.isolatedRoot, 'Floway-pristine.app');
+  await cloneApplication(base.installedApp, pristineApp);
   const updatedApp = await buildUpdatedApplication({
-    desktopRoot: scenarioBase.desktopRoot,
-    nodeExecutable: scenarioBase.nodeExecutable,
-    repositoryRoot: scenarioBase.repositoryRoot,
-    targetTriple: scenarioBase.targetTriple,
+    desktopRoot: base.desktopRoot,
+    nodeExecutable,
+    repositoryRoot: base.repositoryRoot,
+    targetTriple: base.targetTriple,
   });
   const scenario: UpdateScenarioContext = {
-    ...scenarioBase,
+    ...base,
     pristineApp,
     server,
     signingKey,
     updatedApp,
-    updateTarget: `darwin-${scenarioBase.targetTriple.startsWith('aarch64') ? 'aarch64' : 'x86_64'}`,
+    updateTarget: `darwin-${base.targetTriple.startsWith('aarch64') ? 'aarch64' : 'x86_64'}`,
   };
   try {
     await assertSignedUpdateInstallsAndReportsHealthy(scenario);

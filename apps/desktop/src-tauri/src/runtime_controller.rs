@@ -1224,7 +1224,6 @@ fn emit_update_surface_snapshot(controller: &DesktopController) {
             "Floway desktop update surface diagnostic exceeded its byte bound",
         )),
         Err(error) => print_error_chain(error.as_ref()),
-
     }
 }
 
