@@ -3,12 +3,14 @@ mod bundle_contract;
 mod desktop_i18n;
 #[cfg(feature = "desktop")]
 mod desktop_paths;
+mod failure_chain;
 mod navigation;
 #[cfg(feature = "desktop")]
 mod runtime_status;
 #[cfg(feature = "desktop")]
 mod sidecar_log;
 mod update_channel;
+mod update_signature;
 mod update_state;
 
 #[cfg(feature = "desktop")]
@@ -27,6 +29,8 @@ mod sidecar_supervisor;
 mod update_controller;
 
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
+#[cfg(feature = "desktop")]
+pub(crate) const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 
 #[cfg(feature = "desktop")]
 pub(crate) fn error_chain_text(error: &(dyn std::error::Error + 'static)) -> String {
@@ -66,6 +70,7 @@ pub use update_channel::{
     UpdateChannel, UpdaterAuthority, load_update_channel, parse_update_channel,
     parse_updater_endpoints, previous_release_page_url, resolve_updater_authority,
 };
+pub use update_signature::{StagedArtifactSignatureError, verify_staged_artifact};
 pub use update_state::{
     BeginInstallError, DesktopUpdateState, MarkHealthyOutcome, PendingUpdateHealth, StagedUpdate,
     UPDATE_STATE_FILE_NAME, UpdateFailure, UpdateFailurePhase,

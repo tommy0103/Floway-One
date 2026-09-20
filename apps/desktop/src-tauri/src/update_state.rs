@@ -8,13 +8,11 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
+use crate::failure_chain::bounded_failure_chain;
+
 pub const UPDATE_STATE_FILE_NAME: &str = "update-state.json";
 const UPDATE_STATE_SCHEMA_VERSION: u64 = 1;
 
-// These bounds mirror runtime_status::bounded_failure_chain so the update
-// surface and the runtime failure surface show the same clipped chain.
-const FAILURE_CHAIN_MAXIMUM_ENTRIES: usize = 4;
-const FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS: usize = 400;
 const UPDATE_NOTES_MAXIMUM_CHARS: usize = 2000;
 
 fn is_exact_version(value: &str) -> bool {
@@ -23,25 +21,6 @@ fn is_exact_version(value: &str) -> bool {
         && segments
             .iter()
             .all(|segment| !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit()))
-}
-
-fn bounded_chain(chain: &[String]) -> Vec<String> {
-    chain
-        .iter()
-        .take(FAILURE_CHAIN_MAXIMUM_ENTRIES)
-        .map(|entry| {
-            entry
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("at "))
-                .flat_map(|line| line.chars().chain(std::iter::once('\n')))
-                .filter(|character| !character.is_control() || *character == '\n')
-                .take(FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS)
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .filter(|entry| !entry.is_empty())
-        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,7 +332,7 @@ impl DesktopUpdateState {
     // install, or the recovery point: recovery information survives failures.
     pub fn record_failure(&mut self, failure: UpdateFailure) {
         self.failure = Some(UpdateFailure {
-            chain: bounded_chain(&failure.chain),
+            chain: bounded_failure_chain(&failure.chain),
             ..failure
         });
     }

@@ -59,6 +59,7 @@ const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
 const DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RECOVERY_SURFACE ";
+const DESKTOP_UPDATE_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_UPDATE_SURFACE ";
 const DESKTOP_STATUS_EVENT: &str = "floway-desktop-status";
 const MAXIMUM_CAPTURED_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const MAXIMUM_SURFACE_EVENT_BYTES: usize = 2048;
@@ -247,7 +248,14 @@ impl DesktopTray {
                         print_error_chain(error.as_ref());
                     }
                 }
-                TRAY_UPDATE_ID => install_update_from_tray(app),
+                TRAY_UPDATE_ID => {
+                    let controller = app.state::<Arc<DesktopController>>();
+                    if controller.update.staged_version().is_some() {
+                        install_update_from_tray(app);
+                    } else {
+                        open_previous_version_download(app);
+                    }
+                }
                 TRAY_RESTART_ID => {
                     if let Err(error) = restart_gateway(app) {
                         print_error_chain(error.as_ref());
@@ -283,20 +291,24 @@ impl DesktopTray {
         })
     }
 
-    fn set_update(&self, staged_version: Option<&str>) -> Result<(), Box<dyn Error>> {
-        match staged_version {
-            Some(version) => {
-                self.update.set_text(
-                    self.messages
-                        .update_install_version
-                        .replace("{version}", version),
-                )?;
-                self.update.set_enabled(true)?;
-            }
-            None => {
-                self.update.set_text(self.messages.update_install)?;
-                self.update.set_enabled(false)?;
-            }
+    fn set_update(
+        &self,
+        staged_version: Option<&str>,
+        update_failed: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(version) = staged_version {
+            self.update.set_text(
+                self.messages
+                    .update_install_version
+                    .replace("{version}", version),
+            )?;
+            self.update.set_enabled(true)?;
+        } else if update_failed {
+            self.update.set_text(self.messages.update_failed)?;
+            self.update.set_enabled(true)?;
+        } else {
+            self.update.set_text(self.messages.update_install)?;
+            self.update.set_enabled(false)?;
         }
         Ok(())
     }
@@ -394,6 +406,7 @@ struct DesktopController {
     supervisor: Arc<PackageProcessSupervisor>,
     tray: DesktopTray,
     update: Arc<DesktopUpdateController>,
+    update_tray_signature: Mutex<Option<(bool, bool)>>,
 }
 
 impl DesktopController {
@@ -1170,12 +1183,69 @@ fn close_main_window(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn refresh_update_tray(app: &AppHandle) {
-    let controller = app.state::<Arc<DesktopController>>();
-    let staged = controller.update.staged_version();
-    if let Err(error) = controller.tray.set_update(staged.as_deref()) {
-        print_error_chain(error.as_ref());
+fn emit_update_surface_snapshot(controller: &DesktopController) {
+    let snapshot = (|| -> Result<serde_json::Value, Box<dyn Error>> {
+        let update = controller.update.status_snapshot();
+        Ok(serde_json::json!({
+            "tray": controller.tray.diagnostic_snapshot()?,
+            "update": {
+                "failurePhase": update
+                    .get("failure")
+                    .and_then(|failure| failure.get("phase"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "previousVersionDownload": update
+                    .get("previousDownloadUrl")
+                    .is_some_and(|url| url.as_str().is_some()),
+                "recoveryPointAvailable": update
+                    .get("recoveryPointAvailable")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                "stagedVersion": update.get("stagedVersion").cloned(),
+                "version": update
+                    .get("pendingVersion")
+                    .cloned()
+                    .filter(|version| !version.is_null())
+                    .or_else(|| {
+                        update
+                            .get("failure")
+                            .and_then(|failure| failure.get("version"))
+                            .cloned()
+                    }),
+            },
+        }))
+    })();
+    match snapshot.and_then(|value| serde_json::to_string(&value).map_err(Into::into)) {
+        Ok(encoded) if encoded.len() <= MAXIMUM_SURFACE_EVENT_BYTES => {
+            eprintln!("{DESKTOP_UPDATE_SURFACE_EVENT_PREFIX}{encoded}");
+        }
+        Ok(_) => print_error_chain(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway desktop update surface diagnostic exceeded its byte bound",
+        )),
+        Err(error) => print_error_chain(error.as_ref()),
+
     }
+}
+
+fn refresh_update_tray(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    let (staged, update_failed) = controller.update.tray_state();
+    if let Err(error) = controller.tray.set_update(staged.as_deref(), update_failed) {
+        print_error_chain(error.as_ref());
+        return;
+    }
+    let signature = (staged.is_some(), update_failed);
+    let mut last = controller
+        .update_tray_signature
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *last == Some(signature) {
+        return;
+    }
+    *last = Some(signature);
+    drop(last);
+    emit_update_surface_snapshot(&controller);
 }
 
 fn open_previous_version_download(app: &AppHandle) {
@@ -1894,6 +1964,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 supervisor: PackageProcessSupervisor::new(),
                 tray,
                 update,
+                update_tray_signature: Mutex::new(None),
             });
             app.manage(controller);
             if let Some(listener) = listener {

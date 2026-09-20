@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+#[path = "../../src/failure_chain.rs"]
+mod failure_chain;
 #[path = "../../src/update_state.rs"]
 mod update_state;
 

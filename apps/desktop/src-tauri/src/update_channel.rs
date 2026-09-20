@@ -15,8 +15,11 @@ pub const UPDATE_RECOVERY_POINT_FILE_NAME: &str = "recovery-point.json";
 
 // Floway publishes one signed updater manifest per GitHub Release; the stable
 // channel tracks the latest full release while the preview channel tracks a
-// moving pre-release tag and requires explicit operator opt-in.
+// moving pre-release tag and requires explicit operator opt-in. The URL shapes
+// follow GitHub's documented release linking scheme (`/releases/latest/download/<asset>`
+// and `/releases/download/<tag>/<asset>`).
 // docs/floway-one-spec.zh-CN.md §14.3 (应用升级)
+// https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases
 pub const STABLE_UPDATE_ENDPOINT: &str =
     "https://github.com/tommy0103/Floway-One/releases/latest/download/floway-update.json";
 pub const PREVIEW_UPDATE_ENDPOINT: &str =
@@ -24,7 +27,10 @@ pub const PREVIEW_UPDATE_ENDPOINT: &str =
 
 // The recovery surface sends the operator to the release page of the version
 // that preceded a failed update; MVP does not promise automatic binary
-// rollback. docs/floway-one-spec.zh-CN.md §14.3 (应用升级)
+// rollback. The `/releases/tag/<tag>` shape follows the same GitHub release
+// linking scheme.
+// docs/floway-one-spec.zh-CN.md §14.3 (应用升级)
+// https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases
 const RELEASE_PAGE_URL_PREFIX: &str = "https://github.com/tommy0103/Floway-One/releases/tag/v";
 
 pub const UPDATE_ENDPOINTS_ENV: &str = "FLOWAY_DESKTOP_UPDATE_ENDPOINTS";

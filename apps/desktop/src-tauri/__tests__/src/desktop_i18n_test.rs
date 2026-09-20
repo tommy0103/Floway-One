@@ -38,6 +38,7 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
         english.tooltip_needs_attention,
         english.tooltip_running,
         english.tooltip_starting,
+        english.update_failed,
         english.update_install,
         english.update_install_version,
         simplified_chinese.copy_gateway_address,
@@ -52,6 +53,7 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
         simplified_chinese.tooltip_needs_attention,
         simplified_chinese.tooltip_running,
         simplified_chinese.tooltip_starting,
+        simplified_chinese.update_failed,
         simplified_chinese.update_install,
         simplified_chinese.update_install_version,
     ] {

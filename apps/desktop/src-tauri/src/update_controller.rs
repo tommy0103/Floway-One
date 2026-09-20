@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::NODE_SIDECAR_NAME;
 use crate::bundle_contract::{RuntimeBundle, resolve_runtime_bundle};
 use crate::print_error_chain;
 use crate::runtime_status::FailureReport;
@@ -23,14 +22,15 @@ use crate::update_channel::{
     UPDATE_RECOVERY_POINT_FILE_NAME, UpdateChannel, UpdaterAuthority, load_update_channel,
     previous_release_page_url, resolve_updater_authority,
 };
+use crate::update_signature::verify_staged_artifact;
 use crate::update_state::{
     DesktopUpdateState, MarkHealthyOutcome, StagedUpdate, UPDATE_STATE_FILE_NAME, UpdateFailure,
     UpdateFailurePhase,
 };
+use crate::{DESKTOP_RUNTIME_CONTRACT_ENV, NODE_SIDECAR_NAME};
 
 pub const DESKTOP_UPDATE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_UPDATE ";
 pub const INSTALL_STAGED_UPDATE_ARGUMENT: &str = "--install-staged-update";
-const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 // These strings mirror UPDATE_RECOVERY_POINT_EVENT_PREFIX,
 // CREATE_UPDATE_RECOVERY_POINT_ARGUMENT, and DESKTOP_DATA_ROOT_ENV in
 // apps/platform-node/src/update-recovery-point.ts and run-node-entry.ts.
@@ -125,7 +125,7 @@ pub struct DesktopUpdateController {
     data_root: Option<PathBuf>,
     installing: Mutex<bool>,
     paths: Option<UpdatePaths>,
-    state: RwLock<DesktopUpdateState>,
+    state: Mutex<DesktopUpdateState>,
 }
 
 fn packaged_app_root() -> Option<PathBuf> {
@@ -187,28 +187,33 @@ impl DesktopUpdateController {
             data_root,
             installing: Mutex::new(false),
             paths,
-            state: RwLock::new(state),
+            state: Mutex::new(state),
         })
     }
 
     fn state(&self) -> DesktopUpdateState {
         self.state
-            .read()
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
-    fn save_state(&self, state: &DesktopUpdateState) -> Result<(), io::Error> {
-        if let Some(paths) = &self.paths {
-            state
-                .save(&paths.state_file)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-        }
-        *self
+    // Every read-modify-write-persist cycle runs under this one mutex, so
+    // concurrent savers can neither interleave records nor race the shared
+    // pid-named temporary file behind the state's atomic-replace contract.
+    fn mutate_state<T>(
+        &self,
+        mutate: impl FnOnce(&mut DesktopUpdateState) -> T,
+    ) -> Result<T, io::Error> {
+        let mut state = self
             .state
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state.clone();
-        Ok(())
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = mutate(&mut state);
+        if let Some(paths) = &self.paths {
+            state.save(&paths.state_file).map_err(io::Error::other)?;
+        }
+        Ok(result)
     }
 
     fn channel(&self) -> UpdateChannel {
@@ -228,14 +233,14 @@ impl DesktopUpdateController {
         chain: Vec<String>,
         version: Option<String>,
     ) {
-        let mut state = self.state();
-        state.record_failure(UpdateFailure {
-            at: unix_time(),
-            chain: chain.clone(),
-            phase,
-            version: version.clone(),
-        });
-        if let Err(error) = self.save_state(&state) {
+        if let Err(error) = self.mutate_state(|state| {
+            state.record_failure(UpdateFailure {
+                at: unix_time(),
+                chain: chain.clone(),
+                phase,
+                version: version.clone(),
+            });
+        }) {
             print_error_chain(&error);
         }
         emit_update_diagnostic(&json!({
@@ -278,6 +283,14 @@ impl DesktopUpdateController {
 
     pub fn staged_version(&self) -> Option<String> {
         self.state().staged.map(|staged| staged.version)
+    }
+
+    pub fn tray_state(&self) -> (Option<String>, bool) {
+        let state = self.state();
+        (
+            state.staged.map(|staged| staged.version),
+            state.failure.is_some(),
+        )
     }
 
     fn updater_authority(
@@ -327,11 +340,12 @@ impl DesktopUpdateController {
         app: &AppHandle,
         on_state_changed: impl Fn() + Send + 'static,
     ) {
-        let mut state = self.state();
-        let outcome = state.mark_healthy(env!("CARGO_PKG_VERSION"));
-        if let Err(error) = self.save_state(&state) {
-            print_error_chain(&error);
-        }
+        let outcome = self
+            .mutate_state(|state| state.mark_healthy(env!("CARGO_PKG_VERSION")))
+            .unwrap_or_else(|error| {
+                print_error_chain(&error);
+                MarkHealthyOutcome::NoPendingUpdate
+            });
         match outcome {
             MarkHealthyOutcome::MarkedHealthy => {
                 self.remove_staged_artifacts(None);
@@ -530,16 +544,15 @@ impl DesktopUpdateController {
             )
         })?;
         self.remove_staged_artifacts(Some(&artifact_file));
-        let mut state = self.state();
-        state.record_staged(staged);
-        self.save_state(&state).map_err(|source| {
-            UpdatePhaseError::new(
-                UpdateFailurePhase::Download,
-                "Floway could not record its staged application update",
-                source,
-                Some(version.clone()),
-            )
-        })?;
+        self.mutate_state(|state| state.record_staged(staged))
+            .map_err(|source| {
+                UpdatePhaseError::new(
+                    UpdateFailurePhase::Download,
+                    "Floway could not record its staged application update",
+                    source,
+                    Some(version.clone()),
+                )
+            })?;
         emit_update_diagnostic(&json!({
             "phase": "staged",
             "version": version,
@@ -599,99 +612,6 @@ impl DesktopUpdateController {
             "phase": "installing",
             "version": version,
         }));
-        let recovery_point = self.create_recovery_point(bundle).map_err(|source| {
-            UpdatePhaseError::new(
-                UpdateFailurePhase::RecoveryPoint,
-                "Floway could not create its pre-update database recovery point",
-                source,
-                Some(version.clone()),
-            )
-        })?;
-        emit_update_diagnostic(&json!({
-            "bytes": recovery_point.bytes,
-            "path": recovery_point.path,
-            "phase": "recovery-point",
-            "sha256": recovery_point.sha256,
-        }));
-        let update = tauri::async_runtime::block_on(self.verify_staged_update(app, staged))?;
-        let (pending, consumed) = {
-            let mut state = self.state();
-            let (pending, consumed) = state
-                .begin_install(env!("CARGO_PKG_VERSION"), unix_time())
-                .map_err(|source| {
-                    UpdatePhaseError::new(
-                        UpdateFailurePhase::Install,
-                        "Floway lost its staged update before installation",
-                        source,
-                        Some(version.clone()),
-                    )
-                })?;
-            self.save_state(&state).map_err(|source| {
-                UpdatePhaseError::new(
-                    UpdateFailurePhase::Install,
-                    "Floway could not record its pending application update",
-                    source,
-                    Some(version.clone()),
-                )
-            })?;
-            (pending, consumed)
-        };
-        let artifact = self
-            .paths
-            .as_ref()
-            .map(|paths| paths.staged_artifact(&consumed))
-            .ok_or_else(|| {
-                UpdatePhaseError::new(
-                    UpdateFailurePhase::Install,
-                    "Floway could not read its staged application update",
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "Floway has no update directory for its staged artifact",
-                    ),
-                    Some(version.clone()),
-                )
-            })?;
-        let bytes = fs::read(artifact).map_err(|source| {
-            UpdatePhaseError::new(
-                UpdateFailurePhase::Install,
-                "Floway could not read its staged application update",
-                source,
-                Some(version.clone()),
-            )
-        })?;
-        if let Err(source) = update.install(&bytes) {
-            // If the bundle survived the failed swap, restore the staged state
-            // so a later attempt can retry; otherwise keep the pending record
-            // as the operator's recovery evidence and stop here.
-            if self.app_root.as_ref().is_some_and(|root| root.exists()) {
-                let mut state = self.state();
-                state.pending = None;
-                state.staged = Some(consumed);
-                if let Err(error) = self.save_state(&state) {
-                    print_error_chain(&error);
-                }
-            }
-            return Err(UpdatePhaseError::new(
-                UpdateFailurePhase::Install,
-                "Floway could not install its staged application update",
-                source,
-                Some(version),
-            ));
-        }
-        emit_update_diagnostic(&json!({
-            "phase": "installed",
-            "previousVersion": pending.previous_version,
-            "version": pending.version,
-        }));
-        Ok(())
-    }
-
-    async fn verify_staged_update(
-        &self,
-        app: &AppHandle,
-        staged: &StagedUpdate,
-    ) -> Result<tauri_plugin_updater::Update, UpdatePhaseError> {
-        let version = staged.version.clone();
         let channel = self.channel();
         let authority = self
             .updater_authority(app, channel)
@@ -714,6 +634,111 @@ impl DesktopUpdateController {
                     Some(version.clone()),
                 )
             })?;
+        let artifact = self
+            .paths
+            .as_ref()
+            .map(|paths| paths.staged_artifact(staged))
+            .ok_or_else(|| {
+                UpdatePhaseError::new(
+                    UpdateFailurePhase::Install,
+                    "Floway could not read its staged application update",
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Floway has no update directory for its staged artifact",
+                    ),
+                    Some(version.clone()),
+                )
+            })?;
+        let bytes = fs::read(artifact).map_err(|source| {
+            UpdatePhaseError::new(
+                UpdateFailurePhase::Install,
+                "Floway could not read its staged application update",
+                source,
+                Some(version.clone()),
+            )
+        })?;
+        // The Tauri updater authenticates artifact bytes inside
+        // Update::download but Update::install performs no signature check, so
+        // the staged bytes read back from the application data directory are
+        // re-authenticated against the manifest signature before the swap.
+        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L649-L715
+        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L717-L720
+        verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey).map_err(|source| {
+            UpdatePhaseError::new(
+                UpdateFailurePhase::Signature,
+                "Floway staged application update artifact failed re-authentication",
+                source,
+                Some(version.clone()),
+            )
+        })?;
+        let recovery_point = self.create_recovery_point(bundle).map_err(|source| {
+            UpdatePhaseError::new(
+                UpdateFailurePhase::RecoveryPoint,
+                "Floway could not create its pre-update database recovery point",
+                source,
+                Some(version.clone()),
+            )
+        })?;
+        emit_update_diagnostic(&json!({
+            "bytes": recovery_point.bytes,
+            "path": recovery_point.path,
+            "phase": "recovery-point",
+            "sha256": recovery_point.sha256,
+        }));
+        let update =
+            tauri::async_runtime::block_on(self.verify_staged_update(app, staged, &authority))?;
+        let (pending, consumed) = self
+            .mutate_state(|state| state.begin_install(env!("CARGO_PKG_VERSION"), unix_time()))
+            .map_err(|source| {
+                UpdatePhaseError::new(
+                    UpdateFailurePhase::Install,
+                    "Floway could not record its pending application update",
+                    source,
+                    Some(version.clone()),
+                )
+            })?
+            .map_err(|source| {
+                UpdatePhaseError::new(
+                    UpdateFailurePhase::Install,
+                    "Floway lost its staged update before installation",
+                    source,
+                    Some(version.clone()),
+                )
+            })?;
+        if let Err(source) = update.install(&bytes) {
+            // If the bundle survived the failed swap, restore the staged state
+            // so a later attempt can retry; otherwise keep the pending record
+            // as the operator's recovery evidence and stop here.
+            if self.app_root.as_ref().is_some_and(|root| root.exists())
+                && let Err(error) = self.mutate_state(|state| {
+                    state.pending = None;
+                    state.staged = Some(consumed);
+                })
+            {
+                print_error_chain(&error);
+            }
+            return Err(UpdatePhaseError::new(
+                UpdateFailurePhase::Install,
+                "Floway could not install its staged application update",
+                source,
+                Some(version),
+            ));
+        }
+        emit_update_diagnostic(&json!({
+            "phase": "installed",
+            "previousVersion": pending.previous_version,
+            "version": pending.version,
+        }));
+        Ok(())
+    }
+
+    async fn verify_staged_update(
+        &self,
+        app: &AppHandle,
+        staged: &StagedUpdate,
+        authority: &UpdaterAuthority,
+    ) -> Result<tauri_plugin_updater::Update, UpdatePhaseError> {
+        let version = staged.version.clone();
         let updater = app
             .updater_builder()
             .endpoints(authority.endpoints.clone())
@@ -725,7 +750,7 @@ impl DesktopUpdateController {
                     Some(version.clone()),
                 )
             })?
-            .pubkey(authority.pubkey)
+            .pubkey(authority.pubkey.clone())
             .timeout(UPDATE_MANIFEST_TIMEOUT)
             .build()
             .map_err(|source| {

@@ -9,6 +9,7 @@ use serde_json::Value;
 use url::Url;
 
 use crate::bundle_contract::RuntimeCompatibility;
+use crate::failure_chain::bounded_failure_chain;
 
 pub const DESKTOP_FAILURE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_FAILURE ";
 const MAXIMUM_FAILURE_EVENT_BYTES: usize = 256 * 1024;
@@ -427,30 +428,6 @@ impl FailureReport {
         }
         Self { chain, kind }
     }
-}
-
-const FAILURE_CHAIN_MAXIMUM_ENTRIES: usize = 4;
-const FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS: usize = 400;
-
-fn bounded_failure_chain(chain: &[String]) -> Vec<String> {
-    chain
-        .iter()
-        .take(FAILURE_CHAIN_MAXIMUM_ENTRIES)
-        .map(|entry| {
-            // A cause's message is what the surface can show; its stack frames
-            // belong to the log, not to the operator's recovery view.
-            entry
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("at "))
-                .flat_map(|line| line.chars().chain(std::iter::once('\n')))
-                .filter(|character| !character.is_control() || *character == '\n')
-                .take(FAILURE_CHAIN_MAXIMUM_ENTRY_CHARS)
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .filter(|entry| !entry.is_empty())
-        .collect()
 }
 
 pub fn parse_sidecar_failure(line: &str) -> Option<FailureReport> {
