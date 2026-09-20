@@ -21,6 +21,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
 use url::Url;
 
+use crate::DESKTOP_RUNTIME_CONTRACT_ENV;
 use crate::NODE_SIDECAR_NAME;
 use crate::bundle_contract::{
     BundleResourceError, BundleResourceKind, RuntimeBundle, resolve_runtime_bundle,
@@ -55,7 +56,6 @@ use crate::update_controller::{
     DesktopUpdateController, INSTALL_STAGED_UPDATE_ARGUMENT, resolve_install_bundle,
 };
 
-const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
 const DESKTOP_RECOVERY_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_RECOVERY_SURFACE ";

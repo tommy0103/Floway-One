@@ -661,8 +661,8 @@ impl DesktopUpdateController {
         // Update::download but Update::install performs no signature check, so
         // the staged bytes read back from the application data directory are
         // re-authenticated against the manifest signature before the swap.
-        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L649-L715
-        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L717-L720
+        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L680
+        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L757
         verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey).map_err(|source| {
             UpdatePhaseError::new(
                 UpdateFailurePhase::Signature,

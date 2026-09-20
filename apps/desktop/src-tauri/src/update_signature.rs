@@ -41,8 +41,8 @@ fn base64_to_string(value: &str, label: &str) -> Result<String, StagedArtifactSi
 // Update::install performs no signature check, so staged bytes read back from
 // the application data directory must be re-authenticated the same way before
 // the bundle swap.
-// https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L649-L715
-// https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L717-L720
+// https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L680
+// https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/updater.rs#L757
 pub fn verify_staged_artifact(
     bytes: &[u8],
     release_signature: &str,
