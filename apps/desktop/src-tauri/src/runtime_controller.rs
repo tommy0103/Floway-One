@@ -34,7 +34,6 @@ use crate::navigation::{
     is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
     sanitized_page_load_diagnostic,
 };
-use crate::print_error_chain;
 use crate::rendered_snapshot::capture_rendered_snapshot;
 use crate::runtime_status::{
     DesktopRuntimeStatus, DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate,
@@ -55,6 +54,7 @@ use crate::sidecar_supervisor::{
 use crate::update_controller::{
     DesktopUpdateController, INSTALL_STAGED_UPDATE_ARGUMENT, resolve_install_bundle,
 };
+use crate::{error_chain_text, print_error_chain};
 
 const DESKTOP_PAGE_LOAD_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_PAGE_LOAD ";
 const DESKTOP_SURFACE_EVENT_PREFIX: &str = "FLOWAY_DESKTOP_SURFACE ";
