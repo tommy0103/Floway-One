@@ -31,6 +31,7 @@ import {
   readLoginItemLabel,
   restoreLoginItem,
 } from './support/shell-lifecycle.ts';
+import { assertPackagedUpdateFlows } from './support/update-flows.ts';
 import { withFailureSafeCleanup } from '../../src/failure-chain.ts';
 import { machOCpuTypeForArchitecture, type MachOArchitecture } from '../../src/mach-o.ts';
 import {
@@ -336,6 +337,13 @@ if (launchSupported) {
     });
 
     await assertPortAndStorageFailureSurfaces(nativeWindowProbe, context, isolatedRoot, productionEntry);
+    await assertPackagedUpdateFlows(nativeWindowProbe, {
+      context, desktopRoot, installedApp, isolatedRoot,
+      keyringRelativePath: relative(packaged.appRoot, packaged.loadedKeyringNative!),
+      migrationNames: packaged.migrationNames, nodeExecutable: process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE,
+      repositoryRoot, targetTriple,
+    });
+    console.log('Floway signed staged updates installed behind a device-protected recovery point, and every signature, migration, and post-update health failure preserved the recovery path');
   });
 }
 

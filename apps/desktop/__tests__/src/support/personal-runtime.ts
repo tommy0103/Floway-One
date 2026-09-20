@@ -131,6 +131,40 @@ ${afterStartup}
 `;
 };
 
+// The update scenarios route one credential identity through both the stored
+// secret codec and the update recovery point, so the shell's recovery-point
+// child encrypts with the same device master key the runtime uses.
+export const personalUpdateEntrySource = (
+  dataRoot: string,
+  credentialIdentity: CredentialIdentity,
+): string => `
+import { createOperatingSystemCredential } from './src/device-master-key.js';
+import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
+import { runNodeEntry } from './src/run-node-entry.js';
+import { reportDesktopStartupFailure } from './src/startup-failure.js';
+import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
+import { createUpdateRecoveryPoint } from './src/update-recovery-point.js';
+
+const credential = await createOperatingSystemCredential(
+  ${JSON.stringify(credentialIdentity)},
+);
+try {
+  await runNodeEntry({
+    resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
+      dataDir: ${JSON.stringify(dataRoot)},
+      stableUserHome: ${JSON.stringify(dataRoot)},
+    }),
+    createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) =>
+      await createNodeStoredSecretCodec(profile, db, creationLock, credential, options),
+    createUpdateRecoveryPoint: async options =>
+      await createUpdateRecoveryPoint({ ...options, deviceMasterKeyCredential: credential }),
+  });
+} catch (failure) {
+  reportDesktopStartupFailure(failure, 'native-dependency');
+  throw failure;
+}
+`;
+
 const forcePersonalFailure = (expected: PersonalFailurePhase | undefined, actual: PersonalFailurePhase): void => {
   if (expected === actual) throw new Error(`forced personal runtime ${actual} phase failure`);
 };

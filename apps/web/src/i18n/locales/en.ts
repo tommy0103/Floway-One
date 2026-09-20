@@ -62,6 +62,13 @@ const en = {
         startingBadge: 'Starting',
         startingDescription: 'Checking the packaged runtime, local storage, database, and Dashboard before opening the control plane.',
         startingTitle: 'Starting Floway',
+        update: {
+          attemptedVersion: 'Update version: {{version}}',
+          description: 'The previous version and its data remain recoverable.',
+          downloadPrevious: 'Download Floway {{version}}',
+          recoveryPoint: 'The pre-update database recovery point is preserved on this device.',
+          title: 'The application update did not finish',
+        },
       },
     },
     auth: {

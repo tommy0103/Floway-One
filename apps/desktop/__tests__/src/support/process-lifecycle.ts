@@ -29,24 +29,46 @@ export const processIsRunning = (pid: number): boolean => {
   }
 };
 
+// A stopped observed process reports ESRCH; a pid recycled by another user's
+// process reports EPERM, and either way nothing this verification owns is
+// left to clean up. processIsRunning stays the strict existence probe for
+// assertions that need to know a process is truly alive.
+const ownedProcessStopped = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH' || code === 'EPERM') return true;
+    throw error;
+  }
+};
+
 export const waitForProcessStopped = async (pid: number): Promise<void> => {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (!processIsRunning(pid)) return;
+    if (ownedProcessStopped(pid)) return;
     await new Promise(resolveWait => setTimeout(resolveWait, 25));
   }
   throw new Error(`Packaged verification left process ${pid} running`);
 };
 
+const groupHasOwnedRunningMembers = async (groupId: number): Promise<boolean> => {
+  let pids: number[];
+  try {
+    const { stdout } = await execFileAsync('pgrep', ['-g', String(groupId)]);
+    pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException & { code?: number }).code === 1) return false;
+    throw error;
+  }
+  return pids.some(pid => !ownedProcessStopped(pid));
+};
+
 const waitForProcessGroupStopped = async (groupId: number): Promise<void> => {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    try {
-      process.kill(-groupId, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
-      throw error;
-    }
+    if (!await groupHasOwnedRunningMembers(groupId)) return;
     await new Promise(resolveWait => setTimeout(resolveWait, 25));
   }
   throw new Error(`Packaged verification left process group ${groupId} running`);
@@ -255,7 +277,7 @@ export const appEnvironmentWithoutPortOverride = (
   return environment;
 };
 
-const desktopAppArguments = (
+export const desktopAppArguments = (
   applicationHome: string,
   locale: 'en' | 'zh-Hans' = 'en',
 ): string[] => [

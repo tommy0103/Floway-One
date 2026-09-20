@@ -60,6 +60,13 @@ const zhHansCN = {
         startingBadge: '正在启动',
         startingDescription: '正在检查打包的运行时、本机存储、数据库和 Dashboard，然后再打开控制面。',
         startingTitle: '正在启动 Floway',
+        update: {
+          attemptedVersion: '更新版本：{{version}}',
+          description: '上一版本及其数据仍可恢复。',
+          downloadPrevious: '下载 Floway {{version}}',
+          recoveryPoint: '升级前创建的数据库恢复点已保留在本设备上。',
+          title: '应用更新未完成',
+        },
       },
     },
     auth: {

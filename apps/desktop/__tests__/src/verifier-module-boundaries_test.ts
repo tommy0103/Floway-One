@@ -3,14 +3,16 @@ import { resolve } from 'node:path';
 
 import { expect, test } from 'vitest';
 
-import { labels, recoveryCopy } from './support/native-surface.ts';
+import { labels, recoveryCopy, updateRecoveryCopy } from './support/native-surface.ts';
 
 const desktopRoot = resolve(import.meta.dirname, '../..');
 
 test('packaged verifier orchestrates cohesive test-support modules', async () => {
   const source = await readFile(resolve(desktopRoot, '__tests__/src/packaged-desktop-verifier.ts'), 'utf8');
-  expect(source.split('\n').length).toBeLessThan(350);
-  for (const module of ['installed-app', 'native-surface', 'package-contract', 'packaged-faults', 'personal-runtime', 'process-lifecycle', 'shell-lifecycle']) {
+  // Two scenario families (shell lifecycle and signed updates) orchestrate
+  // through the same verifier, so the budget grew with the second family.
+  expect(source.split('\n').length).toBeLessThan(360);
+  for (const module of ['installed-app', 'native-surface', 'package-contract', 'packaged-faults', 'personal-runtime', 'process-lifecycle', 'shell-lifecycle', 'update-flows']) {
     expect(source).toContain(`./support/${module}.ts`);
   }
   for (const lowLevelBoundary of ['node:sqlite', 'node:net', 'ChildProcessByStdio', 'parseDependencyAssociations']) {
@@ -113,6 +115,9 @@ test('recovery surface expectations stay verbatim in the locale resources', asyn
   };
   for (const [locale, resource] of Object.entries(localeResources)) {
     for (const copy of leafStrings(recoveryCopy[locale as keyof typeof recoveryCopy])) {
+      expect(resource).toContain(copy);
+    }
+    for (const copy of leafStrings(updateRecoveryCopy[locale as keyof typeof updateRecoveryCopy])) {
       expect(resource).toContain(copy);
     }
     for (const label of leafStrings(labels[locale as keyof typeof labels])) {

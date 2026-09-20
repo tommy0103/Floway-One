@@ -35,6 +35,10 @@ import { startNodeRuntime } from './start-runtime.ts';
 import { startupFailure } from './startup-failure.ts';
 import { createNodeStoredSecretCodec } from './stored-secrets.ts';
 import {
+  createUpdateRecoveryPoint,
+  UPDATE_RECOVERY_POINT_EVENT_PREFIX,
+} from './update-recovery-point.ts';
+import {
   LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
   app,
   assertRuntimeProfileData,
@@ -94,7 +98,9 @@ export interface NodeEntryOverrides {
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
+  readonly createUpdateRecoveryPoint?: typeof createUpdateRecoveryPoint;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
+  readonly installPersonalLogging?: typeof installPersonalLogging;
   readonly loadDesktopRuntimeCompatibility?: typeof loadDesktopRuntimeCompatibility;
   readonly initPersonalDashboardBootstrap?: typeof initPersonalDashboardBootstrap;
   readonly loadPersonalRuntime?: typeof loadPersonalRuntime;
@@ -104,7 +110,7 @@ export interface NodeEntryOverrides {
   readonly takePersonalDashboardBootstrapToken?: typeof takePersonalDashboardBootstrapToken;
 }
 
-const prepareNodePlatform = async (
+export const prepareNodePlatform = async (
   bootstrapped: BootstrappedNodePlatform,
   profile: RuntimeProfileMode,
   overrides: NodeEntryOverrides,
@@ -184,6 +190,21 @@ const startNodeListener = async (
   }
 };
 
+export const CREATE_UPDATE_RECOVERY_POINT_ARGUMENT = '--create-update-recovery-point';
+
+const splitNodeEntryArguments = (
+  args: readonly string[],
+): { readonly profileArguments: readonly string[]; readonly updateRecoveryPoint: boolean } => {
+  const occurrences = args.filter(argument => argument === CREATE_UPDATE_RECOVERY_POINT_ARGUMENT).length;
+  if (occurrences > 1) {
+    throw new Error(`Usage: Floway [--profile=server|personal] [${CREATE_UPDATE_RECOVERY_POINT_ARGUMENT}]`);
+  }
+  return {
+    profileArguments: args.filter(argument => argument !== CREATE_UPDATE_RECOVERY_POINT_ARGUMENT),
+    updateRecoveryPoint: occurrences === 1,
+  };
+};
+
 export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<NodeEntryInfo> => {
   // Install the owner-lifetime and graceful-stop channels before any startup
   // work so a shell death during migrations or listener setup still reaps this
@@ -196,9 +217,10 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
     overrides.takePersonalDashboardBootstrapToken ?? takePersonalDashboardBootstrapToken
   )();
   const args = overrides.args ?? process.argv.slice(2);
-  const profile = args.length === 0
+  const { profileArguments, updateRecoveryPoint } = splitNodeEntryArguments(args);
+  const profile = profileArguments.length === 0
     ? resolveNodeRuntimeProfile(process.env.FLOWAY_PROFILE)
-    : selectNodeRuntimeProfile(args);
+    : selectNodeRuntimeProfile(profileArguments);
   const resolvePersonalPaths = overrides.resolvePersonalRuntimePaths ?? resolvePersonalRuntimePaths;
   const personal = profile === 'personal'
     ? (() => {
@@ -212,7 +234,38 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       })()
     : null;
   if (personal !== null) {
-    installPersonalLogging(personal.paths.logsDir, { permissions: personal.storage });
+    (overrides.installPersonalLogging ?? installPersonalLogging)(
+      personal.paths.logsDir,
+      { permissions: personal.storage },
+    );
+  }
+  if (updateRecoveryPoint) {
+    // The desktop shell runs this mode in a separate short-lived child after
+    // its packaged runtime has stopped: it opens the database, encrypts the
+    // full-backup payload with the device master key, and exits without a
+    // listener, Dashboard bootstrap, or runtime-state writes.
+    if (personal === null) {
+      throw startupFailure(
+        'compatibility',
+        'Floway update recovery points require the personal runtime profile',
+        new Error(`received ${CREATE_UPDATE_RECOVERY_POINT_ARGUMENT} without --profile=personal`),
+      );
+    }
+    const result = await (overrides.createUpdateRecoveryPoint ?? createUpdateRecoveryPoint)({
+      overrides,
+      paths: personal.paths,
+      storage: personal.storage,
+    });
+    process.stdout.write(`${UPDATE_RECOVERY_POINT_EVENT_PREFIX}${JSON.stringify({
+      bytes: result.bytes,
+      path: result.path,
+      sha256: result.sha256,
+    })}\n`);
+    // The owner-lifetime channel resumed stdin to watch for a dead owner, and a
+    // flowing stdin pins the event loop open. This child is one-shot by
+    // contract, so release the loop once its work is flushed.
+    process.stdin.pause();
+    return { port: 0 };
   }
   const desktopCompatibility = profile === 'personal'
     ? (() => {

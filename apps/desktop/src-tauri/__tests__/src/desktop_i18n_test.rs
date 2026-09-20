@@ -38,6 +38,9 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
         english.tooltip_needs_attention,
         english.tooltip_running,
         english.tooltip_starting,
+        english.update_failed,
+        english.update_install,
+        english.update_install_version,
         simplified_chinese.copy_gateway_address,
         simplified_chinese.launch_at_login,
         simplified_chinese.open_floway,
@@ -50,9 +53,18 @@ fn english_and_simplified_chinese_define_the_complete_tray_vocabulary() {
         simplified_chinese.tooltip_needs_attention,
         simplified_chinese.tooltip_running,
         simplified_chinese.tooltip_starting,
+        simplified_chinese.update_failed,
+        simplified_chinese.update_install,
+        simplified_chinese.update_install_version,
     ] {
         assert!(!message.trim().is_empty());
     }
+    assert!(english.update_install_version.contains("{version}"));
+    assert!(
+        simplified_chinese
+            .update_install_version
+            .contains("{version}")
+    );
     assert_eq!(simplified_chinese.copy_gateway_address, "复制 Gateway 地址");
     assert_eq!(simplified_chinese.launch_at_login, "开机启动");
     assert_eq!(simplified_chinese.open_floway, "打开 Floway");

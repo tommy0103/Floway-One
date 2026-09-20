@@ -26,7 +26,7 @@ import { reportModelsCacheWarmFailure, warmModelsCache } from '../shared/warm-mo
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
 import type { UpstreamRecord } from '@floway-dev/provider';
 
-interface ExportPayload {
+export interface ExportPayload {
   version: 20;
   exportedAt: string;
   data: {
@@ -45,12 +45,12 @@ interface ExportPayload {
 
 const EXPORT_VERSION = 20;
 
-interface CollectedExport {
+export interface CollectedExport {
   payload: ExportPayload;
   upstreams: UpstreamRecord[];
 }
 
-const collectExportPayload = async (includePerformance: boolean): Promise<CollectedExport> => {
+export const collectExportPayload = async (includePerformance: boolean): Promise<CollectedExport> => {
   const repo = getRepo();
   const [users, apiKeys, usage, webSearchUsage, performance, rawWebSearchConfig, upstreams, modelAliases, proxies] = await Promise.all([
     repo.users.listIncludingDeleted(),

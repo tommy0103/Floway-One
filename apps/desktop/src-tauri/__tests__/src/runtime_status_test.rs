@@ -2,6 +2,9 @@
 #[path = "../../src/bundle_contract.rs"]
 mod bundle_contract;
 #[allow(dead_code)]
+#[path = "../../src/failure_chain.rs"]
+mod failure_chain;
+#[allow(dead_code)]
 #[path = "../../src/runtime_status.rs"]
 mod runtime_status;
 
