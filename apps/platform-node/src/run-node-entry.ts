@@ -261,6 +261,10 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       path: result.path,
       sha256: result.sha256,
     })}\n`);
+    // The owner-lifetime channel resumed stdin to watch for a dead owner, and a
+    // flowing stdin pins the event loop open. This child is one-shot by
+    // contract, so release the loop once its work is flushed.
+    process.stdin.pause();
     return { port: 0 };
   }
   const desktopCompatibility = profile === 'personal'
