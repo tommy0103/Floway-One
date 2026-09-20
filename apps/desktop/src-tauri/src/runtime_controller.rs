@@ -1801,6 +1801,7 @@ fn stop_packaged_process(app_handle: &AppHandle) {
 
 fn try_run() -> Result<(), Box<dyn Error>> {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
