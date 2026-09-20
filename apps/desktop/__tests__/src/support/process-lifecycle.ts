@@ -255,7 +255,7 @@ export const appEnvironmentWithoutPortOverride = (
   return environment;
 };
 
-const desktopAppArguments = (
+export const desktopAppArguments = (
   applicationHome: string,
   locale: 'en' | 'zh-Hans' = 'en',
 ): string[] => [

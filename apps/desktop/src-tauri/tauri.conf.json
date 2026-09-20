@@ -23,5 +23,10 @@
       "bundle-inputs/runtime/": "runtime/",
       "bundle-inputs/desktop-bundle-contract.json": "desktop-bundle-contract.json"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    }
   }
 }

@@ -53,6 +53,11 @@ interface RecoverySurfaceSnapshot {
     readonly sha256: string;
   };
   readonly revision: number;
+  readonly update?: {
+    readonly previousVersionDownload: boolean;
+    readonly recoveryPointAvailable: boolean;
+    readonly version: string | null;
+  };
 }
 
 export const labels = {
@@ -149,6 +154,21 @@ export const recoveryCopy = {
     logs: '打开日志',
     restart: '重启 Gateway',
     title: 'Floway 无法启动本机 Gateway',
+  },
+} as const;
+
+export const updateRecoveryCopy = {
+  en: {
+    description: 'The previous version and its data remain recoverable.',
+    download: (version: string) => `Download Floway ${version}`,
+    recoveryPoint: 'The pre-update database recovery point is preserved on this device.',
+    title: 'The application update did not finish',
+  },
+  'zh-Hans': {
+    description: '上一版本及其数据仍可恢复。',
+    download: (version: string) => `下载 Floway ${version}`,
+    recoveryPoint: '升级前创建的数据库恢复点已保留在本设备上。',
+    title: '应用更新未完成',
   },
 } as const;
 
@@ -316,6 +336,105 @@ export const assertNativeFailureSurface = async (
   const hasLogsAction = renderedContains(recognized, copy.logs);
   if (hasLogsAction !== expectedLogsAvailable) {
     throw new Error('Rendered log action did not match availability');
+  }
+  const expectedRenderedFragments = options.expectedRenderedFragments ?? [];
+  if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {
+    throw new Error(`Rendered pixels omitted the original failure chain: ${JSON.stringify({ recognized, expectedRenderedFragments })}`);
+  }
+};
+
+export const assertUpdateRecoverySurface = async (
+  executable: string,
+  pid: number,
+  output: string,
+  options: {
+    readonly dataRoot: string;
+    readonly expectedLocale?: 'en' | 'zh-Hans';
+    readonly expectedRenderedFragments?: readonly string[];
+    readonly failureKind: string;
+    readonly previousVersion: string;
+    readonly updateVersion: string;
+  },
+): Promise<void> => {
+  const { snapshot } = parseSurfaceSnapshot(output);
+  const { snapshot: recovery } = parseRecoverySurfaceSnapshot(output);
+  const expectedLocale = options.expectedLocale ?? 'en';
+  const expectedLabels = labels[expectedLocale];
+  const update = recovery.update;
+  if (
+    snapshot.failureKind !== options.failureKind
+    || snapshot.phase !== 'failed'
+    || snapshot.window.failureKind !== options.failureKind
+    || snapshot.window.route !== '/desktop-status'
+    || snapshot.window.state !== 'failed'
+    || snapshot.window.title !== 'Floway'
+    || !snapshot.window.visible
+    || snapshot.tray.status.text !== expectedLabels.status
+    || snapshot.tray.restart.text !== expectedLabels.restart
+    || !snapshot.tray.restart.enabled
+    || snapshot.tray.logs.text !== expectedLabels.logs
+    || !snapshot.tray.logs.enabled
+  ) {
+    throw new Error(`Floway update failure surface is incomplete: ${JSON.stringify(snapshot)}`);
+  }
+  if (
+    recovery.failureKind !== options.failureKind
+    || recovery.locale !== expectedLocale
+    || !recovery.restartEnabled
+    || !Number.isSafeInteger(recovery.revision)
+    || recovery.revision <= 0
+    || recovery.renderedSnapshot.algorithm !== 'sha256-png-v1'
+    || recovery.renderedSnapshot.byteLength < 1
+    || !/^[0-9a-f]{64}$/.test(recovery.renderedSnapshot.sha256)
+    || JSON.stringify(recovery.actions) !== JSON.stringify(['restart', 'open-logs', 'download-previous-version'])
+    || update === undefined
+    || update.previousVersionDownload !== true
+    || update.recoveryPointAvailable !== true
+    || update.version !== options.updateVersion
+  ) {
+    throw new Error(`Floway update recovery support diagnostic is incomplete: ${JSON.stringify(recovery)}`);
+  }
+
+  const snapshotPath = resolve(options.dataRoot, RECOVERY_SNAPSHOT_FILE_NAME);
+  const { stdout } = await execFileAsync(executable, [
+    String(pid),
+    snapshotPath,
+    recovery.renderedSnapshot.sha256,
+  ], { timeout: 30_000 });
+  const external = JSON.parse(stdout) as {
+    readonly ocrCandidates?: unknown;
+    readonly pid?: unknown;
+    readonly snapshotSha256?: unknown;
+    readonly visibleWindowCount?: unknown;
+  };
+  if (external.pid !== pid || typeof external.visibleWindowCount !== 'number' || external.visibleWindowCount < 1) {
+    throw new Error(`CoreGraphics found no visible Floway window: ${JSON.stringify(external)}`);
+  }
+  if (external.snapshotSha256 !== recovery.renderedSnapshot.sha256) {
+    throw new Error(`Floway rendered snapshot digest did not match its diagnostic: ${JSON.stringify(external)}`);
+  }
+  if (!Array.isArray(external.ocrCandidates) || external.ocrCandidates.length === 0) {
+    throw new Error(`Vision recognized no rendered recovery text: ${JSON.stringify(external)}`);
+  }
+  const recognized = external.ocrCandidates
+    .filter((candidate): candidate is string => typeof candidate === 'string')
+    .map(normalizeRecognizedText)
+    .join('');
+  const copy = updateRecoveryCopy[expectedLocale];
+  const failure = recoveryCopy[expectedLocale].failures[options.failureKind as keyof (typeof recoveryCopy)['en']['failures']];
+  const requiredText = [
+    copy.title,
+    copy.description,
+    copy.recoveryPoint,
+    copy.download(options.previousVersion),
+    failure,
+  ];
+  if (
+    failure === undefined
+    || recognized.length === 0
+    || requiredText.some(expected => !renderedContains(recognized, expected))
+  ) {
+    throw new Error(`Rendered pixels omitted update recovery copy: ${JSON.stringify({ recognized, requiredText })}`);
   }
   const expectedRenderedFragments = options.expectedRenderedFragments ?? [];
   if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {

@@ -116,6 +116,11 @@ await withFailureSafeCleanup(async cleanup => {
         CARGO_PROFILE_DEV_DEBUG: '0',
         FLOWAY_DESKTOP_EXECUTE_NODE: launch ? '1' : '0',
         FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
+        // The packaged verifier drives the updater against a loopback fixture
+        // server; production builds from the checked-in configuration keep
+        // rejecting plain-HTTP update endpoints.
+        // https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/config.rs
+        TAURI_CONFIG: '{"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}',
       };
       await runPnpm([
         '--filter',

@@ -21,6 +21,9 @@ test('shipping desktop and Node sources contain no verification modes or environ
     'apps/desktop/src-tauri/src/shell_singleton.rs',
     'apps/desktop/src-tauri/src/sidecar_log.rs',
     'apps/desktop/src-tauri/src/sidecar_supervisor.rs',
+    'apps/desktop/src-tauri/src/update_channel.rs',
+    'apps/desktop/src-tauri/src/update_controller.rs',
+    'apps/desktop/src-tauri/src/update_state.rs',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
   const [
     _app,
@@ -34,11 +37,15 @@ test('shipping desktop and Node sources contain no verification modes or environ
     _shellSingleton,
     _sidecarLog,
     supervisor,
+    _updateChannel,
+    updateController,
+    _updateState,
   ] = desktopSources;
   const nodeSources = await Promise.all([
     'apps/platform-node/src/desktop-sidecar-lifecycle.ts',
     'apps/platform-node/src/device-master-key.ts',
     'apps/platform-node/src/run-node-entry.ts',
+    'apps/platform-node/src/update-recovery-point.ts',
   ].map(async path => await readFile(resolve(repositoryRoot, path), 'utf8')));
   const sources = [
     ...desktopSources,
@@ -60,6 +67,11 @@ test('shipping desktop and Node sources contain no verification modes or environ
   expect(runtimeController).toContain('.on_navigation(move |candidate|');
   expect(runtimeController).toContain('.on_new_window(move |candidate, _features|');
   expect(runtimeController).toContain('NewWindowResponse::Deny');
+  expect(updateController).toContain('tauri_plugin_updater::Error::Minisign');
+  const recoveryPoint = updateController.indexOf('self.create_recovery_point(bundle)');
+  const installSwap = updateController.indexOf('update.install(&bytes)');
+  expect(recoveryPoint).toBeGreaterThan(-1);
+  expect(installSwap).toBeGreaterThan(recoveryPoint);
   const ownerSetup = runtimeController.indexOf('supervisor: PackageProcessSupervisor::new(),');
   const preflight = runtimeController.indexOf('let runtime = resolve_runtime_bundle(&resource_dir).map_err');
   const registeredSpawn = runtimeController.indexOf('.spawn_registered(||');
