@@ -398,6 +398,10 @@ impl RuntimeAttemptState {
         self.phase
     }
 
+    pub fn current_generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn restart_available(&self) -> bool {
         self.restart_available
     }

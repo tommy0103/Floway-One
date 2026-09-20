@@ -133,7 +133,8 @@ fn updater_authority_requires_endpoint_and_pubkey_pairs() {
         Some("verification-pubkey"),
         None,
     )
-    .expect("a complete override must resolve");
+    .expect("a complete override must resolve")
+    .expect("a complete override must configure the updater");
     assert_eq!(authority.endpoints.len(), 1);
     assert_eq!(authority.endpoints[0].host_str(), Some("127.0.0.1"));
     assert_eq!(authority.pubkey, "verification-pubkey");
@@ -144,13 +145,23 @@ fn updater_authority_requires_endpoint_and_pubkey_pairs() {
         None,
         Some("configured-pubkey"),
     )
-    .expect("the configured production authority must resolve");
+    .expect("the configured production authority must resolve")
+    .expect("a configured pubkey must enable the updater");
     assert_eq!(authority.endpoints.len(), 1);
     assert_eq!(
         authority.endpoints[0].as_str(),
         UpdateChannel::Preview.endpoint()
     );
     assert_eq!(authority.pubkey, "configured-pubkey");
+
+    for configured in [None, Some(""), Some("   ")] {
+        assert_eq!(
+            resolve_updater_authority(UpdateChannel::Stable, None, None, configured)
+                .expect("an unconfigured updater must resolve"),
+            None,
+            "an unconfigured updater must be disabled, not a failure"
+        );
+    }
 
     for (endpoints, pubkey, configured) in [
         (Some("http://127.0.0.1:9000/manifest.json"), None, None),
@@ -160,8 +171,6 @@ fn updater_authority_requires_endpoint_and_pubkey_pairs() {
             Some("  "),
             None,
         ),
-        (None, None, None),
-        (None, None, Some("")),
     ] {
         assert!(
             resolve_updater_authority(UpdateChannel::Stable, endpoints, pubkey, configured)

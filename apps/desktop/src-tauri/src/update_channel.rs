@@ -187,12 +187,17 @@ pub struct UpdaterAuthority {
     pub pubkey: String,
 }
 
+// Resolving the updater authority distinguishes three outcomes: fully
+// configured through the environment override, configured through the release
+// channel, and unconfigured (Ok(None)) — an application built without updater
+// keys simply never checks, while a partial environment override is always an
+// error so it can never weaken production signature verification.
 pub fn resolve_updater_authority(
     channel: UpdateChannel,
     endpoints_override: Option<&str>,
     pubkey_override: Option<&str>,
     configured_pubkey: Option<&str>,
-) -> Result<UpdaterAuthority, UpdateEndpointsError> {
+) -> Result<Option<UpdaterAuthority>, UpdateEndpointsError> {
     match (endpoints_override, pubkey_override) {
         (Some(endpoints), Some(pubkey)) => {
             if pubkey.trim().is_empty() {
@@ -200,21 +205,19 @@ pub fn resolve_updater_authority(
                     message: format!("{UPDATE_PUBKEY_ENV} must not be empty"),
                 });
             }
-            Ok(UpdaterAuthority {
+            Ok(Some(UpdaterAuthority {
                 endpoints: parse_updater_endpoints(endpoints)?,
                 pubkey: pubkey.to_owned(),
-            })
+            }))
         }
         (None, None) => {
             let Some(pubkey) = configured_pubkey.filter(|pubkey| !pubkey.trim().is_empty()) else {
-                return Err(UpdateEndpointsError {
-                    message: "the configured updater pubkey is empty".to_owned(),
-                });
+                return Ok(None);
             };
-            Ok(UpdaterAuthority {
+            Ok(Some(UpdaterAuthority {
                 endpoints: parse_updater_endpoints(channel.endpoint())?,
                 pubkey: pubkey.to_owned(),
-            })
+            }))
         }
         _ => Err(UpdateEndpointsError {
             message: format!("{UPDATE_ENDPOINTS_ENV} and {UPDATE_PUBKEY_ENV} must be set together"),

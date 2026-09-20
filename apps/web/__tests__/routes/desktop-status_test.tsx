@@ -25,8 +25,23 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { setLanguage } from '../../src/i18n';
-import DesktopStatus, { parseDesktopStatus } from '../../src/routes/desktop-status.tsx';
+import DesktopStatus, {
+  hasUpdateRecovery,
+  parseDesktopStatus,
+  parseDesktopUpdateRecovery,
+  type DesktopUpdateRecoveryView,
+} from '../../src/routes/desktop-status.tsx';
 import { renderInApp } from '../render.tsx';
+
+const emptyUpdate: DesktopUpdateRecoveryView = {
+  failure: null,
+  pendingVersion: null,
+  previousDownloadUrl: null,
+  previousVersion: null,
+  recoveryPointAvailable: false,
+  stagedVersion: null,
+  version: null,
+};
 
 afterEach(async () => {
   tauri.invoke.mockReset();
@@ -44,6 +59,7 @@ test('defaults to a bounded startup state without requiring the sidecar', () => 
     restartEnabled: false,
     revision: 0,
     state: 'starting',
+    update: emptyUpdate,
   });
 });
 
@@ -70,6 +86,7 @@ test('maps every shell failure code to typed localized recovery copy', () => {
       restartEnabled: false,
       revision: 0,
       state: 'failed',
+      update: emptyUpdate,
     });
   }
 });
@@ -84,6 +101,7 @@ test('rejects inherited and malformed failure kinds at the URL boundary', () => 
       restartEnabled: false,
       revision: 0,
       state: 'failed',
+      update: emptyUpdate,
     });
   }
 });
@@ -290,4 +308,177 @@ test('discards a stale queued event delivered after a newer snapshot', async () 
 
   expect(screen.queryByText(/configured local port is unavailable/i)).toBeNull();
   expect(screen.getByText(/cannot read or write its local data or logs/i)).toBeTruthy();
+});
+
+test('parses the shell update recovery snapshot with bounded fields', () => {
+  expect(parseDesktopUpdateRecovery(null)).toEqual(emptyUpdate);
+  expect(parseDesktopUpdateRecovery({ failure: 'not-an-object' })).toEqual(emptyUpdate);
+  expect(parseDesktopUpdateRecovery({
+    failure: {
+      chain: ['manifest signature did not verify', 'caused by: minisign', 1, null],
+      phase: 'signature',
+      version: '0.2.0',
+    },
+    pendingVersion: '0.2.0',
+    previousDownloadUrl: 'https://github.com/tommy0103/Floway-One/releases/tag/v0.1.0',
+    previousVersion: '0.1.0',
+    recoveryPointAvailable: true,
+    stagedVersion: '0.2.0',
+  })).toEqual({
+    failure: {
+      chain: ['manifest signature did not verify', 'caused by: minisign'],
+      phase: 'signature',
+      version: '0.2.0',
+    },
+    pendingVersion: '0.2.0',
+    previousDownloadUrl: 'https://github.com/tommy0103/Floway-One/releases/tag/v0.1.0',
+    previousVersion: '0.1.0',
+    recoveryPointAvailable: true,
+    stagedVersion: '0.2.0',
+    version: '0.2.0',
+  });
+  expect(parseDesktopUpdateRecovery({
+    failure: { chain: [], phase: 'health', version: '0.2.0' },
+    recoveryPointAvailable: false,
+  }).version).toBe('0.2.0');
+});
+
+test('treats only meaningful update snapshots as update recovery', () => {
+  expect(hasUpdateRecovery(emptyUpdate)).toBe(false);
+  expect(hasUpdateRecovery({ ...emptyUpdate, stagedVersion: '0.2.0' })).toBe(false);
+  expect(hasUpdateRecovery({ ...emptyUpdate, version: '0.2.0', pendingVersion: '0.2.0' })).toBe(true);
+  expect(hasUpdateRecovery({ ...emptyUpdate, recoveryPointAvailable: true })).toBe(true);
+  expect(hasUpdateRecovery({ ...emptyUpdate, previousDownloadUrl: 'https://example.com' })).toBe(true);
+});
+
+test('renders the update recovery section with the previous-version download action', async () => {
+  tauri.isTauri.mockReturnValue(true);
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') {
+      return {
+        kind: 'migration',
+        logsAvailable: true,
+        restartEnabled: true,
+        revision: 5,
+        state: 'failed',
+        update: {
+          pendingVersion: '0.2.0',
+          previousDownloadUrl: 'https://github.com/tommy0103/Floway-One/releases/tag/v0.1.0',
+          previousVersion: '0.1.0',
+          recoveryPointAvailable: true,
+        },
+      };
+    }
+    return undefined;
+  });
+  const router = createMemoryRouter([{ path: '/desktop-status', element: <DesktopStatus /> }], {
+    initialEntries: ['/desktop-status'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(screen.getByText('The application update did not finish')).toBeTruthy());
+  expect(screen.getByText('The previous version and its data remain recoverable.')).toBeTruthy();
+  expect(screen.getByText('Update version: 0.2.0')).toBeTruthy();
+  expect(screen.getByText('The pre-update database recovery point is preserved on this device.')).toBeTruthy();
+  expect(screen.getByText('The local database could not be upgraded safely.')).toBeTruthy();
+  const download = screen.getByRole('link', { name: 'Download Floway 0.1.0' });
+  expect(download.getAttribute('href')).toBe('floway-action://download-previous-version');
+
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith(
+    'report_desktop_recovery_surface',
+    {
+      surface: {
+        actions: ['restart', 'open-logs', 'download-previous-version'],
+        failureKind: 'migration',
+        logsAvailable: true,
+        locale: 'en',
+        restartEnabled: true,
+        revision: 5,
+        update: {
+          previousVersionDownload: true,
+          recoveryPointAvailable: true,
+          version: '0.2.0',
+        },
+      },
+    },
+  ));
+});
+
+test('renders the Simplified Chinese update recovery copy', async () => {
+  await act(async () => { await setLanguage('zh-Hans'); });
+  tauri.isTauri.mockReturnValue(true);
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') {
+      return {
+        kind: 'timeout',
+        logsAvailable: true,
+        restartEnabled: true,
+        revision: 3,
+        state: 'failed',
+        update: {
+          pendingVersion: '0.2.0',
+          previousDownloadUrl: 'https://github.com/tommy0103/Floway-One/releases/tag/v0.1.0',
+          previousVersion: '0.1.0',
+          recoveryPointAvailable: true,
+        },
+      };
+    }
+    return undefined;
+  });
+  const router = createMemoryRouter([{ path: '/desktop-status', element: <DesktopStatus /> }], {
+    initialEntries: ['/desktop-status'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(screen.getByText('应用更新未完成')).toBeTruthy());
+  expect(screen.getByText('上一版本及其数据仍可恢复。')).toBeTruthy();
+  expect(screen.getByText('更新版本：0.2.0')).toBeTruthy();
+  expect(screen.getByText('升级前创建的数据库恢复点已保留在本设备上。')).toBeTruthy();
+  expect(screen.getByRole('link', { name: '下载 Floway 0.1.0' }).getAttribute('href'))
+    .toBe('floway-action://download-previous-version');
+
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith(
+    'report_desktop_recovery_surface',
+    expect.objectContaining({
+      surface: expect.objectContaining({
+        locale: 'zh-Hans',
+        update: {
+          previousVersionDownload: true,
+          recoveryPointAvailable: true,
+          version: '0.2.0',
+        },
+      }),
+    }),
+  ));
+});
+
+test('omits the update recovery section for healthy runtime snapshots', async () => {
+  tauri.isTauri.mockReturnValue(true);
+  tauri.invoke.mockImplementation(async command => {
+    if (command === 'desktop_runtime_status') {
+      return { kind: 'port', logsAvailable: true, restartEnabled: true, revision: 2, state: 'failed' };
+    }
+    return undefined;
+  });
+  const router = createMemoryRouter([{ path: '/desktop-status', element: <DesktopStatus /> }], {
+    initialEntries: ['/desktop-status'],
+  });
+  renderInApp(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(screen.getByText(/configured local port is unavailable/i)).toBeTruthy());
+  expect(screen.queryByText('The application update did not finish')).toBeNull();
+  expect(screen.queryByRole('link', { name: /Download Floway/ })).toBeNull();
+  await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith(
+    'report_desktop_recovery_surface',
+    {
+      surface: {
+        actions: ['restart', 'open-logs'],
+        failureKind: 'port',
+        logsAvailable: true,
+        locale: 'en',
+        restartEnabled: true,
+        revision: 2,
+      },
+    },
+  ));
 });

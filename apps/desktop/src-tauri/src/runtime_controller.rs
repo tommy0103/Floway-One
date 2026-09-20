@@ -33,6 +33,7 @@ use crate::navigation::{
     is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
     sanitized_page_load_diagnostic,
 };
+use crate::print_error_chain;
 use crate::rendered_snapshot::capture_rendered_snapshot;
 use crate::runtime_status::{
     DesktopRuntimeStatus, DesktopStartupError, FailureKind, FailureReport, InitialStatusLoadGate,
@@ -49,6 +50,9 @@ use crate::shell_singleton::{
 use crate::sidecar_log::{BoundedSidecarLog, SidecarStream};
 use crate::sidecar_supervisor::{
     GRACEFUL_STOP_SIGNAL_TIMEOUT, PackageProcessSupervisor, UnexpectedSidecarExitError,
+};
+use crate::update_controller::{
+    DesktopUpdateController, INSTALL_STAGED_UPDATE_ARGUMENT, resolve_install_bundle,
 };
 
 const DESKTOP_RUNTIME_CONTRACT_ENV: &str = "FLOWAY_DESKTOP_CONTRACT";
@@ -67,6 +71,7 @@ const TRAY_LOGS_ID: &str = "runtime-open-logs";
 const TRAY_OPEN_ID: &str = "tray-open";
 const TRAY_QUIT_ID: &str = "tray-quit";
 const TRAY_RESTART_ID: &str = "runtime-restart";
+const TRAY_UPDATE_ID: &str = "runtime-update";
 
 #[derive(Debug)]
 struct StartupAuthorityError {
@@ -95,23 +100,6 @@ fn ephemeral_bootstrap_token() -> Result<String, StartupAuthorityError> {
         .into_iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
-}
-
-fn error_chain_text(error: &(dyn Error + 'static)) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        text.push_str(&format!("\ncaused by: {cause}"));
-        source = cause.source();
-    }
-    text
-}
-
-fn print_error_chain(error: &(dyn Error + 'static)) {
-    eprintln!(
-        "Floway desktop application failed: {}",
-        error_chain_text(error)
-    );
 }
 
 fn classify_bundle_failure(error: &BundleResourceError) -> FailureKind {
@@ -180,6 +168,7 @@ struct DesktopTray {
     quit: MenuItem<tauri::Wry>,
     restart: MenuItem<tauri::Wry>,
     status: MenuItem<tauri::Wry>,
+    update: MenuItem<tauri::Wry>,
 }
 
 impl DesktopTray {
@@ -197,6 +186,13 @@ impl DesktopTray {
             app,
             TRAY_COPY_ADDRESS_ID,
             messages.copy_gateway_address,
+            false,
+            None::<&str>,
+        )?;
+        let update = MenuItem::with_id(
+            app,
+            TRAY_UPDATE_ID,
+            messages.update_install,
             false,
             None::<&str>,
         )?;
@@ -222,6 +218,7 @@ impl DesktopTray {
             &[
                 &open,
                 &status,
+                &update,
                 &copy_address,
                 &restart,
                 &autostart,
@@ -250,6 +247,7 @@ impl DesktopTray {
                         print_error_chain(error.as_ref());
                     }
                 }
+                TRAY_UPDATE_ID => install_update_from_tray(app),
                 TRAY_RESTART_ID => {
                     if let Err(error) = restart_gateway(app) {
                         print_error_chain(error.as_ref());
@@ -281,7 +279,26 @@ impl DesktopTray {
             quit,
             restart,
             status,
+            update,
         })
+    }
+
+    fn set_update(&self, staged_version: Option<&str>) -> Result<(), Box<dyn Error>> {
+        match staged_version {
+            Some(version) => {
+                self.update.set_text(
+                    self.messages
+                        .update_install_version
+                        .replace("{version}", version),
+                )?;
+                self.update.set_enabled(true)?;
+            }
+            None => {
+                self.update.set_text(self.messages.update_install)?;
+                self.update.set_enabled(false)?;
+            }
+        }
+        Ok(())
     }
 
     fn set_phase(
@@ -356,6 +373,10 @@ impl DesktopTray {
                 "enabled": self.status.is_enabled()?,
                 "text": self.status.text()?,
             },
+            "update": {
+                "enabled": self.update.is_enabled()?,
+                "text": self.update.text()?,
+            },
         }))
     }
 }
@@ -372,6 +393,7 @@ struct DesktopController {
     status_url: Url,
     supervisor: Arc<PackageProcessSupervisor>,
     tray: DesktopTray,
+    update: Arc<DesktopUpdateController>,
 }
 
 impl DesktopController {
@@ -438,6 +460,13 @@ impl DesktopController {
             .clone()
     }
 
+    fn current_generation(&self) -> u64 {
+        self.attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .current_generation()
+    }
+
     fn complete_teardown(&self, generation: u64) -> bool {
         self.attempts
             .lock()
@@ -502,12 +531,14 @@ impl DesktopController {
 fn desktop_status_value(
     status: DesktopRuntimeStatus,
     failure_chain: Vec<String>,
+    update: &DesktopUpdateController,
 ) -> serde_json::Value {
     let mut value = status.to_wire_value();
-    value
+    let object = value
         .as_object_mut()
-        .expect("desktop status wire value must remain an object")
-        .insert("chain".to_owned(), serde_json::json!(failure_chain));
+        .expect("desktop status wire value must remain an object");
+    object.insert("chain".to_owned(), serde_json::json!(failure_chain));
+    object.insert("update".to_owned(), update.status_snapshot());
     value
 }
 
@@ -518,7 +549,7 @@ fn emit_desktop_status(
     let (status, failure_chain) = controller.status_snapshot();
     app.emit(
         DESKTOP_STATUS_EVENT,
-        desktop_status_value(status, failure_chain),
+        desktop_status_value(status, failure_chain, &controller.update),
     )
 }
 
@@ -658,6 +689,8 @@ fn complete_failure_teardown(app: &AppHandle, generation: u64, kind: FailureKind
 
 fn publish_failure(app: &AppHandle, generation: u64, report: FailureReport, stop: bool) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    controller.update.after_runtime_failure(&report);
+    refresh_update_tray(app);
     let status = controller.status();
     if let Err(error) = controller
         .tray
@@ -785,7 +818,14 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                 true,
             );
         }
-        Ok(true) => controller.persist_lifecycle("Floway desktop runtime state: ready"),
+        Ok(true) => {
+            controller.persist_lifecycle("Floway desktop runtime state: ready");
+            let update_app = app.clone();
+            controller
+                .update
+                .after_runtime_ready(app, move || refresh_update_tray(&update_app));
+            refresh_update_tray(app);
+        }
         Ok(false) => {}
     }
 }
@@ -1130,6 +1170,92 @@ fn close_main_window(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn refresh_update_tray(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>();
+    let staged = controller.update.staged_version();
+    if let Err(error) = controller.tray.set_update(staged.as_deref()) {
+        print_error_chain(error.as_ref());
+    }
+}
+
+fn open_previous_version_download(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>();
+    let snapshot = controller.update.status_snapshot();
+    let Some(url) = snapshot
+        .get("previousDownloadUrl")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    controller
+        .persist_lifecycle("Floway desktop operator opened the previous-version download entry");
+    #[allow(deprecated)]
+    if let Err(error) = app.shell().open(url, None) {
+        print_error_chain(&error);
+    }
+}
+
+fn install_staged_update_requested() -> bool {
+    std::env::args_os().any(|argument| argument == INSTALL_STAGED_UPDATE_ARGUMENT)
+}
+
+// The install runs only after the packaged runtime has stopped, so no LLM
+// request can be served while the application bundle is being replaced.
+fn run_install_sequence(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    if controller.phase() == RuntimePhase::Ready && controller.supervisor.stop_now().is_err() {
+        let error = io::Error::other(
+            "Floway could not stop its packaged runtime before installing an update",
+        );
+        print_error_chain(&error);
+        fail_current_attempt(
+            app,
+            controller.current_generation(),
+            FailureReport::from_error(FailureKind::Unknown, &error),
+            false,
+        );
+        return;
+    }
+    let bundle = match resolve_install_bundle(app) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            print_error_chain(error.as_ref());
+            return;
+        }
+    };
+    match controller.update.install_staged_update(app, &bundle) {
+        Ok(()) => app.restart(),
+        Err(error) => {
+            let (_phase, chain, _version) = error.report();
+            let chained = io::Error::other(chain.join("\n\ncaused by: "));
+            let report = FailureReport::from_error(FailureKind::Unknown, &chained);
+            if controller.phase() == RuntimePhase::Ready {
+                fail_current_attempt(app, controller.current_generation(), report, false);
+            } else if controller.phase() == RuntimePhase::Failed && !controller.restart_available()
+            {
+                // A startup-time install failure still owes the operator its
+                // recovery surface: begin an attempt only to fail it.
+                match controller.begin_attempt() {
+                    Some(generation) => fail_startup_attempt(app, generation, report, false),
+                    None => print_error_chain(&error),
+                }
+            } else {
+                print_error_chain(&error);
+            }
+        }
+    }
+}
+
+fn install_update_from_tray(app: &AppHandle) {
+    let controller = app.state::<Arc<DesktopController>>();
+    if controller.update.staged_version().is_none() {
+        return;
+    }
+    controller.persist_lifecycle("Floway desktop operator started its staged update installation");
+    let app = app.clone();
+    thread::spawn(move || run_install_sequence(&app));
+}
+
 fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
     let controller = app.state::<Arc<DesktopController>>();
     let origin = controller.gateway_origin().ok_or_else(|| {
@@ -1458,6 +1584,7 @@ fn establish_shell_role(data_root: &Path) -> UnixListener {
 fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool {
     if let Some(action) = desktop_action(candidate) {
         match action {
+            DesktopAction::DownloadPreviousVersion => open_previous_version_download(app),
             DesktopAction::OpenLogs => open_logs(app),
             DesktopAction::Restart => {
                 if let Err(error) = restart_gateway(app) {
@@ -1527,6 +1654,45 @@ fn report_desktop_recovery_surface(
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
             "Floway recovery support state does not match the owning runtime state",
+        );
+        print_error_chain(&error);
+        return Err(error.to_string());
+    }
+    let update_snapshot = controller.update.status_snapshot();
+    let expected_update = serde_json::json!({
+        "previousVersionDownload": update_snapshot
+            .get("previousDownloadUrl")
+            .is_some_and(|url| url.as_str().is_some()),
+        "recoveryPointAvailable": update_snapshot
+            .get("recoveryPointAvailable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        "version": update_snapshot
+            .get("pendingVersion")
+            .cloned()
+            .filter(|version| !version.is_null())
+            .or_else(|| {
+                update_snapshot
+                    .get("failure")
+                    .and_then(|failure| failure.get("version"))
+                    .cloned()
+            }),
+    });
+    let expected_update_empty = expected_update["version"].is_null()
+        && !expected_update["previousVersionDownload"]
+            .as_bool()
+            .unwrap_or(false)
+        && !expected_update["recoveryPointAvailable"]
+            .as_bool()
+            .unwrap_or(false);
+    let update_matches = match diagnostic.get("update") {
+        Some(page_update) => !expected_update_empty && page_update == &expected_update,
+        None => expected_update_empty,
+    };
+    if !update_matches {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Floway recovery support update state does not match the owning update state",
         );
         print_error_chain(&error);
         return Err(error.to_string());
@@ -1609,7 +1775,7 @@ fn report_desktop_recovery_surface(
 fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
     let controller = app.state::<Arc<DesktopController>>();
     let (status, failure_chain) = controller.status_snapshot();
-    desktop_status_value(status, failure_chain)
+    desktop_status_value(status, failure_chain, &controller.update)
 }
 
 fn stop_packaged_process(app_handle: &AppHandle) {
@@ -1708,6 +1874,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .map(|paths| (paths.logs(), paths.root().to_path_buf()))
                 .unwrap_or_default();
+            let update = DesktopUpdateController::new(Some(data_root.clone()));
             let tray = DesktopTray::build(&app_handle)?;
             let controller = Arc::new(DesktopController {
                 attempts: Mutex::new(RuntimeAttemptState::new()),
@@ -1721,6 +1888,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 status_url,
                 supervisor: PackageProcessSupervisor::new(),
                 tray,
+                update,
             });
             app.manage(controller);
             if let Some(listener) = listener {
@@ -1754,6 +1922,18 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                     FailureReport::from_error(FailureKind::Storage, error.as_ref()),
                     false,
                 );
+            } else if install_staged_update_requested()
+                && app_handle
+                    .state::<Arc<DesktopController>>()
+                    .update
+                    .staged_version()
+                    .is_some()
+            {
+                // An explicit operator request installs the staged update
+                // before any runtime starts, so no LLM request can be in
+                // flight while the application bundle is replaced.
+                let install_app = app_handle.clone();
+                thread::spawn(move || run_install_sequence(&install_app));
             } else if initial_status_load_gate.arm() {
                 start_runtime(&app_handle);
             } else {

@@ -14,6 +14,7 @@ const MAXIMUM_AUTHORITY_DECODE_PASSES: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopAction {
+    DownloadPreviousVersion,
     OpenLogs,
     Restart,
 }
@@ -23,6 +24,7 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
         return None;
     }
     match candidate.host_str()? {
+        "download-previous-version" => Some(DesktopAction::DownloadPreviousVersion),
         "open-logs" => Some(DesktopAction::OpenLogs),
         "restart" => Some(DesktopAction::Restart),
         _ => None,
@@ -36,7 +38,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
             "Floway recovery support diagnostic must be an object",
         )
     })?;
-    if fields.len() != 6 {
+    if fields.len() != 6 && !(fields.len() == 7 && fields.contains_key("update")) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Floway recovery support diagnostic has an invalid field count",
@@ -103,6 +105,58 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
                 "Floway recovery support diagnostic has an invalid revision field",
             )
         })?;
+    let update = match fields.get("update") {
+        None => None,
+        Some(update) => {
+            let update_fields = update.as_object().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic has an invalid update field",
+                )
+            })?;
+            if update_fields.len() != 3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic update field has an invalid field count",
+                ));
+            }
+            let previous_version_download = update_fields
+                .get("previousVersionDownload")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Floway recovery support diagnostic update has an invalid previousVersionDownload field",
+                    )
+                })?;
+            let recovery_point_available = update_fields
+                .get("recoveryPointAvailable")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Floway recovery support diagnostic update has an invalid recoveryPointAvailable field",
+                    )
+                })?;
+            let version = update_fields.get("version").ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic update has an invalid version field",
+                )
+            })?;
+            if !version.is_null() && version.as_str().is_none_or(|version| version.is_empty()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Floway recovery support diagnostic update has an invalid version field",
+                ));
+            }
+            Some(json!({
+                "previousVersionDownload": previous_version_download,
+                "recoveryPointAvailable": recovery_point_available,
+                "version": version,
+            }))
+        }
+    };
     let actions = fields
         .get("actions")
         .and_then(Value::as_array)
@@ -119,20 +173,35 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
     if logs_available {
         expected_actions.push(Value::String("open-logs".to_owned()));
     }
+    if update
+        .as_ref()
+        .and_then(|update| update.get("previousVersionDownload"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        expected_actions.push(Value::String("download-previous-version".to_owned()));
+    }
     if actions != &expected_actions {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Floway recovery support diagnostic actions do not match recovery readiness",
         ));
     }
-    Ok(json!({
+    let mut diagnostic = json!({
         "actions": actions,
         "failureKind": failure_kind,
         "logsAvailable": logs_available,
         "locale": locale,
         "restartEnabled": restart_enabled,
         "revision": revision,
-    }))
+    });
+    if let Some(update) = update {
+        diagnostic
+            .as_object_mut()
+            .expect("recovery diagnostic must remain an object")
+            .insert("update".to_owned(), update);
+    }
+    Ok(diagnostic)
 }
 
 pub fn is_desktop_status_navigation(candidate: &Url, new_window: bool) -> bool {

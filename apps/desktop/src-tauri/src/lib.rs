@@ -29,6 +29,25 @@ mod update_controller;
 pub const NODE_SIDECAR_NAME: &str = "floway-node";
 
 #[cfg(feature = "desktop")]
+pub(crate) fn error_chain_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(&format!("\ncaused by: {cause}"));
+        source = cause.source();
+    }
+    text
+}
+
+#[cfg(feature = "desktop")]
+pub(crate) fn print_error_chain(error: &(dyn std::error::Error + 'static)) {
+    eprintln!(
+        "Floway desktop application failed: {}",
+        error_chain_text(error)
+    );
+}
+
+#[cfg(feature = "desktop")]
 pub use app::run;
 pub use bundle_contract::{
     BundleResourceError, BundleResourceKind, RuntimeBundle, resolve_runtime_bundle,

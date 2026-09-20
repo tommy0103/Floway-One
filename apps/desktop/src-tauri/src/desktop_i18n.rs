@@ -18,6 +18,8 @@ pub struct DesktopMessages {
     pub tooltip_needs_attention: &'static str,
     pub tooltip_running: &'static str,
     pub tooltip_starting: &'static str,
+    pub update_install: &'static str,
+    pub update_install_version: &'static str,
 }
 
 const EN: DesktopMessages = DesktopMessages {
@@ -33,6 +35,8 @@ const EN: DesktopMessages = DesktopMessages {
     tooltip_needs_attention: "Floway: Needs attention",
     tooltip_running: "Floway: Running",
     tooltip_starting: "Floway: Starting",
+    update_install: "Install Update and Restart",
+    update_install_version: "Install Floway {version} and Restart",
 };
 
 const ZH_HANS: DesktopMessages = DesktopMessages {
@@ -48,6 +52,8 @@ const ZH_HANS: DesktopMessages = DesktopMessages {
     tooltip_needs_attention: "Floway：需要处理",
     tooltip_running: "Floway：运行中",
     tooltip_starting: "Floway：正在启动",
+    update_install: "安装更新并重启",
+    update_install_version: "安装 Floway {version} 并重启",
 };
 
 pub fn locale_from_identifier(identifier: Option<&str>) -> DesktopLocale {

@@ -27,6 +27,20 @@ const failureKeys = {
 const isFailureKind = (candidate: string): candidate is keyof typeof failureKeys =>
   Object.hasOwn(failureKeys, candidate);
 
+export interface DesktopUpdateRecoveryView {
+  readonly failure: {
+    readonly chain: readonly string[];
+    readonly phase: string;
+    readonly version: string | null;
+  } | null;
+  readonly pendingVersion: string | null;
+  readonly previousDownloadUrl: string | null;
+  readonly previousVersion: string | null;
+  readonly recoveryPointAvailable: boolean;
+  readonly stagedVersion: string | null;
+  readonly version: string | null;
+}
+
 export interface DesktopStatusView {
   readonly chain: readonly string[];
   readonly failureKind: keyof typeof failureKeys;
@@ -35,7 +49,45 @@ export interface DesktopStatusView {
   readonly restartEnabled: boolean;
   readonly revision: number;
   readonly state: 'failed' | 'starting';
+  readonly update: DesktopUpdateRecoveryView;
 }
+
+const stringOrNull = (candidate: unknown): string | null =>
+  typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+
+export const parseDesktopUpdateRecovery = (candidate: unknown): DesktopUpdateRecoveryView => {
+  const raw = typeof candidate === 'object' && candidate !== null
+    ? candidate as Record<string, unknown>
+    : {};
+  const rawFailure = typeof raw.failure === 'object' && raw.failure !== null
+    ? raw.failure as Record<string, unknown>
+    : null;
+  const failure = rawFailure === null
+    ? null
+    : {
+        chain: (Array.isArray(rawFailure.chain) ? rawFailure.chain : [])
+          .filter((entry): entry is string => typeof entry === 'string')
+          .slice(0, 4)
+          .map(entry => entry.slice(0, 400)),
+        phase: typeof rawFailure.phase === 'string' ? rawFailure.phase : 'unknown',
+        version: stringOrNull(rawFailure.version),
+      };
+  const pendingVersion = stringOrNull(raw.pendingVersion);
+  return {
+    failure,
+    pendingVersion,
+    previousDownloadUrl: stringOrNull(raw.previousDownloadUrl),
+    previousVersion: stringOrNull(raw.previousVersion),
+    recoveryPointAvailable: raw.recoveryPointAvailable === true,
+    stagedVersion: stringOrNull(raw.stagedVersion),
+    version: pendingVersion ?? failure?.version ?? null,
+  };
+};
+
+export const hasUpdateRecovery = (update: DesktopUpdateRecoveryView): boolean =>
+  update.version !== null
+  || update.previousDownloadUrl !== null
+  || update.recoveryPointAvailable;
 
 export const parseDesktopStatus = (params: URLSearchParams): DesktopStatusView => {
   return parseDesktopStatusValues(params.get('state'), params.get('kind'));
@@ -48,6 +100,7 @@ const parseDesktopStatusValues = (
   logsAvailableCandidate: unknown = false,
   revisionCandidate: unknown = 0,
   chainCandidate: unknown = [],
+  updateCandidate: unknown = null,
 ): DesktopStatusView => {
   const state = stateCandidate === 'failed' ? 'failed' : 'starting';
   const candidate = typeof kindCandidate === 'string' ? kindCandidate : null;
@@ -71,6 +124,7 @@ const parseDesktopStatusValues = (
     restartEnabled: state === 'failed' && restartEnabledCandidate === true,
     revision,
     state,
+    update: parseDesktopUpdateRecovery(updateCandidate),
   };
 };
 
@@ -98,6 +152,7 @@ export default function DesktopStatus() {
         readonly restartEnabled?: unknown;
         readonly revision?: unknown;
         readonly state?: unknown;
+        readonly update?: unknown;
       }>(
         'floway-desktop-status',
         event => {
@@ -108,6 +163,7 @@ export default function DesktopStatus() {
             event.payload.logsAvailable,
             event.payload.revision,
             event.payload.chain,
+            event.payload.update,
           );
           setStatus(current => next.revision > current.revision ? next : current);
         },
@@ -119,6 +175,7 @@ export default function DesktopStatus() {
         readonly restartEnabled?: unknown;
         readonly revision?: unknown;
         readonly state?: unknown;
+        readonly update?: unknown;
       }>('desktop_runtime_status');
       if (!disposed) {
         const next = parseDesktopStatusValues(
@@ -128,6 +185,7 @@ export default function DesktopStatus() {
           current.logsAvailable,
           current.revision,
           current.chain,
+          current.update,
         );
         setStatus(status => next.revision > status.revision ? next : status);
         setIpcReady(true);
@@ -150,6 +208,7 @@ export default function DesktopStatus() {
     if (!ipcReady || !failed || surface.current === null) return;
     if (!isTauri()) return;
     const locale = i18n.resolvedLanguage === 'zh-Hans' ? 'zh-Hans' : 'en';
+    const updateRecovery = hasUpdateRecovery(status.update);
     let cancelled = false;
     const report = () => {
       if (cancelled) return;
@@ -161,12 +220,22 @@ export default function DesktopStatus() {
               actions: [
                 ...(status.restartEnabled ? ['restart'] : []),
                 ...(status.logsAvailable ? ['open-logs'] : []),
+                ...(status.update.previousDownloadUrl !== null ? ['download-previous-version'] : []),
               ],
               failureKind: status.failureKind,
               logsAvailable: status.logsAvailable,
               locale,
               restartEnabled: status.restartEnabled,
               revision: status.revision,
+              ...(updateRecovery
+                ? {
+                    update: {
+                      previousVersionDownload: status.update.previousDownloadUrl !== null,
+                      recoveryPointAvailable: status.update.recoveryPointAvailable,
+                      version: status.update.version,
+                    },
+                  }
+                : {}),
             },
           });
         } catch (error) {
@@ -181,7 +250,7 @@ export default function DesktopStatus() {
       cancelAnimationFrame(frame);
       clearTimeout(fallback);
     };
-  }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.logsAvailable, status.restartEnabled, status.revision]);
+  }, [failed, i18n.resolvedLanguage, ipcReady, status.failureKind, status.logsAvailable, status.restartEnabled, status.revision, status.update]);
 
   return (
     <div className="contents" ref={surface}>
@@ -199,6 +268,11 @@ export default function DesktopStatus() {
               {status.logsAvailable
                 ? <Button as="a" href="floway-action://open-logs">
                     {t('desktop.status.openLogs')}
+                  </Button>
+                : null}
+              {status.update.previousDownloadUrl !== null && status.update.previousVersion !== null
+                ? <Button as="a" href="floway-action://download-previous-version">
+                    {t('desktop.status.update.downloadPrevious', { version: status.update.previousVersion })}
                   </Button>
                 : null}
             </>
@@ -226,6 +300,22 @@ export default function DesktopStatus() {
           ? <div className="w-full" data-desktop-failure-chain>
               <Text weight="semibold">{t('desktop.status.originalFailure')}</Text>
               <pre className="m-0 whitespace-pre-wrap font-mono text-sm">{status.chain.join('\n\n')}</pre>
+            </div>
+          : null}
+        {failed && hasUpdateRecovery(status.update)
+          ? <div className="w-full" data-desktop-update-recovery>
+              <Text weight="semibold">{t('desktop.status.update.title')}</Text>
+              <Text as="p" className="m-0">{t('desktop.status.update.description')}</Text>
+              {status.update.version !== null
+                ? <Text as="p" className="m-0" data-desktop-update-version>
+                    {t('desktop.status.update.attemptedVersion', { version: status.update.version })}
+                  </Text>
+                : null}
+              {status.update.recoveryPointAvailable
+                ? <Text as="p" className="m-0" data-desktop-update-recovery-point>
+                    {t('desktop.status.update.recoveryPoint')}
+                  </Text>
+                : null}
             </div>
           : null}
       </ErrorShell>
