@@ -10,6 +10,16 @@ export {
   validateStoredSecrets,
 } from './repo/sql.ts';
 export {
+  BackupArchiveAuthenticationError,
+  createEncryptedBackupArchive,
+  openEncryptedBackupArchive,
+} from './control-plane/data-transfer/backup-archive.ts';
+export {
+  collectExportPayload,
+  type CollectedExport,
+  type ExportPayload,
+} from './control-plane/data-transfer/routes.ts';
+export {
   PROTECTED_STORED_SECRET_FIELDS,
   UPSTREAM_CONFIG_STORED_SECRET_FIELD,
   UPSTREAM_STATE_STORED_SECRET_FIELD,
