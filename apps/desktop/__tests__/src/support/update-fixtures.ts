@@ -18,7 +18,7 @@ const pnpmCli = (): string => {
   return cli;
 };
 
-const runPnpm = async (
+export const runPnpm = async (
   repositoryRoot: string,
   args: readonly string[],
   environment: NodeJS.ProcessEnv = process.env,

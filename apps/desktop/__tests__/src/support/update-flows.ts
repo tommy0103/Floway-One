@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -26,6 +26,7 @@ import {
   generateUpdateSigningKey,
   packageApplicationArchive,
   readUpdateState,
+  runPnpm,
   sha256File,
   signUpdateArtifact,
   UPDATE_VERIFICATION_VERSION,
@@ -56,36 +57,6 @@ export interface UpdateScenarioContext {
   readonly updatedApp: string;
   readonly updateTarget: string;
 }
-
-const pnpmCli = (): string => {
-  const cli = process.env.npm_execpath;
-  if (cli === undefined) throw new Error('Update flow verification requires pnpm to provide npm_execpath');
-  return cli;
-};
-
-const runPnpm = async (
-  repositoryRoot: string,
-  args: readonly string[],
-  environment: NodeJS.ProcessEnv = process.env,
-): Promise<void> => {
-  let output = '';
-  await new Promise<void>((resolveRun, rejectRun) => {
-    const child = spawn(process.execPath, [pnpmCli(), ...args], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { output += chunk; });
-    child.stderr.on('data', chunk => { output += chunk; });
-    child.once('error', cause => rejectRun(new Error(`Failed to start pnpm ${args.join(' ')}`, { cause })));
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolveRun();
-      else rejectRun(new Error(`pnpm ${args.join(' ')} exited with ${code ?? signal ?? 'an unknown status'}\n${output}`));
-    });
-  });
-};
 
 // The updated-application build bumps every release-version authority to the
 // verification version, rebuilds the application bundle, and restores the
@@ -461,6 +432,84 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
   });
 };
 
+// A staged artifact tampered between staging and the controlled restart is
+// re-authenticated at install and rejected with the staged update, the pending
+// state, and the recovery point intact.
+export const assertStagedArtifactTamperRejected = async (
+  scenario: UpdateScenarioContext,
+): Promise<void> => {
+  const applicationHome = resolve(scenario.isolatedRoot, 'ShellData-update-staged-tamper');
+  const personalRoot = resolve(scenario.isolatedRoot, 'PersonalData-update-staged-tamper');
+  const credentialIdentity: CredentialIdentity = {
+    service: `Floway desktop package verification ${randomUUID()}`,
+    account: `device-master-key-${randomUUID()}`,
+  };
+  const workDir = resolve(scenario.isolatedRoot, 'update-work-staged-tamper');
+
+  await withFailureSafeCleanup(async cleanup => {
+    cleanup.defer('staged-tamper work directory', async () => await rm(workDir, { force: true, recursive: true }));
+    cleanup.defer('staged-tamper personal data', async () => await rm(personalRoot, { force: true, recursive: true }));
+    cleanup.defer('staged-tamper shell data', async () => await rm(applicationHome, { force: true, recursive: true }));
+    cleanup.defer('staged-tamper credential', async () => await runCredentialScript(scenario.context, credentialIdentity, 'delete'));
+    await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+    cleanup.defer('staged-tamper listener', async () => await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT));
+
+    await restorePristineApplication(scenario);
+    const artifact = await buildScenarioArtifact(scenario, { credentialIdentity, personalRoot, workDir });
+    scenario.server.serve({
+      artifact: artifact.bytes,
+      manifest: updateManifest({
+        artifactUrl: scenario.server.artifactUrl,
+        signature: artifact.signature,
+        target: scenario.updateTarget,
+        version: UPDATE_VERIFICATION_VERSION,
+      }),
+    });
+
+    await mkdir(resolve(applicationHome, 'update'), { recursive: true });
+    const sentinelRecoveryPoint = '{"preserved":"pre-update recovery point"}\n';
+    await writeFile(resolve(applicationHome, 'update', 'recovery-point.json'), sentinelRecoveryPoint, { mode: 0o600 });
+
+    await writeContractedEntry(scenario.context, personalUpdateEntrySource(personalRoot, credentialIdentity));
+    const first = launchForUpdate(scenario, { applicationHome });
+    cleanup.defer('staged-tamper first process group', async () => await terminateProcessGroup(first.child));
+    await waitForCaptured(first, [
+      '"phase":"staged"',
+      `"version":"${UPDATE_VERIFICATION_VERSION}"`,
+    ], 120_000);
+    await terminateProcessGroup(first.child);
+    await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+
+    const stagedArtifact = resolve(applicationHome, 'update', `staged-${UPDATE_VERIFICATION_VERSION}.bin`);
+    const stagedBytes = await readFile(stagedArtifact);
+    stagedBytes[Math.floor(stagedBytes.byteLength / 2)] ^= 0xFF;
+    await writeFile(stagedArtifact, stagedBytes);
+
+    const second = launchForUpdate(scenario, {
+      applicationHome,
+      args: ['--install-staged-update'],
+    });
+    cleanup.defer('staged-tamper second process group', async () => await terminateProcessGroup(second.child));
+    await waitForCaptured(second, [
+      '"phase":"installing"',
+      '"phase":"error"',
+      '"updatePhase":"signature"',
+      'failed re-authentication',
+    ], 120_000);
+    await assertUpdateState(applicationHome, {
+      failurePhase: 'signature',
+      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      pending: null,
+      staged: UPDATE_VERIFICATION_VERSION,
+    });
+    if ((await readFile(resolve(applicationHome, 'update', 'recovery-point.json'), 'utf8')) !== sentinelRecoveryPoint) {
+      throw new Error('Floway staged-artifact tamper rejection rewrote the preserved recovery point');
+    }
+    console.log('Floway rejected the tampered staged artifact at install re-authentication with the staged update and recovery point intact');
+    await terminateProcessGroup(second.child);
+  });
+};
+
 // S2/S3: a bad signature or a corrupted artifact fails authentication before
 // installation, leaves the running gateway serving, and preserves any
 // pre-existing recovery point.
@@ -527,6 +576,10 @@ export const assertSignatureFailureKeepsRuntimeServing = async (
       '"phase":"error"',
       '"updatePhase":"signature"',
       `"version":"${UPDATE_VERIFICATION_VERSION}"`,
+      'FLOWAY_DESKTOP_UPDATE_SURFACE ',
+      '"failurePhase":"signature"',
+      '"text":"Update Failed — Download Previous Version"',
+      '"enabled":true',
     ], 120_000);
     await waitForLoopbackHealth(origin, launch.output);
     await assertUpdateState(applicationHome, {
@@ -695,6 +748,7 @@ export const assertPackagedUpdateFlows = async (
   };
   try {
     await assertSignedUpdateInstallsAndReportsHealthy(scenario);
+    await assertStagedArtifactTamperRejected(scenario);
     await assertSignatureFailureKeepsRuntimeServing(scenario, {
       corruptArtifact: false,
       label: 'bad-signature',
@@ -707,14 +761,14 @@ export const assertPackagedUpdateFlows = async (
     });
     console.log('Floway rejected the corrupted update artifact before installation through the explicit preview channel and preserved the recovery point');
     await assertPostUpdateFailurePresentsRecovery(nativeWindowProbe, scenario, {
-      expectedFragments: [],
+      expectedFragments: ['runtime resource is unavailable'],
       failureKind: 'asset',
       label: 'health-failure',
       tamper: tamperRemoveLazyDashboardAsset,
     });
     await assertPostUpdateFailurePresentsRecovery(nativeWindowProbe, scenario, {
       expectedLocale: 'zh-Hans',
-      expectedFragments: [],
+      expectedFragments: ['could not apply its local database migrations'],
       failureKind: 'migration',
       label: 'migration-failure',
       tamper: tamperAddInvalidMigration,

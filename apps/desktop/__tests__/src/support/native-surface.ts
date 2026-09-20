@@ -237,6 +237,57 @@ const renderedContains = (recognized: string, expected: string): boolean => {
   return editDistanceAtMost(recognized, needle, recognitionTolerance(needle.length));
 };
 
+interface ExternalSurfaceObservation {
+  readonly ocrCandidates?: unknown;
+  readonly pid?: unknown;
+  readonly snapshotSha256?: unknown;
+  readonly visibleWindowCount?: unknown;
+}
+
+const recognizeSurfaceText = (external: ExternalSurfaceObservation): string =>
+  (Array.isArray(external.ocrCandidates) ? external.ocrCandidates : [])
+    .filter((candidate): candidate is string => typeof candidate === 'string')
+    .map(normalizeRecognizedText)
+    .join('');
+
+const probeRenderedSurface = async (
+  executable: string,
+  pid: number,
+  snapshotPath: string,
+  expectedSha256: string,
+): Promise<string> => {
+  const { stdout } = await execFileAsync(executable, [
+    String(pid),
+    snapshotPath,
+    expectedSha256,
+  ], { timeout: 30_000 });
+  const external = JSON.parse(stdout) as ExternalSurfaceObservation;
+  if (external.pid !== pid || typeof external.visibleWindowCount !== 'number' || external.visibleWindowCount < 1) {
+    throw new Error(`CoreGraphics found no visible Floway window: ${JSON.stringify(external)}`);
+  }
+  if (external.snapshotSha256 !== expectedSha256) {
+    throw new Error(`Floway rendered snapshot digest did not match its diagnostic: ${JSON.stringify(external)}`);
+  }
+  const recognized = recognizeSurfaceText(external);
+  if (recognized.length === 0) {
+    throw new Error(`Vision recognized no rendered recovery text: ${JSON.stringify(external)}`);
+  }
+  return recognized;
+};
+
+const assertRenderedCopy = (
+  recognized: string,
+  requiredText: readonly string[],
+  expectedRenderedFragments: readonly string[],
+): void => {
+  if (requiredText.some(expected => !renderedContains(recognized, expected))) {
+    throw new Error(`Rendered pixels omitted recovery copy: ${JSON.stringify({ recognized, requiredText })}`);
+  }
+  if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {
+    throw new Error(`Rendered pixels omitted the original failure chain: ${JSON.stringify({ recognized, expectedRenderedFragments })}`);
+  }
+};
+
 export const assertNativeFailureSurface = async (
   executable: string,
   pid: number,
@@ -298,48 +349,26 @@ export const assertNativeFailureSurface = async (
   }
 
   const snapshotPath = resolve(options.dataRoot, RECOVERY_SNAPSHOT_FILE_NAME);
-  const { stdout } = await execFileAsync(executable, [
-    String(pid),
+  const recognized = await probeRenderedSurface(
+    executable,
+    pid,
     snapshotPath,
     recovery.renderedSnapshot.sha256,
-  ], { timeout: 30_000 });
-  const external = JSON.parse(stdout) as {
-    readonly ocrCandidates?: unknown;
-    readonly pid?: unknown;
-    readonly snapshotSha256?: unknown;
-    readonly visibleWindowCount?: unknown;
-  };
-  if (external.pid !== pid || typeof external.visibleWindowCount !== 'number' || external.visibleWindowCount < 1) {
-    throw new Error(`CoreGraphics found no visible Floway window: ${JSON.stringify(external)}`);
-  }
-  if (external.snapshotSha256 !== recovery.renderedSnapshot.sha256) {
-    throw new Error(`Floway rendered snapshot digest did not match its diagnostic: ${JSON.stringify(external)}`);
-  }
-  if (!Array.isArray(external.ocrCandidates) || external.ocrCandidates.length === 0) {
-    throw new Error(`Vision recognized no rendered recovery text: ${JSON.stringify(external)}`);
-  }
-  const recognized = external.ocrCandidates
-    .filter((candidate): candidate is string => typeof candidate === 'string')
-    .map(normalizeRecognizedText)
-    .join('');
+  );
   const copy = recoveryCopy[expectedLocale];
   const failure = copy.failures[options.failureKind as keyof typeof copy.failures];
-  const details = expectedLogsAvailable ? copy.detailsInLogs : copy.detailsInStandardError;
-  const requiredText = [copy.title, failure, details, copy.restart];
-  if (
-    failure === undefined
-    || recognized.length === 0
-    || requiredText.some(expected => !renderedContains(recognized, expected))
-  ) {
-    throw new Error(`Rendered pixels omitted recovery copy: ${JSON.stringify({ recognized, requiredText })}`);
+  if (failure === undefined) {
+    throw new Error(`Rendered pixels omitted recovery copy: ${JSON.stringify({ recognized, failureKind: options.failureKind })}`);
   }
+  const details = expectedLogsAvailable ? copy.detailsInLogs : copy.detailsInStandardError;
+  assertRenderedCopy(
+    recognized,
+    [copy.title, failure, details, copy.restart],
+    options.expectedRenderedFragments ?? [],
+  );
   const hasLogsAction = renderedContains(recognized, copy.logs);
   if (hasLogsAction !== expectedLogsAvailable) {
     throw new Error('Rendered log action did not match availability');
-  }
-  const expectedRenderedFragments = options.expectedRenderedFragments ?? [];
-  if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {
-    throw new Error(`Rendered pixels omitted the original failure chain: ${JSON.stringify({ recognized, expectedRenderedFragments })}`);
   }
 };
 
@@ -395,48 +424,26 @@ export const assertUpdateRecoverySurface = async (
   }
 
   const snapshotPath = resolve(options.dataRoot, RECOVERY_SNAPSHOT_FILE_NAME);
-  const { stdout } = await execFileAsync(executable, [
-    String(pid),
+  const recognized = await probeRenderedSurface(
+    executable,
+    pid,
     snapshotPath,
     recovery.renderedSnapshot.sha256,
-  ], { timeout: 30_000 });
-  const external = JSON.parse(stdout) as {
-    readonly ocrCandidates?: unknown;
-    readonly pid?: unknown;
-    readonly snapshotSha256?: unknown;
-    readonly visibleWindowCount?: unknown;
-  };
-  if (external.pid !== pid || typeof external.visibleWindowCount !== 'number' || external.visibleWindowCount < 1) {
-    throw new Error(`CoreGraphics found no visible Floway window: ${JSON.stringify(external)}`);
-  }
-  if (external.snapshotSha256 !== recovery.renderedSnapshot.sha256) {
-    throw new Error(`Floway rendered snapshot digest did not match its diagnostic: ${JSON.stringify(external)}`);
-  }
-  if (!Array.isArray(external.ocrCandidates) || external.ocrCandidates.length === 0) {
-    throw new Error(`Vision recognized no rendered recovery text: ${JSON.stringify(external)}`);
-  }
-  const recognized = external.ocrCandidates
-    .filter((candidate): candidate is string => typeof candidate === 'string')
-    .map(normalizeRecognizedText)
-    .join('');
+  );
   const copy = updateRecoveryCopy[expectedLocale];
   const failure = recoveryCopy[expectedLocale].failures[options.failureKind as keyof (typeof recoveryCopy)['en']['failures']];
-  const requiredText = [
-    copy.title,
-    copy.description,
-    copy.recoveryPoint,
-    copy.download(options.previousVersion),
-    failure,
-  ];
-  if (
-    failure === undefined
-    || recognized.length === 0
-    || requiredText.some(expected => !renderedContains(recognized, expected))
-  ) {
-    throw new Error(`Rendered pixels omitted update recovery copy: ${JSON.stringify({ recognized, requiredText })}`);
+  if (failure === undefined) {
+    throw new Error(`Rendered pixels omitted update recovery copy: ${JSON.stringify({ recognized, failureKind: options.failureKind })}`);
   }
-  const expectedRenderedFragments = options.expectedRenderedFragments ?? [];
-  if (expectedRenderedFragments.some(fragment => !renderedContains(recognized, fragment))) {
-    throw new Error(`Rendered pixels omitted the original failure chain: ${JSON.stringify({ recognized, expectedRenderedFragments })}`);
-  }
+  assertRenderedCopy(
+    recognized,
+    [
+      copy.title,
+      copy.description,
+      copy.recoveryPoint,
+      copy.download(options.previousVersion),
+      failure,
+    ],
+    options.expectedRenderedFragments ?? [],
+  );
 };
