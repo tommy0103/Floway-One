@@ -17,6 +17,8 @@ pub enum DesktopAction {
     DownloadPreviousVersion,
     OpenLogs,
     Restart,
+    // Only ever constructed in verifier builds (see `desktop_action`).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     VerifyExternalOpen,
 }
 
