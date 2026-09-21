@@ -9,6 +9,7 @@ import {
   resolveNodeRuntimeProfile,
   type BootstrappedNodePlatform,
 } from './bootstrap.ts';
+import { createCodexOAuthRelayChannel } from './codex-oauth-relay-listener.ts';
 import {
   DESKTOP_RUNTIME_CONTRACT_ENV,
   loadDesktopRuntimeCompatibility,
@@ -43,6 +44,7 @@ import {
   app,
   assertRuntimeProfileData,
   initBackgroundSchedulerResolver,
+  initCodexOAuthRelayChannel,
   initPersonalDashboardBootstrap,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
@@ -96,9 +98,11 @@ export interface NodeEntryOverrides {
   readonly args?: readonly string[];
   readonly assertRuntimeProfileData?: (repo: SqlRepo) => Promise<void>;
   readonly bootstrapNodePlatform?: typeof bootstrapNodePlatform;
+  readonly createCodexOAuthRelayChannel?: typeof createCodexOAuthRelayChannel;
   readonly createLocalApp?: typeof createLocalApp;
   readonly createNodeStoredSecretCodec?: typeof createNodeStoredSecretCodec;
   readonly createUpdateRecoveryPoint?: typeof createUpdateRecoveryPoint;
+  readonly initCodexOAuthRelayChannel?: typeof initCodexOAuthRelayChannel;
   readonly initializePersonalStorage?: typeof initializePersonalStorage;
   readonly installPersonalLogging?: typeof installPersonalLogging;
   readonly loadDesktopRuntimeCompatibility?: typeof loadDesktopRuntimeCompatibility;
@@ -239,6 +243,15 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
       { permissions: personal.storage },
     );
   }
+  // The Codex OAuth relay (automatic localhost:1455 callback completion) is a
+  // personal-runtime capability: only here does the operator's browser land on
+  // this machine's loopback. Server and Cloudflare profiles keep the
+  // dashboard's manual paste flow.
+  (overrides.initCodexOAuthRelayChannel ?? initCodexOAuthRelayChannel)(
+    personal === null
+      ? null
+      : (overrides.createCodexOAuthRelayChannel ?? createCodexOAuthRelayChannel)(),
+  );
   if (updateRecoveryPoint) {
     // The desktop shell runs this mode in a separate short-lived child after
     // its packaged runtime has stopped: it opens the database, encrypts the

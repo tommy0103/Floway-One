@@ -1,9 +1,10 @@
+import { dropCodexRelaySession, getCodexOAuthRelayChannel, pollCodexRelayResult, stashCodexRelaySession } from './codex-relay.ts';
 import { resolveControlPlaneFetcher } from './proxy-resolution.ts';
 import { upstreamErrorMessage as errorMessage } from './shared.ts';
-import type { CtxWithJson } from '../../middleware/zod-validator.ts';
+import type { CtxWithJson, CtxWithQuery } from '../../middleware/zod-validator.ts';
 import { getRepo } from '../../repo/index.ts';
 import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
-import type { codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody } from '../schemas.ts';
+import type { codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody, codexRelayResultQuery } from '../schemas.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import type { Fetcher, UpstreamRecord } from '@floway-dev/provider';
 import {
@@ -22,9 +23,37 @@ import {
 // share one endpoint each: the caller posts the draft record; when
 // `record.id !== ''` the produced patch is targeted-persisted, otherwise
 // it is only returned for the front-end to merge into its draft.
+//
+// When the SPA posts its PKCE `verifier` and this runtime can hold the
+// registered `localhost:1455` redirect port, the verifier moves into a relay
+// session and `relay: true` tells the SPA to wait for the automatic
+// completion instead of asking for a manual paste. The stash happens before
+// activation so the listener's idle sweeper always sees a live session once
+// the port is held; a failed activation drops it again.
 export const codexOAuthAuthorizeUrl = async (c: CtxWithJson<typeof codexOAuthAuthorizeUrlBody>) => {
-  const { challenge, state } = c.req.valid('json');
-  return c.json({ authorize_url: buildCodexAuthorizeUrl({ state, codeChallenge: challenge }) });
+  const { challenge, state, verifier, record } = c.req.valid('json');
+  let relay = false;
+  if (verifier !== undefined) {
+    const channel = getCodexOAuthRelayChannel();
+    if (channel !== null) {
+      stashCodexRelaySession({
+        state,
+        verifier,
+        record: { id: record.id, kind: record.kind, proxy_fallback_list: record.proxy_fallback_list },
+      });
+      relay = await channel.activate();
+      if (!relay) dropCodexRelaySession(state);
+    }
+  }
+  return c.json({ authorize_url: buildCodexAuthorizeUrl({ state, codeChallenge: challenge }), relay });
+};
+
+// The SPA's poll while its automatic sign-in is out in the browser. Terminal
+// outcomes are consumed by the first poll; the schema of the response matches
+// the manual exchange patch so the caller can treat both alike.
+export const codexOAuthRelayResult = async (c: CtxWithQuery<typeof codexRelayResultQuery>) => {
+  const { state } = c.req.valid('query');
+  return c.json(pollCodexRelayResult(state));
 };
 
 export const codexOAuthExchange = async (c: CtxWithJson<typeof codexOAuthExchangeBody>) => {
