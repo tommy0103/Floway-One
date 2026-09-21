@@ -1,49 +1,95 @@
-# Floway
+# Floway One
 
-Floway is a self-hosted LLM API gateway for coding agents and API clients. It
-puts subscription-backed and token-backed model providers behind one gateway,
-then routes each model through the API shape the client already speaks.
+All models, one local entry.
+
+Floway One is a personal, local-first LLM gateway for people who use multiple
+AI coding tools. It puts subscription-backed and token-backed model providers
+behind one stable loopback address, then routes each model through the API
+shape the client already speaks — like Clash, but for AI model traffic.
+
+Floway One is a personal-product fork of [Floway](https://github.com/Menci/Floway).
+It keeps the full gateway, protocol translation, provider integrations, and
+Dashboard, and packages them as an installable desktop application that runs
+entirely on your machine. No Docker, Node.js, or database to install; no
+account or cloud control plane to trust. The product and technical
+specification lives in [docs/floway-one-spec.zh-CN.md](./docs/floway-one-spec.zh-CN.md).
 
 ## Highlights
 
+- One stable address: every client always talks to `http://127.0.0.1:8788`.
+  Configure Codex, Claude Code, and other tools once; switch providers, models,
+  and routing afterwards without touching client configuration.
 - Use GitHub Copilot, ChatGPT subscriptions, Claude.ai subscriptions, Azure AI,
-  configurable multi-protocol HTTP providers, and Ollama from one deployment.
+  configurable multi-protocol HTTP providers, and Ollama from one app.
 - Serve OpenAI, Anthropic, Gemini-compatible, audio transcription, and rerank
   APIs with cross-protocol translation where needed.
-- Discover vendor model catalogs live while retaining manual model configuration
-  for providers that require or permit it.
-- Manage upstreams, routing order, model aliases, API keys, and web search from
-  a dashboard.
+- One owner, many API keys: give each tool, project, or use case its own
+  revocable key with per-key upstream scope, usage statistics, and request
+  history.
+- Local-first: configuration, credentials (encrypted at rest), usage, and
+  request records stay in the operating system's per-user application-data
+  directory.
+- Desktop shell with tray lifecycle: closing the window keeps the gateway
+  running; only an explicit quit stops it.
+- Encrypted full backups and credential-free safe exports.
 - Generate one-command Claude Code and Codex configurations from an API key.
-- Run on Cloudflare Workers or Node.js, with Docker Compose provided for a
-  self-hosted server and dashboard.
 
 ## Quick Start
 
-Docker Compose is the shortest path to a complete local deployment:
+Signed desktop installers are on the roadmap; today Floway One runs from
+source. Requires Node.js 24 and pnpm 10:
 
 ```bash
-git clone https://github.com/Menci/Floway.git
-cd Floway
-ADMIN_KEY='replace-with-a-secret' docker compose -f docker/docker-compose.yml up --build -d
+git clone https://github.com/tommy0103/Floway-One.git
+cd Floway-One
+pnpm install
+ADMIN_KEY='replace-with-a-secret' pnpm run dev:one
 ```
 
-Open <http://localhost:18088>, leave the username blank, and use `ADMIN_KEY` as
-the password. Then:
+Open <http://127.0.0.1:8788> and sign in with your `ADMIN_KEY`. Then:
 
 1. Add at least one provider under **Providers → Upstreams**.
 2. Create a key under **Services → API Keys**.
 3. Give that key to a client as a bearer token or `x-api-key`, or use **Agent
    Setup** to configure Claude Code or Codex.
 
-The data-plane and control-plane APIs are also exposed directly at
-<http://localhost:8788>. SQLite, file-backed dump bodies, and oversized
-Stateful OpenAI Responses item payloads persist in the `floway-data` volume.
+The personal profile binds only to `http://127.0.0.1:8788` and stores its
+database, files, logs directory, and `runtime.json` below the operating
+system's per-user application-data directory. Set `PORT` when deliberately
+moving the personal endpoint; the selected port is persisted in `runtime.json`,
+and startup warns that configured AI clients must be updated. A port conflict
+or inaccessible application-data directory stops startup rather than selecting
+a fallback. Personal stdout and stderr are retained in size-bounded rotating
+files under the application-data logs directory.
 
-The dashboard uses Floway's control plane to manage users, keys, upstreams,
-routing, and telemetry. Coding agents and API clients call the data plane,
-which performs model resolution, upstream dispatch, and any required protocol
-translation. Both planes are served by the same gateway process.
+The desktop executable accepts `--data-dir <absolute-path>` when an operator
+needs its shell logs and support diagnostics beneath a different application
+data root. This changes only Floway-owned desktop data; it does not replace the
+user home directory or operating-system credential store.
+
+## Architecture
+
+Floway One follows the Clash split between a long-lived core and a management
+shell:
+
+```text
+Floway.app
+├── Tauri 2 desktop shell (window, tray, single instance)
+├── Node.js sidecar (gateway + control plane)
+└── Dashboard (served same-origin, opened in the shell's WebView)
+```
+
+The desktop shell starts the local gateway process and loads the Dashboard
+from the same loopback origin, so the existing SPA, SSE, WebSocket, OAuth, and
+Agent Setup flows keep working unchanged. The window is only a control
+surface: the gateway keeps running after the window closes, and can also run
+headless without the desktop shell.
+
+The desktop app bundles its own Node.js runtime, compiled gateway, database
+migrations, and Dashboard assets per platform and architecture. On macOS it is
+built as separate arm64 and x64 applications, each verified on its native
+architecture by the desktop test gate; public signed installers are on the
+roadmap, and Windows and Linux shells are planned.
 
 ## Compatibility
 
@@ -65,9 +111,9 @@ translation. Both planes are served by the same gateway process.
 | Jina Rerank | `POST /jina/v1/rerank` |
 | Voyage Rerank | `POST /voyage/v1/rerank` |
 
-`/v1/models` and `/models` return Floway's public model superset to ordinary
-callers and select the Codex or Claude Code discovery shape for those clients'
-User-Agent.
+`/v1/models` and `/models` return Floway One's public model superset to
+ordinary callers and select the Codex or Claude Code discovery shape for those
+clients' User-Agent.
 
 Rerank models are manual Custom models. Each model selects its outbound Cohere,
 Jina, Voyage, DashScope-compatible, or DashScope-native protocol and may
@@ -88,79 +134,13 @@ responses retain their upstream wire shape.
 | Azure | Azure AI resource or Foundry project endpoint and API key | Configured models |
 | Ollama | ollama.com or a self-hosted Ollama-compatible server | Fetched live from Ollama, with optional manual overrides |
 
-## Other Deployment Options
+## Relationship to Floway
 
-### Cloudflare Workers
-
-Requires Node.js 22.5+, pnpm 10.x, and a Cloudflare account.
-
-```bash
-pnpm install
-pnpm wrangler login
-cp wrangler.example.jsonc wrangler.jsonc
-
-# Follow the comments in wrangler.jsonc to create the required resources and
-# replace every <YOUR_*> placeholder.
-pnpm run db:migrate
-pnpm run dev
-```
-
-The local dashboard runs at <http://localhost:5174>. For an agent-assisted
-production deployment, invoke `$deploy-to-cloudflare`. It uses the established
-update and rollback flow by default. A deployment named as new first runs an
-isolated binding-probe bootstrap and requires its `Hello World` response before
-publishing Floway.
-
-For a manual production update, configure the admin secret, apply the remote
-migrations, and deploy:
-
-```bash
-pnpm wrangler secret put ADMIN_KEY
-pnpm run db:migrate:remote
-pnpm run deploy
-```
-
-### Node.js
-
-The Node.js target builds and serves the production Dashboard together with the
-data-plane and control-plane APIs. It applies SQLite migrations automatically
-and defaults to `./data/floway.db`, `./data/files`, and port `8788`:
-
-```bash
-pnpm install
-ADMIN_KEY='replace-with-a-secret' pnpm run dev:node
-```
-
-The Dashboard and gateway share <http://localhost:8788>; no separate web server
-or reverse proxy is required for this mode. The command rebuilds the Dashboard
-before starting so it also works immediately after a clean checkout.
-Production Node.js deployments must set both `NODE_ENV=production` and a
-non-empty `ADMIN_KEY`.
-
-Floway's explicit personal profile instead binds only to
-`http://127.0.0.1:8788` and stores its database, files, logs directory, and
-`runtime.json` below the operating system's per-user application-data
-directory:
-
-```bash
-ADMIN_KEY='replace-with-a-secret' pnpm run dev:one
-```
-
-Set `PORT` when deliberately moving the personal endpoint. The selected port
-is persisted in `runtime.json`, and startup warns that configured AI clients
-must be updated. A port conflict or inaccessible application-data directory
-stops startup rather than selecting a fallback. Personal stdout and stderr are
-also retained in size-bounded rotating files under the application-data logs
-directory; ordinary Node server mode continues to use its existing console
-behavior.
-
-The desktop executable accepts `--data-dir <absolute-path>` when an operator
-needs its shell logs and support diagnostics beneath a different application
-data root. This changes only Floway-owned desktop data; it does not replace the
-user home directory or operating-system credential store.
-
-Podman users can instead follow the
-[systemd deployment guide](./docker/systemd/README.md).
+Floway One tracks the upstream [Floway](https://github.com/Menci/Floway)
+codebase and keeps it syncable. The multi-user server, Docker Compose, and
+Cloudflare Workers targets remain in the tree (see `docker/` and
+`wrangler.example.jsonc`) but are outside Floway One's product scope: the
+product is the personal, loopback-only desktop gateway with a single owner.
 
 ## Development
 
