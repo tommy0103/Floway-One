@@ -412,6 +412,11 @@ function CopilotConfig({ record, onPatch }: {
   </div>;
 }
 
+// Slightly beyond the gateway's relay session TTL: the session expiry is the
+// primary clock, this only catches a poll loop that never saw the server's
+// `unknown`.
+const RELAY_WAIT_LIMIT_MS = 11 * 60 * 1000;
+
 type OAuthKind = 'codex' | 'claude-code';
 function OAuthConfig({ record, onPatch }: {
   record: Extract<UpstreamRecord, { kind: OAuthKind }>;
@@ -514,11 +519,14 @@ function OAuthConfig({ record, onPatch }: {
 
   // Poll for the relay-completed sign-in while the operator is off in the
   // browser. Terminal outcomes consume the session; the tick only chains
-  // while this panel still shows the armed flow it minted the state for.
+  // while this panel still shows the armed flow it minted the state for. A
+  // wait that outlives the server-side session TTL flips to the manual
+  // fallback instead of spinning forever.
   useEffect(() => {
     if (!relay || authorizeUrl === null || relayState === null) return;
     let superseded = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
     const poll = async (): Promise<void> => {
       const result = await callApi(() => api.api.upstreams.codex.oauth['relay-result'].$get({ query: { state: relayState } }));
       if (superseded) return;
@@ -526,6 +534,10 @@ function OAuthConfig({ record, onPatch }: {
         if (result.data.status === 'complete') { finishImport(result.data.patch); return; }
         if (result.data.status === 'failed') { setRelay(false); setRelayOutcome(result.data.message); return; }
         if (result.data.status === 'unknown') { setRelay(false); setRelayOutcome(t('dashboard.upstreamEditor.oauth.relayExpired')); return; }
+      }
+      if (Date.now() - startedAt > RELAY_WAIT_LIMIT_MS) {
+        setRelay(false); setRelayOutcome(t('dashboard.upstreamEditor.oauth.relayExpired'));
+        return;
       }
       timer = setTimeout(() => { void poll(); }, 2000);
     };

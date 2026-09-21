@@ -56,5 +56,6 @@ export {
   type CodexOAuthRelayChannel,
   type CodexRelayOutcome,
 } from './control-plane/upstreams/codex-relay.ts';
+export { CODEX_REDIRECT_PORT } from '@floway-dev/provider-codex';
 export { runScheduledMaintenance } from './scheduled.ts';
 export { assertRuntimeProfileData } from './runtime/profile-policy.ts';

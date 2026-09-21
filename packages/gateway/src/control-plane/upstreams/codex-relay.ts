@@ -54,6 +54,9 @@ interface CodexRelaySession {
   record: { id: string; kind: string; proxy_fallback_list?: readonly ProxyFallbackEntry[] };
   result: { config: CodexUpstreamConfig; state: CodexUpstreamState } | null;
   error: string | null;
+  // Set while an exchange round trip is in flight, so an interleaved duplicate
+  // callback delivery cannot start a second exchange.
+  completing: boolean;
   expiresAt: number;
 }
 
@@ -91,6 +94,7 @@ export const stashCodexRelaySession = (input: {
     record: input.record,
     result: null,
     error: null,
+    completing: false,
     expiresAt: Date.now() + SESSION_TTL_MS,
   });
 };
@@ -132,7 +136,9 @@ const releaseChannelWhenIdle = (): void => {
 // browser back to `http://localhost:1455/auth/callback`. Idempotent for a
 // repeated callback delivery: a session that already holds an outcome answers
 // with it again instead of exchanging a second time (the first authorization
-// code was burned by that exchange anyway).
+// code was burned by that exchange anyway), and a session whose exchange is
+// still in flight answers `pending` so an interleaved duplicate cannot run a
+// second exchange or clobber the first call's outcome.
 export const completeCodexRelayCallback = async (input: {
   code: string;
   state: string;
@@ -140,9 +146,11 @@ export const completeCodexRelayCallback = async (input: {
   expireCodexRelaySessions();
   const session = sessions.get(input.state);
   if (session === undefined) return { status: 'unknown' };
+  if (session.completing) return { status: 'pending' };
   if (session.result !== null) return { status: 'complete', patch: session.result };
   if (session.error !== null) return { status: 'failed', message: session.error };
 
+  session.completing = true;
   try {
     // The relay only exists on Node runtimes, where the runtime location
     // comes from the operator-set env var rather than a request property.
@@ -180,8 +188,13 @@ export const completeCodexRelayCallback = async (input: {
     releaseChannelWhenIdle();
     return { status: 'complete', patch: session.result };
   } catch (error) {
+    // The session keeps the short message the success page and the SPA poll
+    // show; the original error is logged here so its chain stays recoverable.
+    console.error('[codex-oauth-relay] callback completion failed', error);
     session.error = error instanceof Error ? error.message : String(error);
     releaseChannelWhenIdle();
     return { status: 'failed', message: session.error };
+  } finally {
+    session.completing = false;
   }
 };

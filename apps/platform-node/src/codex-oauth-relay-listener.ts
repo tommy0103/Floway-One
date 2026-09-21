@@ -13,6 +13,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import {
+  CODEX_REDIRECT_PORT,
   completeCodexRelayCallback,
   expireCodexRelaySessions,
   liveCodexRelaySessionCount,
@@ -20,7 +21,9 @@ import {
   type CodexRelayOutcome,
 } from '@floway-dev/gateway';
 
-export const CODEX_OAUTH_RELAY_PORT = 1455;
+// The port is owned by the Codex OAuth client registration (see
+// CODEX_REDIRECT_URI in @floway-dev/provider-codex); tests may retarget it.
+export const CODEX_OAUTH_RELAY_PORT = CODEX_REDIRECT_PORT;
 const RELAY_CALLBACK_PATH = '/auth/callback';
 const SWEEP_INTERVAL_MS = 5_000;
 // Three consecutive empty sweeps (~15s) before letting go of the port, so a
@@ -96,10 +99,13 @@ const handleCallback = async (
   port: number,
 ): Promise<void> => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-  // Loopback-only service: reject anything not addressed to the registered
-  // redirect host, including DNS-rebinding names that resolve to 127.0.0.1.
+  // Loopback-only service addressed by the registered redirect URI: accept
+  // exactly the localhost / loopback hosts that URI names. Anything else —
+  // including rebinding names that resolve to 127.0.0.1 — is refused;
+  // completing a flow still additionally requires its SPA-minted state.
   const host = (req.headers.host ?? '').toLowerCase();
-  if (req.method !== 'GET' || url.pathname !== RELAY_CALLBACK_PATH || !host.endsWith(`:${port}`)) {
+  const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+  if (req.method !== 'GET' || url.pathname !== RELAY_CALLBACK_PATH || !allowedHosts.has(host)) {
     res.statusCode = 404;
     res.end();
     return;
