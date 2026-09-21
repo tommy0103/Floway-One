@@ -17,6 +17,7 @@ pub enum DesktopAction {
     DownloadPreviousVersion,
     OpenLogs,
     Restart,
+    VerifyExternalOpen,
 }
 
 pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
@@ -27,6 +28,11 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
         "download-previous-version" => Some(DesktopAction::DownloadPreviousVersion),
         "open-logs" => Some(DesktopAction::OpenLogs),
         "restart" => Some(DesktopAction::Restart),
+        // The packaged verifier's real-machine gate for the external-link
+        // handoff (#45): a navigation to this action walks the same
+        // handle_navigation segment a link click takes and leaves an
+        // observable trace. It carries no more authority than a link click.
+        "verify-external-open" => Some(DesktopAction::VerifyExternalOpen),
         _ => None,
     }
 }
@@ -368,6 +374,40 @@ pub fn enforce_dashboard_navigation<E>(
             Ok(false)
         }
         DashboardNavigationDecision::Reject => Ok(false),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalOpenError {
+    InvalidUrl,
+    Rejected,
+}
+
+impl ExternalOpenError {
+    // Stable codes the Dashboard maps to localized copy; the shell logs the
+    // full detail separately.
+    pub fn as_code(self) -> &'static str {
+        match self {
+            ExternalOpenError::InvalidUrl => "external-open:invalid-url",
+            ExternalOpenError::Rejected => "external-open:rejected",
+        }
+    }
+}
+
+// The Dashboard's explicit open-external command (#45) decides through the
+// same policy the `on_new_window` backstop applies — reusing `decide` with
+// `new_window: true` keeps one authority for "may this leave the webview"
+// instead of a parallel validation that can drift from it.
+pub fn resolve_external_open(
+    policy: &DashboardNavigationPolicy,
+    raw: &str,
+) -> Result<Url, ExternalOpenError> {
+    let candidate: Url = Url::parse(raw).map_err(|_| ExternalOpenError::InvalidUrl)?;
+    match policy.decide(&candidate, true) {
+        DashboardNavigationDecision::OpenInSystemBrowser(external) => Ok(external),
+        DashboardNavigationDecision::AllowInWebview | DashboardNavigationDecision::Reject => {
+            Err(ExternalOpenError::Rejected)
+        }
     }
 }
 

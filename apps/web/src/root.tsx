@@ -8,6 +8,7 @@ import winuiStylesheet from 'virtual:floway-winui.css?url';
 
 import type { Route } from './+types/root';
 import { BrowserLanguageSync } from './components/browser-language-sync';
+import { DesktopExternalLinks } from './components/desktop-external-links';
 import { DocumentTitleSync } from './components/document-title-sync';
 import { GradientBackground } from './components/gradient-background';
 import { markPickerScript } from './components/logo-mark';
@@ -38,7 +39,7 @@ const SEGOE_UI_VARIABLE_MIRROR_URL = 'https://docs.azure.cn/static/third-party/S
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://docs.azure.cn', crossOrigin: 'anonymous' },
-  { rel: 'preload', as: 'font', type: 'font/ttf', href: SEGOE_UI_VARIABLE_MIRROR_URL, crossOrigin: 'anonymous' },
+  { rel: 'preload', as: 'font', type: 'text/ttf', href: SEGOE_UI_VARIABLE_MIRROR_URL, crossOrigin: 'anonymous' },
 ];
 
 const useSystemTheme = () => useMediaQuery(DARK_SCHEME_QUERY) ? winuiDarkTheme : winuiLightTheme;
@@ -85,6 +86,7 @@ export default function App() {
     <>
       <NavigationProgress />
       <DocumentTitleSync />
+      <DesktopExternalLinks />
       <Outlet />
     </>
   );

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertExternalOpenGate } from './support/external-open.ts';
 import { createInstalledAppVerificationContext, writeContractedEntry } from './support/installed-app.ts';
 import { compileNativeWindowProbe } from './support/native-surface.ts';
 import { verifyPackagedApplication } from './support/package-contract.ts';
@@ -133,6 +134,9 @@ if (launchSupported) {
 
     await assertDesktopShellLifecycle(nativeWindowProbe, context, isolatedRoot);
     console.log('Floway production shell kept the Gateway live through window hide, tray restore, repeated-launch delegation, restart, launch-at-login toggles, and graceful quit');
+
+    await assertExternalOpenGate(context, isolatedRoot);
+    console.log('Floway production shell handed external links to the system browser and refused policy-forbidden targets through the real navigation path (#45)');
 
     await assertForcedTerminationReapsSidecar(context, isolatedRoot);
     console.log('Floway forced shell termination reaped its sidecar through the owner-lifetime channel and relaunched without a port conflict');
