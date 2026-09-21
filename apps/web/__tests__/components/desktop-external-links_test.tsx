@@ -92,6 +92,21 @@ describe('DesktopExternalLinks', () => {
     expect(plainHttp.defaultPrevented).toBe(false);
   });
 
+  it('intercepts modified and middle activations of external anchors', async () => {
+    renderPage();
+    const anchor = screen.getByTestId('external');
+
+    const modified = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
+    anchor.dispatchEvent(modified);
+    const middle = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 });
+    anchor.dispatchEvent(middle);
+    await settle();
+
+    expect(modified.defaultPrevented).toBe(true);
+    expect(middle.defaultPrevented).toBe(true);
+    expect(mode.invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces a localized failure with the shell error chain and dismisses it', async () => {
     mode.invoke.mockRejectedValue('external-open:failed\ncaused by: the browser refused');
     renderPage();

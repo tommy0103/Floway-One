@@ -31,8 +31,17 @@ pub fn desktop_action(candidate: &Url) -> Option<DesktopAction> {
         // The packaged verifier's real-machine gate for the external-link
         // handoff (#45): a navigation to this action walks the same
         // handle_navigation segment a link click takes and leaves an
-        // observable trace. It carries no more authority than a link click.
-        "verify-external-open" => Some(DesktopAction::VerifyExternalOpen),
+        // observable trace. It is deliberately inert in release builds — the
+        // gate only exists for the verifier — so a production shell treats
+        // the action like any unknown action instead of opening a browser
+        // without a user gesture.
+        "verify-external-open" => {
+            if cfg!(debug_assertions) {
+                Some(DesktopAction::VerifyExternalOpen)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

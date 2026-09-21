@@ -39,7 +39,7 @@ const SEGOE_UI_VARIABLE_MIRROR_URL = 'https://docs.azure.cn/static/third-party/S
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://docs.azure.cn', crossOrigin: 'anonymous' },
-  { rel: 'preload', as: 'font', type: 'text/ttf', href: SEGOE_UI_VARIABLE_MIRROR_URL, crossOrigin: 'anonymous' },
+  { rel: 'preload', as: 'font', type: 'font/ttf', href: SEGOE_UI_VARIABLE_MIRROR_URL, crossOrigin: 'anonymous' },
 ];
 
 const useSystemTheme = () => useMediaQuery(DARK_SCHEME_QUERY) ? winuiDarkTheme : winuiLightTheme;

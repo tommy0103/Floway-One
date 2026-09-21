@@ -1669,12 +1669,33 @@ const EXTERNAL_OPEN_FAILED_EVENT: &str = "external-open-failed";
 const EXTERNAL_OPEN_FAILED_CODE: &str = "external-open:failed";
 const EXTERNAL_OPEN_NOT_READY_CODE: &str = "external-open:not-ready";
 
+// Resolves a raw URL through the navigation policy and hands it to the system
+// browser, mapping failures to the stable `external-open:*` codes the
+// Dashboard localizes; the original chain is logged here and mirrored in the
+// failed command's payload. Returns the policy-stripped URL on success.
+fn open_external_resolved(
+    app: &AppHandle,
+    policy: &DashboardNavigationPolicy,
+    raw: &str,
+) -> Result<Url, String> {
+    let external =
+        resolve_external_open(policy, raw).map_err(|error| error.as_code().to_owned())?;
+    if let Err(error) = app.shell().open(external.as_str(), None) {
+        print_error_chain(&error);
+        return Err(format!(
+            "{EXTERNAL_OPEN_FAILED_CODE}\n{}",
+            error_chain_text(&error)
+        ));
+    }
+    Ok(external)
+}
+
 // The packaged verifier's real-machine gate (#45): the verifier opens
 // `floway-action://verify-external-open?url=...` so the navigation walks this
 // shell's handle_navigation segment exactly as a Dashboard link click would,
 // and the emitted marker line records what the policy decided and whether the
 // system-browser handoff succeeded.
-fn verify_external_open(app: &AppHandle, candidate: &Url) {
+fn handle_verify_external_open(app: &AppHandle, candidate: &Url) {
     let url = candidate
         .query_pairs()
         .find(|(key, _)| key == "url")
@@ -1692,18 +1713,15 @@ fn verify_external_open(app: &AppHandle, candidate: &Url) {
         eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{url} not-ready");
         return;
     };
-    match resolve_external_open(policy, &url) {
-        Err(error) => eprintln!(
-            "{EXTERNAL_OPEN_VERIFY_PREFIX}{url} rejected {}",
-            error.as_code()
-        ),
-        Ok(external) => match app.shell().open(external.as_str(), None) {
-            Ok(()) => eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{external} ok"),
-            Err(error) => {
-                print_error_chain(&error);
-                eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{external} open-failed");
-            }
-        },
+    match open_external_resolved(app, policy, &url) {
+        Err(reason) => {
+            let code = reason
+                .split('\n')
+                .next()
+                .unwrap_or(EXTERNAL_OPEN_FAILED_CODE);
+            eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{url} rejected {code}");
+        }
+        Ok(external) => eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{external} ok"),
     }
 }
 
@@ -1717,16 +1735,7 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
     let Some(policy) = policy.as_ref() else {
         return Err(EXTERNAL_OPEN_NOT_READY_CODE.to_owned());
     };
-    let external =
-        resolve_external_open(policy, &url).map_err(|error| error.as_code().to_owned())?;
-    if let Err(error) = app.shell().open(external.as_str(), None) {
-        print_error_chain(&error);
-        return Err(format!(
-            "{EXTERNAL_OPEN_FAILED_CODE}\n{}",
-            error_chain_text(&error)
-        ));
-    }
-    Ok(())
+    open_external_resolved(&app, policy, &url).map(|_| ())
 }
 
 fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool {
@@ -1739,7 +1748,7 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
                     print_error_chain(error.as_ref());
                 }
             }
-            DesktopAction::VerifyExternalOpen => verify_external_open(app, candidate),
+            DesktopAction::VerifyExternalOpen => handle_verify_external_open(app, candidate),
         }
         return false;
     }
@@ -1768,10 +1777,7 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
             print_error_chain(&error);
             if let Err(emit_error) = app.emit(
                 EXTERNAL_OPEN_FAILED_EVENT,
-                json!({
-                    "code": EXTERNAL_OPEN_FAILED_CODE,
-                    "detail": error_chain_text(&error),
-                }),
+                json!({ "detail": error_chain_text(&error) }),
             ) {
                 print_error_chain(&emit_error);
             }

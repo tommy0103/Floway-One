@@ -67,9 +67,11 @@ export function DesktopExternalLinks() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    const onClick = (event: MouseEvent): void => {
-      if (event.defaultPrevented || event.button !== 0
-        || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    // Every activation of an external anchor routes through the shell —
+    // plain, modified, and middle clicks alike — because the webview's own
+    // new-window path is what can drop the request silently (#45).
+    const onActivation = (event: MouseEvent): void => {
+      if (event.defaultPrevented) return;
       const target = event.target instanceof Element ? event.target : null;
       const anchor = target?.closest('a[href]') ?? null;
       if (anchor === null) return;
@@ -80,8 +82,12 @@ export function DesktopExternalLinks() {
         .then(() => setError(null))
         .catch((cause: unknown) => setError(externalOpenMessage(cause, t)));
     };
-    document.addEventListener('click', onClick, true);
-    return () => document.removeEventListener('click', onClick, true);
+    document.addEventListener('click', onActivation, true);
+    document.addEventListener('auxclick', onActivation, true);
+    return () => {
+      document.removeEventListener('click', onActivation, true);
+      document.removeEventListener('auxclick', onActivation, true);
+    };
   }, [t]);
 
   if (error === null) return null;
