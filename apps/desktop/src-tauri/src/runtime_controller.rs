@@ -32,7 +32,7 @@ use crate::navigation::{
     DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, desktop_action, enforce_dashboard_navigation,
     is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
-    sanitized_page_load_diagnostic,
+    resolve_external_open, sanitized_page_load_diagnostic,
 };
 use crate::rendered_snapshot::capture_rendered_snapshot;
 use crate::runtime_status::{
@@ -1537,7 +1537,30 @@ fn dispatch_shell_command(app: &AppHandle, command: ShellCommand) -> Result<Valu
         ShellCommand::SetAutostart(enabled) => {
             set_autostart(app, enabled).map(|()| json!({ "ok": true }))
         }
+        ShellCommand::VerifyExternalOpen(url) => {
+            verify_external_open_command(app, url).map(|()| json!({ "ok": true }))
+        }
     }
+}
+
+// Verifier-only transport for the external-link gate (#45): navigates the live
+// webview to the `floway-action://verify-external-open` action so the request
+// walks `handle_navigation` — the segment a Dashboard link click takes — and
+// the marker trace records what the policy decided. Inert in release builds,
+// where the control command answers "not ok" without any navigation.
+fn verify_external_open_command(app: &AppHandle, url: String) -> Result<(), Box<dyn Error>> {
+    if !cfg!(debug_assertions) {
+        return Err("verify-external-open is only available in verifier builds".into());
+    }
+    let candidate = Url::parse(&format!("floway-action://verify-external-open?url={url}"))
+        .map_err(|error| {
+            format!("Floway verify-external-open action URL is invalid: {url} ({error})")
+        })?;
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("Floway verify-external-open found no main webview window".into());
+    };
+    window.navigate(candidate)?;
+    Ok(())
 }
 
 fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
@@ -1551,7 +1574,7 @@ fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
             return;
         }
     };
-    let reply = dispatch_shell_command(&app, command).unwrap_or_else(|error| {
+    let reply = dispatch_shell_command(&app, command.clone()).unwrap_or_else(|error| {
         let chain = error_chain_text(error.as_ref());
         eprintln!("Floway desktop control command failed: {chain}");
         json!({ "error": chain, "ok": false })
@@ -1659,6 +1682,86 @@ fn establish_shell_role(data_root: &Path) -> UnixListener {
     }
 }
 
+// The Dashboard's explicit open-external command (#45): clicking an external
+// https link routes here instead of relying on the WKWebView new-window
+// plumbing, which has no packaged coverage and can drop the click silently.
+// The `on_new_window` handler stays as the backstop for stray window.open
+// calls.
+const EXTERNAL_OPEN_VERIFY_PREFIX: &str = "FLOWAY_EXTERNAL_OPEN ";
+const EXTERNAL_OPEN_FAILED_EVENT: &str = "external-open-failed";
+const EXTERNAL_OPEN_FAILED_CODE: &str = "external-open:failed";
+const EXTERNAL_OPEN_NOT_READY_CODE: &str = "external-open:not-ready";
+
+// Resolves a raw URL through the navigation policy and hands it to the system
+// browser, mapping failures to the stable `external-open:*` codes the
+// Dashboard localizes; the original chain is logged here and mirrored in the
+// failed command's payload. Returns the policy-stripped URL on success.
+#[allow(deprecated)]
+fn open_external_resolved(
+    app: &AppHandle,
+    policy: &DashboardNavigationPolicy,
+    raw: &str,
+) -> Result<Url, String> {
+    let external =
+        resolve_external_open(policy, raw).map_err(|error| error.as_code().to_owned())?;
+    if let Err(error) = app.shell().open(external.as_str(), None) {
+        print_error_chain(&error);
+        return Err(format!(
+            "{EXTERNAL_OPEN_FAILED_CODE}\n{}",
+            error_chain_text(&error)
+        ));
+    }
+    Ok(external)
+}
+
+// The packaged verifier's real-machine gate (#45): the verifier opens
+// `floway-action://verify-external-open?url=...` so the navigation walks this
+// shell's handle_navigation segment exactly as a Dashboard link click would,
+// and the emitted marker line records what the policy decided and whether the
+// system-browser handoff succeeded.
+fn handle_verify_external_open(app: &AppHandle, candidate: &Url) {
+    let url = candidate
+        .query_pairs()
+        .find(|(key, _)| key == "url")
+        .map(|(_, value)| value.into_owned());
+    let Some(url) = url else {
+        eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}invalid-url");
+        return;
+    };
+    let controller = app.state::<Arc<DesktopController>>();
+    let policy = controller
+        .dashboard_policy
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(policy) = policy.as_ref() else {
+        eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{url} not-ready");
+        return;
+    };
+    match open_external_resolved(app, policy, &url) {
+        Err(reason) => {
+            let code = reason
+                .split('\n')
+                .next()
+                .unwrap_or(EXTERNAL_OPEN_FAILED_CODE);
+            eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{url} rejected {code}");
+        }
+        Ok(external) => eprintln!("{EXTERNAL_OPEN_VERIFY_PREFIX}{external} ok"),
+    }
+}
+
+#[tauri::command]
+fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    let controller = app.state::<Arc<DesktopController>>();
+    let policy = controller
+        .dashboard_policy
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(policy) = policy.as_ref() else {
+        return Err(EXTERNAL_OPEN_NOT_READY_CODE.to_owned());
+    };
+    open_external_resolved(&app, policy, &url).map(|_| ())
+}
+
 fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool {
     if let Some(action) = desktop_action(candidate) {
         match action {
@@ -1669,6 +1772,7 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
                     print_error_chain(error.as_ref());
                 }
             }
+            DesktopAction::VerifyExternalOpen => handle_verify_external_open(app, candidate),
         }
         return false;
     }
@@ -1681,6 +1785,7 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(policy) = policy.as_ref() else {
+        eprintln!("Floway dropped a navigation while no Dashboard policy was armed: {candidate}");
         return false;
     };
     #[allow(deprecated)]
@@ -1689,8 +1794,17 @@ fn handle_navigation(app: &AppHandle, candidate: &Url, new_window: bool) -> bool
     }) {
         Ok(allow) => allow,
         Err(error) => {
+            // A failed system-browser handoff must be visible, not fatal: the
+            // window carries the operator's session, and the operator can act
+            // on a localized surface the Dashboard renders for this event
+            // (#45). Exiting destroyed that chance along with the evidence.
             print_error_chain(&error);
-            app.exit(1);
+            if let Err(emit_error) = app.emit(
+                EXTERNAL_OPEN_FAILED_EVENT,
+                json!({ "detail": error_chain_text(&error) }),
+            ) {
+                print_error_chain(&emit_error);
+            }
             false
         }
     }
@@ -1879,6 +1993,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
+            open_external,
             report_desktop_recovery_surface,
         ])
         .setup(|app| {

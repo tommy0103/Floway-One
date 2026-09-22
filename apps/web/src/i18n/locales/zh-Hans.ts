@@ -23,6 +23,12 @@ const zhHansCN = {
         copied: '已复制',
         failed: '复制失败',
       },
+      externalOpen: {
+        failed: '无法在系统浏览器中打开该链接。',
+        notReady: '桌面运行时尚未就绪，链接未能打开。',
+        invalid: '链接地址不是有效的 URL，未能打开。',
+        rejected: '该链接的地址不允许离开 Dashboard，未予打开。',
+      },
       errors: {
         desktopCompatibilityMismatch: 'Dashboard 版本与桌面运行时不匹配。',
         desktopRuntimeUnavailable: '无法加载桌面运行时状态。',

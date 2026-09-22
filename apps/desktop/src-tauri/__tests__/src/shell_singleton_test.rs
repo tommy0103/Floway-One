@@ -41,6 +41,7 @@ fn shell_commands_round_trip_through_their_wire_encoding() {
         ShellCommand::RestartGateway,
         ShellCommand::SetAutostart(true),
         ShellCommand::SetAutostart(false),
+        ShellCommand::VerifyExternalOpen("https://gate.example.test/authorize".to_owned()),
     ];
     let dir = test_dir("round-trip");
     let socket = socket_in(&dir);
@@ -49,8 +50,9 @@ fn shell_commands_round_trip_through_their_wire_encoding() {
         panic!("first claim must own the channel");
     };
     let (reported, commands_rx) = mpsc::channel();
+    let server_commands = commands.clone();
     let server = thread::spawn(move || {
-        for _ in &commands {
+        for _ in &server_commands {
             let (mut stream, _) = listener.accept().expect("accept must succeed");
             let command = read_shell_command(&stream).expect("command must decode");
             reported.send(command).expect("command must report");
@@ -58,13 +60,13 @@ fn shell_commands_round_trip_through_their_wire_encoding() {
                 .expect("reply must be written");
         }
     });
-    for command in commands {
-        send_shell_command(&socket, command).expect("command must be acknowledged");
+    for command in &commands {
+        send_shell_command(&socket, command.clone()).expect("command must be acknowledged");
         assert_eq!(
             commands_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("command must arrive"),
-            Some(command),
+            Some(command.clone()),
         );
     }
     server.join().expect("server thread must finish");

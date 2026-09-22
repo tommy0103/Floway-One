@@ -8,6 +8,7 @@ import winuiStylesheet from 'virtual:floway-winui.css?url';
 
 import type { Route } from './+types/root';
 import { BrowserLanguageSync } from './components/browser-language-sync';
+import { DesktopExternalLinks } from './components/desktop-external-links';
 import { DocumentTitleSync } from './components/document-title-sync';
 import { GradientBackground } from './components/gradient-background';
 import { markPickerScript } from './components/logo-mark';
@@ -85,6 +86,7 @@ export default function App() {
     <>
       <NavigationProgress />
       <DocumentTitleSync />
+      <DesktopExternalLinks />
       <Outlet />
     </>
   );

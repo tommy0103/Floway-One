@@ -25,6 +25,12 @@ const en = {
         copied: 'Copied',
         failed: 'Copy failed',
       },
+      externalOpen: {
+        failed: 'The link could not be opened in the system browser.',
+        notReady: 'The link could not be opened because the desktop runtime is not ready yet.',
+        invalid: 'The link could not be opened because its address is not a valid URL.',
+        rejected: 'The link was not opened: its address is not allowed to leave the Dashboard.',
+      },
       errors: {
         desktopCompatibilityMismatch: 'The Dashboard version does not match the desktop runtime.',
         desktopRuntimeUnavailable: 'Desktop runtime status could not be loaded.',

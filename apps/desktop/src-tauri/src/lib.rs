@@ -58,10 +58,11 @@ pub use bundle_contract::{
 };
 pub use navigation::{
     DASHBOARD_ORIGIN, DESKTOP_STATUS_ROUTE, DashboardNavigationDecision, DashboardNavigationPolicy,
-    DesktopAction, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
-    PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
-    enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
-    recovery_surface_diagnostic, sanitized_page_load_diagnostic,
+    DesktopAction, ExternalOpenError, PERSONAL_DASHBOARD_BOOTSTRAP_ENV,
+    PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY, PERSONAL_RUNTIME_READY_PREFIX,
+    dashboard_bootstrap_url, desktop_action, enforce_dashboard_navigation,
+    is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
+    resolve_external_open, sanitized_page_load_diagnostic,
 };
 #[cfg(feature = "desktop")]
 pub use runtime_status::InitialStatusLoadGate;

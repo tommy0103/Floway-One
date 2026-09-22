@@ -26,7 +26,7 @@ const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OWNER_PROBE_ATTEMPTS: usize = 3;
 const OWNER_PROBE_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ShellCommand {
     Activate,
     CloseWindow,
@@ -35,10 +35,14 @@ pub enum ShellCommand {
     ReportStatus,
     RestartGateway,
     SetAutostart(bool),
+    // Verifier-only transport for the external-link gate (#45): the URL is
+    // driven through the live shell's webview so `handle_navigation` — the
+    // segment a Dashboard link click takes — decides what happens to it.
+    VerifyExternalOpen(String),
 }
 
 impl ShellCommand {
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             Self::Activate => "activate",
             Self::CloseWindow => "close-window",
@@ -47,23 +51,30 @@ impl ShellCommand {
             Self::ReportStatus => "report-status",
             Self::RestartGateway => "restart-gateway",
             Self::SetAutostart(_) => "set-autostart",
+            Self::VerifyExternalOpen(_) => "verify-external-open",
         }
     }
 
-    fn from_name(name: &str, enabled: Option<bool>) -> Option<Self> {
-        match (name, enabled) {
-            ("activate", None) => Some(Self::Activate),
-            ("close-window", None) => Some(Self::CloseWindow),
-            ("copy-gateway-address", None) => Some(Self::CopyGatewayAddress),
-            ("quit", None) => Some(Self::Quit),
-            ("report-status", None) => Some(Self::ReportStatus),
-            ("restart-gateway", None) => Some(Self::RestartGateway),
-            ("set-autostart", Some(enabled)) => Some(Self::SetAutostart(enabled)),
+    fn from_name(name: &str, url: Option<&str>, enabled: Option<bool>) -> Option<Self> {
+        match (name, url, enabled) {
+            ("activate", None, None) => Some(Self::Activate),
+            ("close-window", None, None) => Some(Self::CloseWindow),
+            ("copy-gateway-address", None, None) => Some(Self::CopyGatewayAddress),
+            ("quit", None, None) => Some(Self::Quit),
+            ("report-status", None, None) => Some(Self::ReportStatus),
+            ("restart-gateway", None, None) => Some(Self::RestartGateway),
+            ("set-autostart", None, Some(enabled)) => Some(Self::SetAutostart(enabled)),
+            ("verify-external-open", Some(url), None) => {
+                Some(Self::VerifyExternalOpen(url.to_owned()))
+            }
             _ => None,
         }
     }
 
     fn from_control_name(name: &str) -> Option<Self> {
+        if let Some(url) = name.strip_prefix("verify-external-open?url=") {
+            return Some(Self::VerifyExternalOpen(url.to_owned()));
+        }
         match name {
             "activate" => Some(Self::Activate),
             "close-window" => Some(Self::CloseWindow),
@@ -80,11 +91,19 @@ impl ShellCommand {
 
 fn encode_command(command: ShellCommand) -> Vec<u8> {
     let mut value = json!({ "command": command.name() });
-    if let ShellCommand::SetAutostart(enabled) = command {
-        value
+    {
+        let fields = value
             .as_object_mut()
-            .expect("shell command wire value must remain an object")
-            .insert("enabled".to_owned(), json!(enabled));
+            .expect("shell command wire value must remain an object");
+        match &command {
+            ShellCommand::SetAutostart(enabled) => {
+                fields.insert("enabled".to_owned(), json!(enabled));
+            }
+            ShellCommand::VerifyExternalOpen(url) => {
+                fields.insert("url".to_owned(), json!(url));
+            }
+            _ => {}
+        }
     }
     let mut encoded = serde_json::to_vec(&value).expect("shell command wire value must encode");
     encoded.push(b'\n');
@@ -95,8 +114,9 @@ fn decode_command(line: &str) -> Option<ShellCommand> {
     let value: Value = serde_json::from_str(line).ok()?;
     let fields = value.as_object()?;
     let name = fields.get("command")?.as_str()?;
+    let url = fields.get("url").and_then(Value::as_str);
     let enabled = fields.get("enabled").and_then(Value::as_bool);
-    ShellCommand::from_name(name, enabled)
+    ShellCommand::from_name(name, url, enabled)
 }
 
 pub fn control_socket_path(data_root: &Path) -> PathBuf {

@@ -1,9 +1,9 @@
 use floway_desktop::{
     DASHBOARD_ORIGIN, DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
-    PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
+    ExternalOpenError, PERSONAL_DASHBOARD_BOOTSTRAP_ENV, PERSONAL_DASHBOARD_BOOTSTRAP_FRAGMENT_KEY,
     PERSONAL_RUNTIME_READY_PREFIX, dashboard_bootstrap_url, desktop_action,
     enforce_dashboard_navigation, is_desktop_status_navigation, ready_dashboard_origin,
-    recovery_surface_diagnostic, sanitized_page_load_diagnostic,
+    recovery_surface_diagnostic, resolve_external_open, sanitized_page_load_diagnostic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,4 +246,92 @@ fn preserves_system_browser_errors_without_allowing_navigation() {
         Err(ForcedNavigationOpenFailure)
     });
     assert_eq!(result, Err(ForcedNavigationOpenFailure));
+}
+
+#[test]
+fn recognizes_the_verify_external_open_action() {
+    assert_eq!(
+        desktop_action(
+            &url::Url::parse(
+                "floway-action://verify-external-open?url=https%3A%2F%2Fgate.example.test%2F"
+            )
+            .unwrap()
+        ),
+        Some(DesktopAction::VerifyExternalOpen)
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://restart").unwrap()),
+        Some(DesktopAction::Restart)
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("floway-action://unknown").unwrap()),
+        None
+    );
+    assert_eq!(
+        desktop_action(&url::Url::parse("https://gate.example.test/verify-external-open").unwrap()),
+        None
+    );
+}
+
+#[test]
+fn resolves_external_open_for_legitimate_https_targets() {
+    let policy =
+        DashboardNavigationPolicy::new("http://127.0.0.1:49206", &"12".repeat(32)).unwrap();
+
+    let external = resolve_external_open(
+        &policy,
+        "https://auth.openai.com/oauth/authorize?client_id=app_x&state=st",
+    )
+    .unwrap();
+    assert_eq!(
+        external.as_str(),
+        "https://auth.openai.com/oauth/authorize?client_id=app_x&state=st"
+    );
+
+    // The command strips fragments exactly as the navigation policy does.
+    let anchored = resolve_external_open(&policy, "https://docs.example.test/guide#setup").unwrap();
+    assert_eq!(anchored.as_str(), "https://docs.example.test/guide");
+}
+
+#[test]
+fn resolves_external_open_rejects_everything_the_navigation_policy_rejects() {
+    let policy =
+        DashboardNavigationPolicy::new("http://127.0.0.1:49208", &"12".repeat(32)).unwrap();
+
+    assert_eq!(
+        resolve_external_open(&policy, "http://127.0.0.1:49208/providers"),
+        Err(ExternalOpenError::Rejected)
+    );
+    assert_eq!(
+        resolve_external_open(&policy, "not a url at all"),
+        Err(ExternalOpenError::InvalidUrl)
+    );
+    assert_eq!(
+        resolve_external_open(&policy, "file:///etc/passwd"),
+        Err(ExternalOpenError::Rejected)
+    );
+    assert_eq!(
+        resolve_external_open(&policy, "ftp://files.example.test/pub"),
+        Err(ExternalOpenError::Rejected)
+    );
+
+    // The same bootstrap-authority rejections as the navigation policy: a URL
+    // carrying the fragment key or the bootstrap token must never leave.
+    assert_eq!(
+        resolve_external_open(
+            &policy,
+            &format!(
+                "https://evil.example.test/?floway-bootstrap={}",
+                "12".repeat(32)
+            )
+        ),
+        Err(ExternalOpenError::Rejected)
+    );
+    assert_eq!(
+        resolve_external_open(
+            &policy,
+            &format!("https://evil.example.test/#x={}", "12".repeat(32))
+        ),
+        Err(ExternalOpenError::Rejected)
+    );
 }
