@@ -62,6 +62,16 @@ const recordSummary = row => ({
 const modelIds = payload => Array.isArray(payload?.data)
   ? payload.data.map(row => row.publicModelId ?? row.id).filter(id => typeof id === 'string')
   : [];
+const normalizeCustomBaseUrl = value => {
+  let url;
+  try { url = new URL(value); }
+  catch (cause) { throw new Error('The provider URL must be an http(s) URL.', { cause }); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.search || url.hash || url.username || url.password) {
+    throw new Error('The provider URL must be an http(s) URL without credentials, a query, or a fragment.');
+  }
+  if (/\/v1\/?$/.test(url.pathname)) url.pathname = url.pathname.replace(/\/v1\/?$/, '') || '/';
+  return url.toString();
+};
 const verifyModels = async id => {
   const record = await api('GET', `/api/upstreams/${encodeURIComponent(id)}`);
   const result = await api('POST', '/api/upstreams/list-models', { record });
@@ -69,16 +79,115 @@ const verifyModels = async id => {
   if (models.length === 0) throw new Error(`Floway found no models for Upstream ${id}. Check its URL, credentials, and model-list settings in ${dashboard}.`);
   return models;
 };
-const finishCreate = async record => {
+const finishCreate = async (record, details = {}) => {
   let models;
   try {
     models = await verifyModels(record.id);
   } catch (error) {
-    output({ status: 'needs_attention', ...recordSummary(record), issue: safe(error.message) });
+    output({ status: 'needs_attention', ...recordSummary(record), ...details, issue: safe(error.message) });
     process.exitCode = 2;
     return;
   }
-  output({ status: 'verified', ...recordSummary(record), models });
+  output({ status: 'verified', ...recordSummary(record), ...details, models });
+};
+const playgroundFormats = [
+  {
+    api: 'openaiResponses', path: '/v1/responses',
+    body: model => ({ model, stream: true, input: [{ type: 'message', role: 'user', content: 'Reply with OK.' }] }),
+  },
+  {
+    api: 'openaiChatCompletions', path: '/v1/chat/completions',
+    body: model => ({ model, stream: true, messages: [{ role: 'user', content: 'Reply with OK.' }] }),
+  },
+  {
+    api: 'anthropicMessages', path: '/v1/messages',
+    body: model => ({ model, stream: true, max_tokens: 256, messages: [{ role: 'user', content: 'Reply with OK.' }] }),
+  },
+];
+const probeText = (api, event) => {
+  if (api === 'openaiChatCompletions') return event.choices?.[0]?.delta?.content ?? '';
+  if (api === 'anthropicMessages') return event.type === 'content_block_delta' && event.delta?.type === 'text_delta' ? event.delta.text : '';
+  return event.type === 'response.output_text.delta' ? event.delta : '';
+};
+const probeError = event => {
+  if (event.type === 'response.failed') return event.response?.error?.message ?? 'The response failed.';
+  if (event.type === 'error' || event.error) return errorText(event);
+  return null;
+};
+const probePlaygroundFormat = async (format, model, apiKey) => {
+  const result = { api: format.api, path: format.path };
+  try {
+    const response = await fetch(`${origin}${format.path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(format.api === 'anthropicMessages'
+          ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+          : { authorization: `Bearer ${apiKey}` }),
+      },
+      body: JSON.stringify(format.body(model)),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      let payload;
+      try { payload = JSON.parse(body); } catch { payload = null; }
+      return { ...result, status: 'failed', httpStatus: response.status, issue: safe(payload ? errorText(payload) : body || `HTTP ${response.status}`) };
+    }
+    if (!response.body || !response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+      return { ...result, status: 'failed', httpStatus: response.status, issue: 'The Gateway did not return a Playground event stream.' };
+    }
+    const decoder = new TextDecoder();
+    let pending = '';
+    let bytes = 0;
+    let textReceived = false;
+    let completed = false;
+    let failure = null;
+    const readFrame = frame => {
+      const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+      if (data === '[DONE]') { completed = true; return; }
+      if (!data) return;
+      let event;
+      try { event = JSON.parse(data); } catch { return; }
+      failure ??= probeError(event);
+      if (event.type === 'response.completed' || event.type === 'message_stop') completed = true;
+      const delta = probeText(format.api, event);
+      if (typeof delta === 'string' && delta.length > 0) textReceived = true;
+    };
+    for await (const chunk of response.body) {
+      bytes += chunk.byteLength;
+      if (bytes > 1_000_000) throw new Error('The Gateway returned more than 1 MB of event data.');
+      pending = (pending + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, '\n');
+      let boundary;
+      while ((boundary = pending.indexOf('\n\n')) !== -1) {
+        readFrame(pending.slice(0, boundary));
+        pending = pending.slice(boundary + 2);
+      }
+    }
+    if (pending.trim()) readFrame(pending);
+    if (failure) return { ...result, status: 'failed', httpStatus: response.status, issue: safe(failure) };
+    return { ...result, status: !completed ? 'incomplete_response' : textReceived ? 'available' : 'empty_response', httpStatus: response.status };
+  } catch (cause) {
+    return { ...result, status: 'failed', issue: safe(cause instanceof Error ? cause.message : cause) };
+  }
+};
+const testModel = async (upstreamId, modelId) => {
+  const catalog = await api('GET', '/api/models?aliases=false&include_unlisted=true');
+  const model = catalog.data?.find(row => row.id === modelId && row.kind === 'chat' && row.upstreams?.some(upstream => upstream.id === upstreamId));
+  if (!model) throw new Error(`Floway does not list ${modelId} as a chat model from ${upstreamId}. Check the model ID and refresh its catalog.`);
+  const keys = await api('GET', '/api/keys');
+  if (!Array.isArray(keys)) throw new Error('Floway did not return its API key list.');
+  for (const key of keys) if (typeof key.key === 'string') secrets.add(key.key);
+  const eligible = keys.filter(key => typeof key.key === 'string' && key.key.length > 0
+    && (key.upstream_ids === null || key.upstream_ids?.includes(upstreamId)));
+  eligible.sort((a, b) => (a.upstream_ids?.length ?? Number.MAX_SAFE_INTEGER) - (b.upstream_ids?.length ?? Number.MAX_SAFE_INTEGER));
+  const key = eligible[0];
+  if (!key) throw new Error(`No Floway API key can reach ${upstreamId}. Create a key in ${origin}/dashboard/services/api-keys and retry.`);
+  const formats = [];
+  for (const format of playgroundFormats) formats.push(await probePlaygroundFormat(format, modelId, key.key));
+  const possibleUpstreams = model.upstreams.filter(upstream => key.upstream_ids === null || key.upstream_ids?.includes(upstream.id));
+  output({ status: 'tested', model: modelId, gateway: origin, keyName: key.name,
+    possibleUpstreams: possibleUpstreams.map(upstream => upstream.name), formats });
 };
 const blueprint = async kind => await api('GET', `/api/upstreams/blueprint?kind=${encodeURIComponent(kind)}`);
 const pickHue = async () => {
@@ -117,9 +226,15 @@ const [command, ...args] = process.argv.slice(2);
       output({ status: 'verified', upstreamId: args[0], models: await verifyModels(args[0]), dashboard });
       break;
     }
+    case 'test-model': {
+      if (args.length !== 2) throw new Error('Usage: floway test-model UPSTREAM_ID MODEL_ID');
+      await testModel(args[0], args[1]);
+      break;
+    }
     case 'create-custom': {
       if (args.length !== 3) throw new Error('Usage: floway create-custom NAME BASE_URL KEY_FILE');
-      const [name, baseUrl, keyFile] = args;
+      const [name, inputUrl, keyFile] = args;
+      const baseUrl = normalizeCustomBaseUrl(inputUrl);
       const keyStat = statSync(keyFile);
       if (!keyStat.isFile() || (process.platform !== 'win32' && (keyStat.mode & 0o077) !== 0)) {
         throw new Error('The provider key must be in an owner-only regular file (mode 0600).');
@@ -134,7 +249,7 @@ const [command, ...args] = process.argv.slice(2);
         enabled: true,
         config: { ...draft.config, baseUrl, apiKey },
       });
-      await finishCreate(created);
+      await finishCreate(created, { baseUrl });
       break;
     }
     case 'create-ollama': {
@@ -205,7 +320,7 @@ const [command, ...args] = process.argv.slice(2);
       break;
     }
     default:
-      throw new Error('Usage: floway status | list | models ID | create-custom NAME BASE_URL KEY_FILE | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
+      throw new Error('Usage: floway status | list | models ID | test-model UPSTREAM_ID MODEL_ID | create-custom NAME BASE_URL KEY_FILE | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
   }
 } catch (error) {
   process.stderr.write(`${safe(error instanceof Error ? error.message : error)}\n`);

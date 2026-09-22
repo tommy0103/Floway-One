@@ -125,6 +125,7 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
         if (body.kind === 'custom') {
           customCreated = true;
           assertEquals(body.config.apiKey, key);
+          assertEquals(body.config.baseUrl, 'https://provider.example/');
         } else if (body.kind === 'ollama') {
           ollamaCreated = true;
         } else {
@@ -150,9 +151,10 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
     await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
     const run = promisify(execFile);
-    const custom = await run(process.execPath, [helper, 'create-custom', 'Example', 'https://provider.example', keyPath]);
+    const custom = await run(process.execPath, [helper, 'create-custom', 'Example', 'https://provider.example/v1/', keyPath]);
     assertEquals(JSON.parse(custom.stdout).status, 'verified');
     assertEquals(JSON.parse(custom.stdout).models, ['usable-model']);
+    assertEquals(JSON.parse(custom.stdout).baseUrl, 'https://provider.example/');
     assert(!custom.stdout.includes(key));
     assertEquals(hues[1], 270);
     const ollama = await run(process.execPath, [helper, 'create-ollama', 'Ollama', 'http://127.0.0.1:11434']);
@@ -166,6 +168,84 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     assert(!finished.stdout.includes('oauth-secret'));
     assert(customCreated && ollamaCreated && copilotCreated);
     assertEquals(new Set(hues).size, 4);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
+test('installed helper tests the three Playground Gateway formats without printing API keys', () => withInstaller(async (_root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const helper = join(path, '../scripts/floway.mjs');
+  const gatewayKey = 'sk-gateway-secret';
+  const calls: string[] = [];
+  let failChat = false;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname === '/api/models') {
+        assertEquals(request.headers['x-floway-session'], TOKEN);
+        assertEquals(url.searchParams.get('aliases'), 'false');
+        assertEquals(url.searchParams.get('include_unlisted'), 'true');
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ data: [{ id: 'model-a', kind: 'chat', upstreams: [{ id: 'up-a', name: 'Provider A' }] }] }));
+        return;
+      }
+      if (url.pathname === '/api/keys') {
+        assertEquals(request.headers['x-floway-session'], TOKEN);
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify([{ name: 'Gateway key', key: gatewayKey, upstream_ids: ['up-a'] }]));
+        return;
+      }
+      calls.push(url.pathname);
+      assertEquals(request.headers['x-floway-session'], undefined);
+      assertEquals(request.headers['content-type'], 'application/json');
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; stream: boolean };
+      assertEquals(body.model, 'model-a');
+      assertEquals(body.stream, true);
+      if (url.pathname === '/v1/messages') {
+        assertEquals(request.headers['x-api-key'], gatewayKey);
+        assertEquals(request.headers['anthropic-version'], '2023-06-01');
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\ndata: {"type":"message_stop"}\n\n');
+      } else if (url.pathname === '/v1/responses') {
+        assertEquals(request.headers.authorization, `Bearer ${gatewayKey}`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"type":"response.output_text.delta","delta":"OK"}\n\ndata: {"type":"response.completed"}\n\n');
+      } else if (url.pathname === '/v1/chat/completions') {
+        assertEquals(request.headers.authorization, `Bearer ${gatewayKey}`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(failChat
+          ? `data: {"error":{"message":"Gateway rejected ${gatewayKey}"}}\n\n`
+          : 'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
+      } else {
+        response.writeHead(404).end();
+      }
+    })();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
+    await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, [helper, 'test-model', 'up-a', 'model-a']);
+    assertEquals(stderr, '');
+    const result = JSON.parse(stdout) as { status: string; possibleUpstreams: string[]; formats: { api: string; status: string }[] };
+    assertEquals(result.status, 'tested');
+    assertEquals(result.possibleUpstreams, ['Provider A']);
+    assertEquals(result.formats.map(format => [format.api, format.status]), [
+      ['openaiResponses', 'available'], ['openaiChatCompletions', 'available'], ['anthropicMessages', 'available'],
+    ]);
+    assertEquals(calls, ['/v1/responses', '/v1/chat/completions', '/v1/messages']);
+    assert(!stdout.includes(gatewayKey));
+    assert(!stdout.includes(TOKEN));
+    failChat = true;
+    const failed = await promisify(execFile)(process.execPath, [helper, 'test-model', 'up-a', 'model-a']);
+    const failedFormats = (JSON.parse(failed.stdout) as { formats: { status: string; issue?: string }[] }).formats;
+    assertEquals(failedFormats.map(format => format.status), ['available', 'failed', 'available']);
+    assertEquals(failedFormats[1]?.issue, 'Gateway rejected [redacted]');
+    assert(!failed.stdout.includes(gatewayKey));
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
