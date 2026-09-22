@@ -88,14 +88,16 @@ test('installed helper follows a changed local port without exposing the session
   }
 }));
 
-test('installed helper completes key and device authorization without printing provider secrets', () => withInstaller(async (root, installer, dataDir) => {
+test('installed helper creates Upstreams with distinct hues and keeps provider secrets private', () => withInstaller(async (root, installer, dataDir) => {
   const { path } = await installer.install(TOKEN);
   const helper = join(path, '../scripts/floway.mjs');
   const key = 'sk-private-provider-key';
   const keyPath = join(root, 'provider-key');
   await writeFile(keyPath, `${key}\n`, { mode: 0o600 });
   let customCreated = false;
+  let ollamaCreated = false;
   let copilotCreated = false;
+  const hues = [90];
   const server = createServer((request, response) => {
     void (async () => {
       assertEquals(request.headers['x-floway-session'], TOKEN);
@@ -106,21 +108,30 @@ test('installed helper completes key and device authorization without printing p
       let reply: unknown;
       if (url.pathname === '/api/upstreams/blueprint') {
         reply = { id: '', kind: url.searchParams.get('kind'), name: '', enabled: false, config: {}, state: null };
+      } else if (url.pathname === '/api/upstreams' && request.method === 'GET') {
+        reply = hues.map(hue => ({ hue }));
       } else if (url.pathname === '/api/upstreams/copilot/oauth/device-login/start') {
         reply = { device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', interval: 5, expires_in: 900 };
       } else if (url.pathname === '/api/upstreams/copilot/oauth/device-login/poll') {
         assertEquals(body.deviceCode, 'device-secret');
         reply = { status: 'complete', patch: { config: { githubToken: 'oauth-secret' }, state: null } };
       } else if (url.pathname === '/api/upstreams' && request.method === 'POST') {
+        if (!Number.isInteger(body.hue) || body.hue < 0 || body.hue >= 360 || hues.includes(body.hue)) {
+          response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'A distinct hue is required.' }));
+          return;
+        }
+        hues.push(body.hue);
         assertEquals(body.enabled, true);
         if (body.kind === 'custom') {
           customCreated = true;
           assertEquals(body.config.apiKey, key);
+        } else if (body.kind === 'ollama') {
+          ollamaCreated = true;
         } else {
           copilotCreated = true;
           assertEquals(body.config.githubToken, 'oauth-secret');
         }
-        reply = { id: body.kind === 'custom' ? 'custom-id' : 'copilot-id', name: body.name, kind: body.kind, enabled: true };
+        reply = { id: `${body.kind}-id`, name: body.name, kind: body.kind, enabled: true };
       } else if (url.pathname.startsWith('/api/upstreams/') && request.method === 'GET') {
         reply = { id: url.pathname.split('/').at(-1), kind: 'custom', config: {} };
       } else if (url.pathname === '/api/upstreams/list-models') {
@@ -143,6 +154,9 @@ test('installed helper completes key and device authorization without printing p
     assertEquals(JSON.parse(custom.stdout).status, 'verified');
     assertEquals(JSON.parse(custom.stdout).models, ['usable-model']);
     assert(!custom.stdout.includes(key));
+    assertEquals(hues[1], 270);
+    const ollama = await run(process.execPath, [helper, 'create-ollama', 'Ollama', 'http://127.0.0.1:11434']);
+    assertEquals(JSON.parse(ollama.stdout).status, 'verified');
     const started = await run(process.execPath, [helper, 'copilot-start', 'Copilot']);
     const handle = JSON.parse(started.stdout).handle as string;
     assertEquals(JSON.parse(started.stdout).status, 'authorization_required');
@@ -150,7 +164,8 @@ test('installed helper completes key and device authorization without printing p
     const finished = await run(process.execPath, [helper, 'copilot-finish', handle]);
     assertEquals(JSON.parse(finished.stdout).status, 'verified');
     assert(!finished.stdout.includes('oauth-secret'));
-    assert(customCreated && copilotCreated);
+    assert(customCreated && ollamaCreated && copilotCreated);
+    assertEquals(new Set(hues).size, 4);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
