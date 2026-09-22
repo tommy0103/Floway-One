@@ -412,6 +412,11 @@ function CopilotConfig({ record, onPatch }: {
   </div>;
 }
 
+// Slightly beyond the gateway's relay session TTL: the session expiry is the
+// primary clock, this only catches a poll loop that never saw the server's
+// `unknown`.
+const RELAY_WAIT_LIMIT_MS = 11 * 60 * 1000;
+
 type OAuthKind = 'codex' | 'claude-code';
 function OAuthConfig({ record, onPatch }: {
   record: Extract<UpstreamRecord, { kind: OAuthKind }>;
@@ -452,6 +457,14 @@ function OAuthConfig({ record, onPatch }: {
   const [json, setJson] = useState('');
   const [callback, setCallback] = useState('');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  // Codex relay state (#44): when the runtime holds the registered
+  // localhost:1455 redirect port, the sign-in completes without the manual
+  // paste and this panel learns the outcome by polling the relay-result
+  // route. `relayOutcome` carries a terminal failure message; null means
+  // still waiting.
+  const [relay, setRelay] = useState(false);
+  const [relayState, setRelayState] = useState<string | null>(null);
+  const [relayOutcome, setRelayOutcome] = useState<string | null>(null);
   const { copy, outcomeFor } = useCopyToClipboard();
   const copyLabel = useCopyLabel();
   const [busy, setBusy] = useState(false);
@@ -460,23 +473,35 @@ function OAuthConfig({ record, onPatch }: {
 
   // Two authorize-url requests can be outstanding at once — a tab switch
   // supersedes one, and the effect below re-fires on every `record` identity
-  // change. `stashPkce` writes one sessionStorage slot per (kind, flow kind),
+  // change. `stashPkce` writes one localStorage slot per (kind, flow kind),
   // so the verifier must belong to the URL the operator actually opened: the
   // generation is taken before the stash as well as before the URL, because a
   // round trip separates them and an older call could otherwise stash last.
   const generation = useRef(0);
   const prepare = useCallback(async () => {
     const mine = ++generation.current;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setRelay(false); setRelayOutcome(null);
     const pkce = await generatePkce();
     if (generation.current !== mine) return;
     stashPkce(record.kind, flowKind, { verifier: pkce.verifier, state: pkce.state });
-    const body = { record: previewRecord(record, getValues()), challenge: pkce.challenge, state: pkce.state };
-    const result = record.kind === 'codex'
-      ? await callApi(() => api.api.upstreams.codex.oauth['authorize-url'].$post({ json: body }))
-      : tab === 'setup'
-        ? await callApi(() => api.api.upstreams['claude-code']['setup-token']['authorize-url'].$post({ json: body }))
-        : await callApi(() => api.api.upstreams['claude-code'].oauth['authorize-url'].$post({ json: body }));
+    if (record.kind === 'codex') {
+      // Handing the verifier to a runtime that registered a relay channel
+      // enables the automatic 1455 callback; without one the field is
+      // ignored server-side and the manual paste flow proceeds.
+      const result = await callApi(() => api.api.upstreams.codex.oauth['authorize-url'].$post({
+        json: { record: previewRecord(record, getValues()), challenge: pkce.challenge, state: pkce.state, verifier: pkce.verifier },
+      }));
+      if (generation.current !== mine) return;
+      setBusy(false);
+      if (result.error) { setError(result.error.message); return; }
+      setAuthorizeUrl(result.data.authorize_url);
+      setRelay(result.data.relay);
+      setRelayState(result.data.relay ? pkce.state : null);
+      return;
+    }
+    const result = tab === 'setup'
+      ? await callApi(() => api.api.upstreams['claude-code']['setup-token']['authorize-url'].$post({ json: { record: previewRecord(record, getValues()), challenge: pkce.challenge, state: pkce.state } }))
+      : await callApi(() => api.api.upstreams['claude-code'].oauth['authorize-url'].$post({ json: { record: previewRecord(record, getValues()), challenge: pkce.challenge, state: pkce.state } }));
     if (generation.current !== mine) return;
     setBusy(false);
     if (result.error) { setError(result.error.message); return; }
@@ -484,6 +509,44 @@ function OAuthConfig({ record, onPatch }: {
   }, [flowKind, getValues, record, tab]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- Opening the panel starts an authorize-url request; the pending flag is the start of that work.
   useEffect(() => { if (open && tab !== 'json' && !authorizeUrl) void prepare(); }, [authorizeUrl, open, prepare, tab]);
+
+  // The relay arms only for the flow whose authorize URL is on screen.
+  const finishImport = useCallback((patch: { config?: unknown; state?: unknown }) => {
+    clearPkce(record.kind, flowKind);
+    onPatch(patch, isPersisted(record));
+    setOpen(false); setJson(''); setCallback(''); setAuthorizeUrl(null);
+  }, [flowKind, onPatch, record, setAuthorizeUrl, setCallback, setJson, setOpen]);
+
+  // Poll for the relay-completed sign-in while the operator is off in the
+  // browser. Terminal outcomes consume the session; the tick only chains
+  // while this panel still shows the armed flow it minted the state for. A
+  // wait that outlives the server-side session TTL flips to the manual
+  // fallback instead of spinning forever.
+  useEffect(() => {
+    if (!relay || authorizeUrl === null || relayState === null) return;
+    let superseded = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+    const poll = async (): Promise<void> => {
+      const result = await callApi(() => api.api.upstreams.codex.oauth['relay-result'].$get({ query: { state: relayState } }));
+      if (superseded) return;
+      if (!result.error) {
+        if (result.data.status === 'complete') { finishImport(result.data.patch); return; }
+        if (result.data.status === 'failed') { setRelay(false); setRelayOutcome(result.data.message); return; }
+        if (result.data.status === 'unknown') { setRelay(false); setRelayOutcome(t('dashboard.upstreamEditor.oauth.relayExpired')); return; }
+      }
+      if (Date.now() - startedAt > RELAY_WAIT_LIMIT_MS) {
+        setRelay(false); setRelayOutcome(t('dashboard.upstreamEditor.oauth.relayExpired'));
+        return;
+      }
+      timer = setTimeout(() => { void poll(); }, 2000);
+    };
+    timer = setTimeout(() => { void poll(); }, 2000);
+    return () => {
+      superseded = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [authorizeUrl, finishImport, relay, relayState, t]);
 
   const submit = async () => {
     setBusy(true); setError(null);
@@ -520,9 +583,7 @@ function OAuthConfig({ record, onPatch }: {
     }
     setBusy(false);
     if (result.error) { setError(result.error.message); return; }
-    clearPkce(record.kind, flowKind);
-    onPatch(result.data.patch, isPersisted(record));
-    setOpen(false); setJson(''); setCallback(''); setAuthorizeUrl(null);
+    finishImport(result.data.patch);
   };
 
   return <div className="grid gap-4">
@@ -546,10 +607,24 @@ function OAuthConfig({ record, onPatch }: {
         {record.kind === 'codex' ? <><Tab value="json">auth.json</Tab><Tab value="oauth">OAuth</Tab></> : <><Tab value="oauth">OAuth</Tab><Tab value="setup">Setup Token</Tab><Tab value="json">credentials.json</Tab></>}
       </TabList>
       {tab === 'json' ? <Field label={t('dashboard.upstreamEditor.oauth.credentialJson')}><Textarea className="font-mono" rows={8} value={json} onChange={(_, data) => setJson(data.value)} /></Field> : <div className="grid gap-3">
-        {busy && !authorizeUrl ? <Spinner label={t('dashboard.upstreamEditor.oauth.preparing')} /> : authorizeUrl && <div className="flex items-center gap-2 min-w-0"><Link href={authorizeUrl} target="_blank" rel="noopener noreferrer"><OpenLinkLabel>{t('dashboard.upstreamEditor.oauth.openAuthorize')}</OpenLinkLabel></Link><TooltipIconButton icon={copyOutcomeIcon(outcomeFor())} label={copyLabel(outcomeFor(), t('dashboard.upstreamEditor.oauth.copy'))} onClick={() => copy(authorizeUrl)} /></div>}
-        <Field label={t('dashboard.upstreamEditor.oauth.callback')}><Textarea className="font-mono" rows={3} value={callback} onChange={(_, data) => setCallback(data.value)} /></Field>
+        {busy && !authorizeUrl ? <Spinner label={t('dashboard.upstreamEditor.oauth.preparing')} /> : authorizeUrl && <>
+          <div className="flex items-center gap-2 min-w-0"><Link href={authorizeUrl} target="_blank" rel="noopener noreferrer"><OpenLinkLabel>{t('dashboard.upstreamEditor.oauth.openAuthorize')}</OpenLinkLabel></Link><TooltipIconButton icon={copyOutcomeIcon(outcomeFor())} label={copyLabel(outcomeFor(), t('dashboard.upstreamEditor.oauth.copy'))} onClick={() => copy(authorizeUrl)} /></div>
+          {record.kind === 'codex' && relayOutcome !== null && <div className="grid gap-2 justify-items-start">
+            <OutcomeMessageBar>{relayOutcome}</OutcomeMessageBar>
+            <Button onClick={() => { setAuthorizeUrl(null); setRelayOutcome(null); }}>{t('dashboard.upstreamEditor.oauth.relayRestart')}</Button>
+          </div>}
+          {record.kind === 'codex' && relay && relayOutcome === null
+            ? <>
+                <Text size={200} className="text-fui-fg2">{t('dashboard.upstreamEditor.oauth.relayHint')}</Text>
+                <Spinner className="justify-self-start" label={t('dashboard.upstreamEditor.oauth.relayWaiting')} labelPosition="after" size="tiny" />
+              </>
+            : <>
+                {record.kind === 'codex' && <Text size={200} className="text-fui-fg2">{t('dashboard.upstreamEditor.oauth.manualHint')}</Text>}
+                <Field label={t('dashboard.upstreamEditor.oauth.callback')}><Textarea className="font-mono" rows={3} value={callback} onChange={(_, data) => setCallback(data.value)} /></Field>
+              </>}
+        </>}
       </div>}
-      <Button appearance="primary" disabledFocusable={busy} icon={busy ? <Spinner size="tiny" /> : <CheckmarkCircleRegular />} onClick={() => void submit()}>{hasAccount ? t('dashboard.upstreamEditor.oauth.reimport') : t('dashboard.upstreamEditor.oauth.import')}</Button>
+      {!(record.kind === 'codex' && relay && authorizeUrl !== null) && <Button appearance="primary" disabledFocusable={busy} icon={busy ? <Spinner size="tiny" /> : <CheckmarkCircleRegular />} onClick={() => void submit()}>{hasAccount ? t('dashboard.upstreamEditor.oauth.reimport') : t('dashboard.upstreamEditor.oauth.import')}</Button>}
     </>}
   </div>;
 }

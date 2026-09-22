@@ -48,5 +48,14 @@ export { MODEL_CATALOG_REVISION } from './repo/models-cache-contract.ts';
 export { initBackgroundSchedulerResolver } from './runtime/background.ts';
 export { initDumpBroker, initDumpStore } from './dump/registry.ts';
 export { initOpenAIResponsesWebSocketUpgradeResolver } from './data-plane/chat/openai-responses/websocket.ts';
+export {
+  completeCodexRelayCallback,
+  expireCodexRelaySessions,
+  initCodexOAuthRelayChannel,
+  liveCodexRelaySessionCount,
+  type CodexOAuthRelayChannel,
+  type CodexRelayOutcome,
+} from './control-plane/upstreams/codex-relay.ts';
+export { CODEX_REDIRECT_PORT } from '@floway-dev/provider-codex';
 export { runScheduledMaintenance } from './scheduled.ts';
 export { assertRuntimeProfileData } from './runtime/profile-policy.ts';

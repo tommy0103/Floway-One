@@ -16,6 +16,12 @@ export const CODEX_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 // Cannot be changed without re-registering the OAuth client.
 export const CODEX_REDIRECT_URI = 'http://localhost:1455/auth/callback';
 
+// The loopback port carved out of CODEX_REDIRECT_URI above. The OAuth client
+// registration fixes it, so every surface that serves the callback (this
+// repo's local relay, the official Codex CLI login server) must use exactly
+// this port; see the redirect URI reference on CODEX_REDIRECT_URI.
+export const CODEX_REDIRECT_PORT = 1455;
+
 // OAuth scope minimum-confirmed across implementations. We do NOT request the
 // connector scopes (api.connectors.read / .invoke) — they are only needed for
 // the MCP-connector feature and unrelated to /codex/responses.

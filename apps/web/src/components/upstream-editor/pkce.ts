@@ -17,12 +17,15 @@ export const generatePkce = async () => {
 
 const storageKey = (kind: UpstreamProviderKind, flowKind: string) => `floway-pkce:${kind}:${flowKind}`;
 
+// localStorage, not sessionStorage: the verifier has to outlive tab switches
+// and browser restarts mid-flow, because the OAuth round trip can open the
+// callback in a different tab than the one that started it (#44).
 export const stashPkce = (kind: UpstreamProviderKind, flowKind: string, value: { verifier: string; state: string }) => {
-  sessionStorage.setItem(storageKey(kind, flowKind), JSON.stringify(value));
+  localStorage.setItem(storageKey(kind, flowKind), JSON.stringify(value));
 };
 
 export const recallPkce = (kind: UpstreamProviderKind, flowKind: string, state: string) => {
-  const raw = sessionStorage.getItem(storageKey(kind, flowKind));
+  const raw = localStorage.getItem(storageKey(kind, flowKind));
   if (!raw) return null;
   const value = JSON.parse(raw) as unknown;
   if (!value || typeof value !== 'object') throw new TypeError('Stored PKCE state must be an object');
@@ -36,7 +39,7 @@ export const recallPkce = (kind: UpstreamProviderKind, flowKind: string, state: 
 };
 
 export const clearPkce = (kind: UpstreamProviderKind, flowKind: string) => {
-  sessionStorage.removeItem(storageKey(kind, flowKind));
+  localStorage.removeItem(storageKey(kind, flowKind));
 };
 
 export const parseCallbackPaste = (text: string) => {
