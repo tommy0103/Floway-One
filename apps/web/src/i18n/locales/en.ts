@@ -111,6 +111,7 @@ const en = {
         close: 'Close navigation',
         skip: 'Skip to main content',
         overview: 'Overview',
+        quickStart: 'Quick Start',
         playground: 'Playground',
         upstreams: 'Upstreams',
         search: 'Search',
@@ -135,6 +136,7 @@ const en = {
       pages: {
         overview:
             'Check whether this local gateway is healthy, where it is listening, and what needs attention',
+        quickStart: 'Install the Floway Skill and let an agent configure this local gateway',
         playground:
             'Run model conversations and inspect request behavior from the control plane',
         upstreams:
@@ -392,6 +394,17 @@ const en = {
         upstreamDisabled: 'Upstream disabled',
         validation: 'Select at least one upstream, or turn off the limit.',
       },
+      quickStart: {
+        installTitle: 'Install the Floway Skill',
+        installDescription: 'Install once to make the Skill available to Codex and Claude Code. No API key is needed for this step.',
+        accessDescription: 'Installation creates a private local session that lets the Skill view and change your Upstreams.',
+        install: 'Install Floway Skill',
+        installing: 'Installing Floway Skill…',
+        installed: 'Floway Skill installed at {{path}}. Start a new agent conversation to use it.',
+        tryTitle: 'Try it',
+        tryDescription: 'Start a new Codex or Claude Code conversation and ask the agent to list your Floway Upstreams.',
+        openUpstreams: 'View Upstreams in Floway',
+      },
       apiKeys: {
         empty: 'No API keys yet. Create one to call Floway.',
         actions: {
@@ -501,11 +514,6 @@ const en = {
           codexAuthHint: 'Store the Floway provider token beside that config, leaving the official account login alone.',
         },
         agentSetup: {
-          skillTitle: 'Configure Floway with an agent',
-          skillDescription: 'Install a local Floway skill for the selected agent. This authorizes management of your personal gateway without sharing a credential in chat.',
-          skillInstall: 'Install Floway Skill for {{agent}}',
-          skillInstalling: 'Installing Floway Skill for {{agent}}…',
-          skillInstalled: 'Floway Skill installed at {{path}}. Start a new agent conversation to use it.',
           agent: 'Agent', accessMethod: 'Connection method', setupTab: 'Setup script', snippetsTab: 'Config snippet', platform: 'Platform', commandPending: 'Preparing setup command…', modelSelection: 'Model selection', miscSettings: 'Miscellaneous settings', selectKey: 'Select an API key above to prepare a setup command.', noKey: 'Create an API key to use Agent Setup.', expired: 'This setup link has expired. Retry to create a fresh link.', timedOut: 'The gateway did not answer in time.', retry: 'Retry', expires: 'The setup link stays alive while this page is visible and expires after you leave.', defaultModel: 'Default model', fableModel: 'Fable model', opusModel: 'Opus model', sonnetModel: 'Sonnet model', haikuModel: 'Haiku model', reasoningEffort: 'Reasoning effort', modelDefault: 'Default', noModelMatches: 'No matching models', modelDiscovery: 'Gateway model discovery', modelDiscoveryHint: 'Let Claude Code discover available models from this Floway gateway.', cleanupRetention: 'Cleanup retention', cleanupRetentionHint: 'Set how long Claude Code retains local session data before cleanup.', cleanupDays: '{{count, number}} days', optOutAiAttribution: 'Opt out of Claude Code AI attribution', optOutAiAttributionHint: 'Remove Claude Code attribution ("Co-Authored-By") from commits and pull requests, and hide session links.', disableAutoMemory: 'Disable auto memory', disableAutoMemoryHint: 'Stop Claude Code from reading or writing its auto memory directory.', disableAgentView: 'Disable agent view', disableAgentViewHint: 'Turn off background agents and agent view, including `claude agents`, `--bg`, and `/background`.',
         },
         rotate: {

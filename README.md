@@ -46,7 +46,13 @@ pnpm install
 ADMIN_KEY='replace-with-a-secret' pnpm run dev:one
 ```
 
-Open <http://127.0.0.1:8788> and sign in with your `ADMIN_KEY`. Then:
+Open <http://127.0.0.1:8788> and sign in with your `ADMIN_KEY`.
+
+To let Codex or Claude Code manage this local gateway, open **Quick Start** in
+the Dashboard and install the Floway Skill. Installation creates a private
+local management session; start a new agent conversation before using it.
+
+To use Floway as a model endpoint:
 
 1. Add at least one provider under **Providers → Upstreams**.
 2. Create a key under **Services → API Keys**.

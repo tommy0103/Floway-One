@@ -72,7 +72,7 @@ export async function clientLoader(): Promise<LoaderData> {
 
 export default function DashboardServicesApiKeys({ loaderData }: Route.ComponentProps) {
   const { t } = useTranslation();
-  const { personal, user } = useDashboardOutletContext();
+  const { user } = useDashboardOutletContext();
   const [data, setData] = useState<ApiKeysPageData>(loaderData);
   const [selectedKeyId, setSelectedKeyId] = useState(loaderData.selectedKeyId);
   const [pageError, setPageError] = useState(loaderData.error);
@@ -177,7 +177,6 @@ export default function DashboardServicesApiKeys({ loaderData }: Route.Component
             initialError={loaderData.setupError}
             initialLease={loaderData.setupLease}
             models={agentSetupModels}
-            personal={personal}
             clipboard={clipboard}
             selectedKey={selectedKey}
           />

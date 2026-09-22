@@ -6,11 +6,9 @@ import { zValidator } from '../middleware/zod-validator.ts';
 import { getRepo } from '../repo/index.ts';
 import { getRuntimeProfile } from '@floway-dev/platform';
 
-export type FlowaySkillAgent = 'claude' | 'codex';
-
 export interface PersonalAgentSkillInstaller {
   readSessionToken(): string | null;
-  install(agent: FlowaySkillAgent, sessionToken: string): Promise<{ path: string }>;
+  install(sessionToken: string): Promise<{ path: string }>;
 }
 
 let installer: PersonalAgentSkillInstaller | null = null;
@@ -32,7 +30,7 @@ export const initPersonalAgentSkillInstaller = (value: PersonalAgentSkillInstall
   installer = value;
 };
 
-const installBody = z.object({ agent: z.enum(['claude', 'codex']) }).strict();
+const installBody = z.object({ agent: z.enum(['claude', 'codex']).optional() }).strict();
 
 export const agentSkillRoutes = new Hono<{ Variables: AuthVars }>()
   .post('/install', zValidator('json', installBody), async c => {
@@ -53,7 +51,7 @@ export const agentSkillRoutes = new Hono<{ Variables: AuthVars }>()
         : await getRepo().sessions.create(ownerId);
       const newlyCreated = session !== existing;
       try {
-        const result = await activeInstaller.install(c.req.valid('json').agent, session.id);
+        const result = await activeInstaller.install(session.id);
         return c.json(result);
       } catch (error) {
         if (newlyCreated) await getRepo().sessions.deleteById(session.id);
