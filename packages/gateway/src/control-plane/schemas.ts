@@ -429,15 +429,31 @@ export const copilotQuotaBody = recordOnlyBody;
 
 // --- codex OAuth (record-body contract) ---
 //
-// PKCE state is fully SPA-held: the dashboard mints `{verifier, challenge,
-// state}` in the browser via Web Crypto, stores `{verifier, state}` in
-// sessionStorage, and posts `challenge + state` here so the server can stamp
-// them into the upstream's authorize URL. The server never sees the
-// verifier until the callback comes back as `{code, verifier}` on exchange.
+// PKCE state is SPA-held by default: the dashboard mints `{verifier,
+// challenge, state}` in the browser via Web Crypto, stores `{verifier,
+// state}` in localStorage, and posts `challenge + state` here so the server
+// can stamp them into the upstream's authorize URL. The server never sees
+// the verifier until the callback comes back as `{code, verifier}` on
+// exchange.
+//
+// When the SPA also posts the `verifier` and this runtime registered an OAuth
+// relay channel (personal runtimes only), the server keeps the verifier in a
+// short-lived in-memory session so the localhost:1455 callback completes the
+// sign-in automatically; the SPA then collects the outcome through the
+// relay-result route. Without a channel the verifier is ignored and the
+// response reports `relay: false`, which keeps the manual paste flow.
 
 export const codexOAuthAuthorizeUrlBody = z.object({
   record: upstreamRecordEnvelope,
   challenge: z.string().min(1),
+  state: z.string().min(1),
+  verifier: z.string().min(1).optional(),
+});
+
+// Query for `GET /api/upstreams/codex/oauth/relay-result` — the SPA polls it
+// while its automatic sign-in is out in the browser. The OAuth `state` is the
+// only handle: it is random per flow and known only to the SPA that minted it.
+export const codexRelayResultQuery = z.object({
   state: z.string().min(1),
 });
 

@@ -1016,6 +1016,11 @@ const en = {
           callback: 'Redirected callback URL or code',
           unrecognized:
               'Authorization flow was not recognized. Restart the flow.',
+          relayHint: 'Finish signing in with ChatGPT in the browser window that opened. Floway completes the import automatically — nothing to copy.',
+          relayWaiting: 'Waiting for sign-in to finish in your browser…',
+          relayExpired: 'The automatic sign-in is no longer active. Restart the flow, or paste the callback URL below.',
+          relayRestart: 'Restart sign-in',
+          manualHint: 'After signing in, the browser lands on a page it cannot open — that is expected. Copy the full address from that page and paste it here.',
         },
         validation: {
           name: 'Upstream name is required.',

@@ -967,6 +967,11 @@ const zhHansCN = {
           copy: '复制授权链接',
           callback: '重定向后的回调 URL 或代码',
           unrecognized: '无法识别该授权流程，请重新开始。',
+          relayHint: '在打开的浏览器窗口中完成 ChatGPT 登录。Floway 会自动完成导入，无需复制任何内容。',
+          relayWaiting: '等待在浏览器中完成登录…',
+          relayExpired: '自动登录已失效。请重新发起流程，或在下方手动粘贴回调地址。',
+          relayRestart: '重新发起登录',
+          manualHint: '登录后浏览器会打开一个无法访问的页面——这是预期行为。请复制该页面地址栏中的完整网址并粘贴到这里。',
         },
         validation: {
           name: '上游名称不能为空。',
