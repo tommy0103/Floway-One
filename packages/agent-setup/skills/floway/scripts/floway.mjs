@@ -25,8 +25,9 @@ if (!Number.isInteger(runtime.port) || runtime.port < 1 || runtime.port > 65535)
   throw new Error('Floway runtime state has no valid local port. Restart Floway.');
 }
 const origin = `http://127.0.0.1:${runtime.port}`;
-const sessionToken = readRequired(join(dataDir, 'agent-skill.session'), 'Floway Skill is not authorized. Sign in to the Dashboard and reinstall it.').trim();
-if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error('Floway Skill authorization is invalid. Reinstall it from the Dashboard.');
+const quickStart = `${origin}/dashboard/quick-start`;
+const sessionToken = readRequired(join(dataDir, 'agent-skill.session'), `Floway Skill is not authorized. Sign in and reinstall it from ${quickStart}.`).trim();
+if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error(`Floway Skill authorization is invalid. Reinstall it from ${quickStart}.`);
 secrets.add(sessionToken);
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 const errorText = payload => {
@@ -45,7 +46,7 @@ const api = async (method, path, body) => {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }).catch(cause => { throw new Error(`Cannot reach local Floway at ${origin}. Start the app and retry.`, { cause }); });
   const payload = await response.json().catch(() => null);
-  if (response.status === 401) throw new Error('Floway Skill authorization expired. Sign in to the Dashboard and reinstall it.');
+  if (response.status === 401) throw new Error(`Floway Skill authorization expired. Sign in and reinstall it from ${quickStart}.`);
   if (!response.ok) throw new Error(`Floway HTTP ${response.status}: ${safe(errorText(payload))}`);
   return payload;
 };
@@ -62,14 +63,21 @@ const recordSummary = row => ({
 const modelIds = payload => Array.isArray(payload?.data)
   ? payload.data.map(row => row.publicModelId ?? row.id).filter(id => typeof id === 'string')
   : [];
-const normalizeCustomBaseUrl = value => {
+const usesDefaultCustomPaths = config => config.modelsFetch?.enabled === true
+  && !config.modelsFetch.endpoint
+  && Object.keys(config.pathOverrides ?? {}).length === 0;
+const normalizeCustomBaseUrl = (value, config) => {
+  if (value.includes('?') || value.includes('#')) {
+    throw new Error('The provider URL must not contain a query or fragment.');
+  }
   let url;
   try { url = new URL(value); }
   catch (cause) { throw new Error('The provider URL must be an http(s) URL.', { cause }); }
   if (!['http:', 'https:'].includes(url.protocol) || url.search || url.hash || url.username || url.password) {
     throw new Error('The provider URL must be an http(s) URL without credentials, a query, or a fragment.');
   }
-  if (/\/v1\/?$/.test(url.pathname)) url.pathname = url.pathname.replace(/\/v1\/?$/, '') || '/';
+  const suffix = usesDefaultCustomPaths(config) ? /\/v1(\/?)$/.exec(url.pathname) : null;
+  if (suffix) url.pathname = `${url.pathname.slice(0, -suffix[0].length)}${suffix[1]}` || '/';
   return url.toString();
 };
 const verifyModels = async id => {
@@ -234,7 +242,8 @@ const [command, ...args] = process.argv.slice(2);
     case 'create-custom': {
       if (args.length !== 3) throw new Error('Usage: floway create-custom NAME BASE_URL KEY_FILE');
       const [name, inputUrl, keyFile] = args;
-      const baseUrl = normalizeCustomBaseUrl(inputUrl);
+      const draft = await blueprint('custom');
+      const baseUrl = normalizeCustomBaseUrl(inputUrl, draft.config);
       const keyStat = statSync(keyFile);
       if (!keyStat.isFile() || (process.platform !== 'win32' && (keyStat.mode & 0o077) !== 0)) {
         throw new Error('The provider key must be in an owner-only regular file (mode 0600).');
@@ -242,7 +251,6 @@ const [command, ...args] = process.argv.slice(2);
       const apiKey = readFileSync(keyFile, 'utf8').trim();
       if (!apiKey) throw new Error('The provider key file is empty.');
       secrets.add(apiKey);
-      const draft = await blueprint('custom');
       const created = await createUpstream({
         ...draft,
         name,

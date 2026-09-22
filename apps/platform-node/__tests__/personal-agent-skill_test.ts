@@ -97,6 +97,15 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
   let customCreated = false;
   let ollamaCreated = false;
   let copilotCreated = false;
+  let customPathOverride = false;
+  let customModelsEndpoint = false;
+  const expectedCustomBaseUrls: Record<string, string> = {
+    Nested: 'https://provider.example/api/',
+    Root: 'https://provider.example/',
+    Beta: 'https://provider.example/v1beta',
+    'Models Override': 'https://provider.example/v1/',
+    Override: 'https://provider.example/v1/',
+  };
   const hues = [90];
   const server = createServer((request, response) => {
     void (async () => {
@@ -107,7 +116,13 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       let reply: unknown;
       if (url.pathname === '/api/upstreams/blueprint') {
-        reply = { id: '', kind: url.searchParams.get('kind'), name: '', enabled: false, config: {}, state: null };
+        const kind = url.searchParams.get('kind');
+        const config: Record<string, unknown> = {};
+        if (kind === 'custom') {
+          config.modelsFetch = customModelsEndpoint ? { enabled: true, endpoint: '/models' } : { enabled: true };
+          if (customPathOverride) config.pathOverrides = { '/chat/completions': '/chat' };
+        }
+        reply = { id: '', kind, name: '', enabled: false, config, state: null };
       } else if (url.pathname === '/api/upstreams' && request.method === 'GET') {
         reply = hues.map(hue => ({ hue }));
       } else if (url.pathname === '/api/upstreams/copilot/oauth/device-login/start') {
@@ -125,7 +140,7 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
         if (body.kind === 'custom') {
           customCreated = true;
           assertEquals(body.config.apiKey, key);
-          assertEquals(body.config.baseUrl, 'https://provider.example/');
+          assertEquals(body.config.baseUrl, expectedCustomBaseUrls[body.name]);
         } else if (body.kind === 'ollama') {
           ollamaCreated = true;
         } else {
@@ -151,12 +166,25 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
     await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
     const run = promisify(execFile);
-    const custom = await run(process.execPath, [helper, 'create-custom', 'Example', 'https://provider.example/v1/', keyPath]);
+    const custom = await run(process.execPath, [helper, 'create-custom', 'Nested', 'https://provider.example/api/v1/', keyPath]);
     assertEquals(JSON.parse(custom.stdout).status, 'verified');
     assertEquals(JSON.parse(custom.stdout).models, ['usable-model']);
-    assertEquals(JSON.parse(custom.stdout).baseUrl, 'https://provider.example/');
+    assertEquals(JSON.parse(custom.stdout).baseUrl, 'https://provider.example/api/');
     assert(!custom.stdout.includes(key));
     assertEquals(hues[1], 270);
+    const rootUrl = await run(process.execPath, [helper, 'create-custom', 'Root', 'https://provider.example/v1', keyPath]);
+    assertEquals(JSON.parse(rootUrl.stdout).baseUrl, 'https://provider.example/');
+    const beta = await run(process.execPath, [helper, 'create-custom', 'Beta', 'https://provider.example/v1beta', keyPath]);
+    assertEquals(JSON.parse(beta.stdout).baseUrl, 'https://provider.example/v1beta');
+    customModelsEndpoint = true;
+    const modelsOverride = await run(process.execPath, [helper, 'create-custom', 'Models Override', 'https://provider.example/v1/', keyPath]);
+    assertEquals(JSON.parse(modelsOverride.stdout).baseUrl, 'https://provider.example/v1/');
+    customModelsEndpoint = false;
+    customPathOverride = true;
+    const overridden = await run(process.execPath, [helper, 'create-custom', 'Override', 'https://provider.example/v1/', keyPath]);
+    assertEquals(JSON.parse(overridden.stdout).baseUrl, 'https://provider.example/v1/');
+    await assertRejects(() => run(process.execPath, [helper, 'create-custom', 'Invalid', 'https://provider.example/v1?token=x', keyPath]), Error, 'provider URL');
+    await assertRejects(() => run(process.execPath, [helper, 'create-custom', 'Invalid', 'https://provider.example/v1#fragment', keyPath]), Error, 'provider URL');
     const ollama = await run(process.execPath, [helper, 'create-ollama', 'Ollama', 'http://127.0.0.1:11434']);
     assertEquals(JSON.parse(ollama.stdout).status, 'verified');
     const started = await run(process.execPath, [helper, 'copilot-start', 'Copilot']);
@@ -167,7 +195,7 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     assertEquals(JSON.parse(finished.stdout).status, 'verified');
     assert(!finished.stdout.includes('oauth-secret'));
     assert(customCreated && ollamaCreated && copilotCreated);
-    assertEquals(new Set(hues).size, 4);
+    assertEquals(new Set(hues).size, 8);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
