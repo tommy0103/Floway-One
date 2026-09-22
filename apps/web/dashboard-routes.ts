@@ -8,6 +8,7 @@ export const dashboardRoute = {
   file: 'routes/dashboard.tsx',
   children: [
     { index: true, file: 'routes/dashboard-overview.tsx' },
+    { path: 'quick-start', file: 'routes/dashboard-quick-start.tsx' },
     { path: 'playground', file: 'routes/dashboard-playground.tsx' },
     { path: 'providers/upstreams', file: 'routes/dashboard-providers-upstreams.tsx' },
     { path: 'providers/upstreams/new/:provider', file: 'routes/dashboard-providers-upstreams-new.tsx' },

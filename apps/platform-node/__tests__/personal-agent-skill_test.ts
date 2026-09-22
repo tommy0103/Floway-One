@@ -26,17 +26,15 @@ const withInstaller = async (operation: (root: string, installer: ReturnType<typ
   }
 };
 
-test('personal Floway Skill installs for Codex and Claude with private reusable authorization', () => withInstaller(async (root, installer, dataDir) => {
+test('personal Floway Skill installs once for Codex and Claude with private authorization', () => withInstaller(async (root, installer, dataDir) => {
   assertEquals(installer.readSessionToken(), null);
-  const codex = await installer.install('codex', TOKEN);
-  const claude = await installer.install('claude', TOKEN);
-  assertEquals(codex.path, join(root, '.agents/skills/floway/SKILL.md'));
-  assertEquals(claude.path, join(root, '.claude/skills/floway/SKILL.md'));
-  for (const path of [codex.path, claude.path]) {
-    const contents = await readFile(path, 'utf8');
+  const { path } = await installer.install(TOKEN);
+  assertEquals(path, join(root, '.agents/skills/floway/SKILL.md'));
+  for (const skillPath of [path, join(root, '.claude/skills/floway/SKILL.md')]) {
+    const contents = await readFile(skillPath, 'utf8');
     assert(contents.startsWith('---\nname: floway\n'));
     assert(!contents.includes(TOKEN));
-    const connection = JSON.parse(await readFile(join(path, '../connection.json'), 'utf8'));
+    const connection = JSON.parse(await readFile(join(skillPath, '../connection.json'), 'utf8'));
     assertEquals(connection, { dataDir });
   }
   const sessionPath = join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE);
@@ -49,13 +47,22 @@ test('personal Floway Skill preserves an unmanaged skill and its authorization',
   const skillDir = join(root, '.agents/skills/floway');
   await mkdir(skillDir, { recursive: true });
   await writeFile(join(skillDir, 'SKILL.md'), '---\nname: floway\n---\n\n# Owner skill\n');
-  await assertRejects(() => installer.install('codex', TOKEN), Error, 'unmanaged skill');
+  await assertRejects(() => installer.install(TOKEN), Error, 'unmanaged skill');
   assertEquals(await readFile(join(skillDir, 'SKILL.md'), 'utf8'), '---\nname: floway\n---\n\n# Owner skill\n');
   await assertRejects(() => readFile(join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE)), Error);
 }));
 
+test('personal Floway Skill checks Claude destination before changing the shared copy', () => withInstaller(async (root, installer, dataDir) => {
+  const claudeDir = join(root, '.claude/skills/floway');
+  await mkdir(claudeDir, { recursive: true });
+  await writeFile(join(claudeDir, 'SKILL.md'), '---\nname: floway\n---\n\n# Owner skill\n');
+  await assertRejects(() => installer.install(TOKEN), Error, 'unmanaged skill');
+  await assertRejects(() => readFile(join(root, '.agents/skills/floway/SKILL.md')), Error);
+  await assertRejects(() => readFile(join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE)), Error);
+}));
+
 test('installed helper follows a changed local port without exposing the session', () => withInstaller(async (_root, installer, dataDir) => {
-  const { path } = await installer.install('codex', TOKEN);
+  const { path } = await installer.install(TOKEN);
   const helper = join(path, '../scripts/floway.mjs');
   const run = promisify(execFile);
   for (const index of [1, 2]) {
@@ -82,7 +89,7 @@ test('installed helper follows a changed local port without exposing the session
 }));
 
 test('installed helper completes key and device authorization without printing provider secrets', () => withInstaller(async (root, installer, dataDir) => {
-  const { path } = await installer.install('codex', TOKEN);
+  const { path } = await installer.install(TOKEN);
   const helper = join(path, '../scripts/floway.mjs');
   const key = 'sk-private-provider-key';
   const keyPath = join(root, 'provider-key');

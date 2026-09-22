@@ -62,7 +62,6 @@ const Host = () => {
       initialError={null}
       initialLease={lease('key-1')}
       models={[]}
-      personal={false}
       selectedKey={apiKey(keyId)}
     />
   </>;

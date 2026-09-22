@@ -22,6 +22,7 @@ describe('Sidebar runtime capabilities', () => {
 
     expect(screen.queryByText('Users')).toBeNull();
     expect(screen.getByText('Overview')).toBeTruthy();
+    expect(screen.getByText('Quick Start')).toBeTruthy();
     expect(screen.getByText('Backup / Restore')).toBeTruthy();
     expect(screen.getByText('Local owner')).toBeTruthy();
     expect(screen.queryByText('admin')).toBeNull();
@@ -34,5 +35,6 @@ describe('Sidebar runtime capabilities', () => {
     expect(screen.getByText('admin')).toBeTruthy();
     expect(screen.queryByText('Local owner')).toBeNull();
     expect(screen.queryByText('Overview')).toBeNull();
+    expect(screen.queryByText('Quick Start')).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
 import type { InitializedPersonalStorage } from './personal-storage.ts';
 import { FLOWAY_SKILL_HELPER, FLOWAY_SKILL_MARKDOWN } from '@floway-dev/agent-setup';
-import type { FlowaySkillAgent, PersonalAgentSkillInstaller } from '@floway-dev/gateway';
+import type { PersonalAgentSkillInstaller } from '@floway-dev/gateway';
 
 export const PERSONAL_AGENT_SKILL_SESSION_FILE = 'agent-skill.session';
 const MANAGED_SKILL_MARKER = '<!-- Managed by Floway. -->';
@@ -54,31 +54,36 @@ export const createPersonalAgentSkillInstaller = ({
     return token;
   };
 
-  const install = async (agent: FlowaySkillAgent, sessionToken: string): Promise<{ path: string }> => {
+  const install = async (sessionToken: string): Promise<{ path: string }> => {
     if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error('Floway Skill session token is invalid');
     const configuredClaudeDir = process.env.CLAUDE_CONFIG_DIR;
     const claudeDir = configuredClaudeDir === undefined || configuredClaudeDir === ''
       ? join(homeDir, '.claude')
       : configuredClaudeDir;
-    const root = agent === 'codex'
-      ? join(homeDir, '.agents', 'skills', 'floway')
-      : join(claudeDir, 'skills', 'floway');
-    const skillPath = join(root, 'SKILL.md');
-    if (existsSync(skillPath) && !readFileSync(skillPath, 'utf8').includes(MANAGED_SKILL_MARKER)) {
-      throw new Error(`Floway Skill cannot replace an unmanaged skill at ${skillPath}`);
+    const sharedRoot = join(homeDir, '.agents', 'skills', 'floway');
+    // Claude Code currently discovers personal skills in ~/.claude/skills.
+    // https://code.claude.com/docs/en/skills#choose-where-skills-load
+    const roots = [...new Set([sharedRoot, join(claudeDir, 'skills', 'floway')])];
+    for (const root of roots) {
+      const skillPath = join(root, 'SKILL.md');
+      if (existsSync(skillPath) && !readFileSync(skillPath, 'utf8').includes(MANAGED_SKILL_MARKER)) {
+        throw new Error(`Floway Skill cannot replace an unmanaged skill at ${skillPath}`);
+      }
     }
 
-    mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
     const launcher = platform === 'win32'
       ? `$script = Join-Path $PSScriptRoot 'floway.mjs'\n& ${powerShellLiteral(nodeExecutable)} $script @args\nexit $LASTEXITCODE\n`
       : `#!/bin/sh\nexec ${shellLiteral(nodeExecutable)} "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/floway.mjs" "$@"\n`;
-    writeAtomic(join(root, 'scripts', 'floway.mjs'), FLOWAY_SKILL_HELPER, 0o644);
-    writeAtomic(join(root, 'scripts', platform === 'win32' ? 'floway.ps1' : 'floway'), launcher, platform === 'win32' ? 0o644 : 0o755);
-    writeAtomic(join(root, 'connection.json'), `${JSON.stringify({ dataDir: paths.dataDir })}\n`, 0o644);
-    writeAtomic(skillPath, FLOWAY_SKILL_MARKDOWN, 0o644);
+    for (const root of roots) {
+      mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
+      writeAtomic(join(root, 'scripts', 'floway.mjs'), FLOWAY_SKILL_HELPER, 0o644);
+      writeAtomic(join(root, 'scripts', platform === 'win32' ? 'floway.ps1' : 'floway'), launcher, platform === 'win32' ? 0o644 : 0o755);
+      writeAtomic(join(root, 'connection.json'), `${JSON.stringify({ dataDir: paths.dataDir })}\n`, 0o644);
+      writeAtomic(join(root, 'SKILL.md'), FLOWAY_SKILL_MARKDOWN, 0o644);
+    }
     writeAtomic(sessionPath, `${sessionToken}\n`, 0o600);
     permissions.hardenFile(sessionPath);
-    return { path: skillPath };
+    return { path: join(sharedRoot, 'SKILL.md') };
   };
 
   return { readSessionToken, install };

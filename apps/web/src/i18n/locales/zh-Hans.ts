@@ -109,6 +109,7 @@ const zhHansCN = {
         close: '关闭导航',
         skip: '跳到主要内容',
         overview: '概览',
+        quickStart: '快速开始',
         playground: '对话',
         upstreams: '上游',
         search: '搜索',
@@ -132,6 +133,7 @@ const zhHansCN = {
       },
       pages: {
         overview: '查看本机网关是否健康、监听地址，以及需要处理的问题',
+        quickStart: '安装 Floway Skill，让 Agent 配置本机网关',
         playground: '在控制台中运行模型对话，并检查请求行为',
         upstreams:
             '管理模型提供商的路由优先级、可用状态、模型目录和连接配置',
@@ -376,6 +378,17 @@ const zhHansCN = {
         upstreamDisabled: '上游已停用',
         validation: '至少选择一个上游，或关闭限制。',
       },
+      quickStart: {
+        installTitle: '安装 Floway Skill',
+        installDescription: '安装一次即可在 Codex 和 Claude Code 中使用；这一步不需要 API 密钥。',
+        accessDescription: '安装会创建私有的本机会话，允许 Skill 查看和修改上游配置。',
+        install: '安装 Floway Skill',
+        installing: '正在安装 Floway Skill…',
+        installed: 'Floway Skill 已安装到 {{path}}。请开启新的 Agent 对话使用。',
+        tryTitle: '试一试',
+        tryDescription: '开启新的 Codex 或 Claude Code 对话，让 Agent 列出 Floway 的上游。',
+        openUpstreams: '在 Floway 查看上游',
+      },
       apiKeys: {
         empty: '还没有 API 密钥。创建一个后即可调用 Floway。',
         actions: {
@@ -480,7 +493,7 @@ const zhHansCN = {
           codexConfigHintWindows: '合并到 <path>%USERPROFILE%\\.codex\\config.toml</path>。',
           codexAuthHint: '将 Floway provider token 保存在该配置旁，不影响官方账号登录。',
         },
-        agentSetup: { skillTitle: '让 Agent 配置 Floway', skillDescription: '为选中的 Agent 安装本机 Floway Skill，并授权其管理个人网关；无需在对话中提供管理凭据。', skillInstall: '为 {{agent}} 安装 Floway Skill', skillInstalling: '正在为 {{agent}} 安装 Floway Skill…', skillInstalled: 'Floway Skill 已安装到 {{path}}。请开启新的 Agent 对话使用。', agent: 'Agent', accessMethod: '接入方式', setupTab: '自动配置脚本', snippetsTab: '配置文件片段', platform: '操作系统', commandPending: '正在准备安装命令…', modelSelection: '模型选择', miscSettings: '杂项设置', selectKey: '请先在上方选择 API 密钥。', noKey: '请先创建 API 密钥。', expired: '此安装链接已过期，请重试生成新链接。', timedOut: '网关未在规定时间内响应。', retry: '重试', expires: '页面可见时链接会自动续期，离开后即过期。', defaultModel: '默认模型', fableModel: 'Fable 模型', opusModel: 'Opus 模型', sonnetModel: 'Sonnet 模型', haikuModel: 'Haiku 模型', reasoningEffort: '思考强度', modelDefault: '默认', noModelMatches: '没有匹配的模型', modelDiscovery: 'Gateway 模型发现', modelDiscoveryHint: '允许 Claude Code 从此 Floway gateway 发现可用模型。', cleanupRetention: '清理保留期', cleanupRetentionHint: '设置 Claude Code 本地会话数据的清理保留期。', cleanupDays: '{{count, number}} 天', optOutAiAttribution: '停用 Claude Code AI 归属标记', optOutAiAttributionHint: '移除提交和 Pull Request 中的 Claude Code 归属信息（"Co-Authored-By"），并隐藏会话链接。', disableAutoMemory: '停用自动记忆', disableAutoMemoryHint: '禁止 Claude Code 读写其自动记忆目录。', disableAgentView: '停用 Agent 视图', disableAgentViewHint: '关闭后台 agent 与 agent 视图，包括 `claude agents`、`--bg` 和 `/background`。' },
+        agentSetup: { agent: 'Agent', accessMethod: '接入方式', setupTab: '自动配置脚本', snippetsTab: '配置文件片段', platform: '操作系统', commandPending: '正在准备安装命令…', modelSelection: '模型选择', miscSettings: '杂项设置', selectKey: '请先在上方选择 API 密钥。', noKey: '请先创建 API 密钥。', expired: '此安装链接已过期，请重试生成新链接。', timedOut: '网关未在规定时间内响应。', retry: '重试', expires: '页面可见时链接会自动续期，离开后即过期。', defaultModel: '默认模型', fableModel: 'Fable 模型', opusModel: 'Opus 模型', sonnetModel: 'Sonnet 模型', haikuModel: 'Haiku 模型', reasoningEffort: '思考强度', modelDefault: '默认', noModelMatches: '没有匹配的模型', modelDiscovery: 'Gateway 模型发现', modelDiscoveryHint: '允许 Claude Code 从此 Floway gateway 发现可用模型。', cleanupRetention: '清理保留期', cleanupRetentionHint: '设置 Claude Code 本地会话数据的清理保留期。', cleanupDays: '{{count, number}} 天', optOutAiAttribution: '停用 Claude Code AI 归属标记', optOutAiAttributionHint: '移除提交和 Pull Request 中的 Claude Code 归属信息（"Co-Authored-By"），并隐藏会话链接。', disableAutoMemory: '停用自动记忆', disableAutoMemoryHint: '禁止 Claude Code 读写其自动记忆目录。', disableAgentView: '停用 Agent 视图', disableAgentViewHint: '关闭后台 agent 与 agent 视图，包括 `claude agents`、`--bg` 和 `/background`。' },
         rotate: {
           title: '轮换 API 密钥',
           message: '为 {{name}} 选择替换 API 密钥。轮换后旧 API 密钥会立即停止工作。',

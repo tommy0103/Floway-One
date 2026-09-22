@@ -1,4 +1,5 @@
 import {
+  Bot20Color,
   Chat20Color,
   Clipboard20Color,
   Cloud20Color,
@@ -69,6 +70,7 @@ export const navGroups: NavGroup[] = [
   {
     items: [
       overviewPage,
+      { to: '/dashboard/quick-start', labelKey: 'dashboard.nav.quickStart', icon: Bot20Color, personalOnly: true },
       { to: '/dashboard/playground', labelKey: 'dashboard.nav.playground', icon: Chat20Color },
     ],
   },
