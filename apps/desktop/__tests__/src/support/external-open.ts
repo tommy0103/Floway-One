@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 
 import type { InstalledAppVerificationContext } from './installed-app.ts';
 import { waitForHealthyRuntime } from './personal-runtime.ts';
@@ -10,16 +8,16 @@ import {
   appEnvironmentWithoutPortOverride,
   assertLoopbackPortReleased,
   captureApp,
+  sendDesktopControl,
   terminateProcessGroup,
   waitForDirectChild,
 } from './process-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
-const execFileAsync = promisify(execFile);
-
 // The shell emits `FLOWAY_EXTERNAL_OPEN <url> <outcome>` from
-// `handle_navigation` when the packaged verifier opens the
-// `floway-action://verify-external-open` action (issue #45).
+// `handle_navigation` when the packaged verifier drives the
+// `floway-action://verify-external-open` action through its control channel
+// (issue #45).
 const EXTERNAL_OPEN_MARKER = 'FLOWAY_EXTERNAL_OPEN ';
 
 const waitForMarker = async (output: () => string, needle: string, timeoutMs = 30_000): Promise<string> => {
@@ -34,11 +32,12 @@ const waitForMarker = async (output: () => string, needle: string, timeoutMs = 3
   throw new Error(`Floway external-open gate marker did not arrive: ${needle}`);
 };
 
-// Real-machine gate for the link-click → system-browser path (#45). The gate
-// opens `floway-action://verify-external-open?url=...` against the packaged
-// application, so the request walks the shell's `handle_navigation` segment a
-// Dashboard link click takes, and each marker line records what the
-// navigation policy decided and whether the system-browser handoff succeeded.
+// Real-machine gate for the external-link → system-browser path (#45). The
+// control channel (a debug-build-only command) tells the packaged shell to
+// navigate its webview to the `floway-action://verify-external-open` action,
+// so the request walks the shell's `handle_navigation` segment a Dashboard
+// link click takes, and each marker line records what the navigation policy
+// decided and whether the system-browser handoff succeeded.
 export const assertExternalOpenGate = async (
   context: InstalledAppVerificationContext,
   isolatedRoot: string,
@@ -60,9 +59,7 @@ export const assertExternalOpenGate = async (
     await waitForHealthyRuntime(child, output, origin);
 
     const openAction = async (url: string): Promise<void> => {
-      await execFileAsync('/usr/bin/open', [`floway-action://verify-external-open?url=${encodeURIComponent(url)}`], {
-        timeout: 15_000,
-      });
+      await sendDesktopControl(context.executable, applicationHome, `verify-external-open?url=${encodeURIComponent(url)}`);
     };
 
     // A policy-legitimate https target reaches the system browser.

@@ -1537,7 +1537,30 @@ fn dispatch_shell_command(app: &AppHandle, command: ShellCommand) -> Result<Valu
         ShellCommand::SetAutostart(enabled) => {
             set_autostart(app, enabled).map(|()| json!({ "ok": true }))
         }
+        ShellCommand::VerifyExternalOpen(url) => {
+            verify_external_open_command(app, url).map(|()| json!({ "ok": true }))
+        }
     }
+}
+
+// Verifier-only transport for the external-link gate (#45): navigates the live
+// webview to the `floway-action://verify-external-open` action so the request
+// walks `handle_navigation` — the segment a Dashboard link click takes — and
+// the marker trace records what the policy decided. Inert in release builds,
+// where the control command answers "not ok" without any navigation.
+fn verify_external_open_command(app: &AppHandle, url: String) -> Result<(), Box<dyn Error>> {
+    if !cfg!(debug_assertions) {
+        return Err("verify-external-open is only available in verifier builds".into());
+    }
+    let candidate = Url::parse(&format!("floway-action://verify-external-open?url={url}"))
+        .map_err(|error| {
+            format!("Floway verify-external-open action URL is invalid: {url} ({error})")
+        })?;
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("Floway verify-external-open found no main webview window".into());
+    };
+    window.navigate(candidate)?;
+    Ok(())
 }
 
 fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
