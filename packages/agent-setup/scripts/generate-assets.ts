@@ -75,7 +75,12 @@ const scriptSources = {
 } as const satisfies Record<string, PlatformSources>;
 
 const allSections = Object.values(scriptSources).flatMap(({ common, agents }) => [...common, ...agents]);
+const productSkillFiles = [
+  ['FLOWAY_SKILL_MARKDOWN', 'skills/floway/SKILL.md'],
+  ['FLOWAY_SKILL_HELPER', 'skills/floway/scripts/floway.mjs'],
+] as const;
 const sourceFiles = new Map<string, string>();
+for (const [name, file] of productSkillFiles) sourceFiles.set(name, file);
 for (const { name, file } of allSections) {
   const existing = sourceFiles.get(name);
   if (existing !== undefined && existing !== file) throw new Error(`${name} maps to both ${existing} and ${file}`);

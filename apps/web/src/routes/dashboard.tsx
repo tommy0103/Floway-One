@@ -29,6 +29,7 @@ const { Button, DrawerBody, OverlayDrawer } = fluentComponents;
 
 export interface DashboardOutletContext {
   capabilities: DashboardRuntimeCapabilities;
+  personal: boolean;
   user: AuthUser;
 }
 
@@ -81,7 +82,7 @@ function DashboardShell({ capabilities, personal, user }: { capabilities: Dashbo
   const workspace = useMatches().some(match => isDashboardWorkspaceHandle(match.handle));
   // `useOutlet` keys its element on the context object, so a new context every
   // render remounts the held page.
-  const outletContext = useMemo(() => ({ capabilities, user } satisfies DashboardOutletContext), [capabilities, user]);
+  const outletContext = useMemo(() => ({ capabilities, personal, user } satisfies DashboardOutletContext), [capabilities, personal, user]);
   const outlet = useOutlet(outletContext);
   // The scroller belongs to the page, not the shell, so a held page keeps its
   // own scroll position while it leaves. Its content box is the one box in this

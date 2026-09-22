@@ -12,6 +12,7 @@ import {
 } from './agent-setup';
 import { modelOptions, rankAgentSetupModels, type ClaudePicker } from './agent-setup-models';
 import { agentSetupCommand, useAgentSetup } from './use-agent-setup';
+import { api, callApi } from '../../api/client';
 import type { ApiKey, ControlPlaneModel } from '../../api/types';
 import claudeIconUrl from '../../assets/claude-color.svg';
 import codexIconUrl from '../../assets/codex.svg';
@@ -44,11 +45,12 @@ const claudeCleanupPeriods = [180, 365, 99999] as const satisfies readonly NonNu
 // https://docs.claude.com/en/docs/claude-code/settings
 const claudeEffortLevels = ['low', 'medium', 'high', 'xhigh'] as const satisfies readonly NonNullable<AgentSetupConfiguration['claudeCode']['effortLevel']>[];
 
-export function AgentSetupCard({ clipboard, initialApiKeyId, initialError, initialLease, models, selectedKey }: {
+export function AgentSetupCard({ clipboard, initialApiKeyId, initialError, initialLease, models, personal, selectedKey }: {
   initialApiKeyId: string | null;
   initialError: string | null;
   initialLease: AgentSetupLease | null;
   models: ControlPlaneModel[];
+  personal: boolean;
   clipboard: ClipboardCopy;
   selectedKey: ApiKey | null;
 }) {
@@ -57,6 +59,15 @@ export function AgentSetupCard({ clipboard, initialApiKeyId, initialError, initi
   const [agent, setAgent] = useState<Agent>('claude');
   const [platform, setPlatform] = useState<Platform>(() => detectAgentSetupPlatform(window.navigator.platform, window.navigator.userAgent));
   const setup = useAgentSetup(selectedKey?.id ?? null, initialLease, initialError, initialApiKeyId);
+  const [installingSkill, setInstallingSkill] = useState(false);
+  const [skillInstallResult, setSkillInstallResult] = useState<{ path: string } | { error: string } | null>(null);
+  const installSkill = async () => {
+    setInstallingSkill(true);
+    setSkillInstallResult(null);
+    const result = await callApi(() => api.api['agent-skill'].install.$post({ json: { agent } }));
+    setInstallingSkill(false);
+    setSkillInstallResult(result.error ? { error: result.error.message } : { path: result.data.path });
+  };
 
   const scripts = setup.lease?.scripts[agent];
   const scriptPath = platform === 'unix' ? scripts?.sh : scripts?.ps1;
@@ -72,6 +83,15 @@ export function AgentSetupCard({ clipboard, initialApiKeyId, initialError, initi
         <Tab value="snippets">{t('dashboard.apiKeys.agentSetup.snippetsTab')}</Tab>
       </TabList>
     } />
+
+    {personal && <section className={SECTION_STACK_CLASS}>
+      <SectionHeader level={3} title={t('dashboard.apiKeys.agentSetup.skillTitle')} />
+      <Text size={200}>{t('dashboard.apiKeys.agentSetup.skillDescription')}</Text>
+      <div><Button appearance="secondary" disabled={installingSkill} onClick={() => void installSkill()}>{t(installingSkill ? 'dashboard.apiKeys.agentSetup.skillInstalling' : 'dashboard.apiKeys.agentSetup.skillInstall', { agent: agent === 'codex' ? 'Codex' : 'Claude Code' })}</Button></div>
+      {skillInstallResult && ('error' in skillInstallResult
+        ? <OutcomeMessageBar>{skillInstallResult.error}</OutcomeMessageBar>
+        : <OutcomeMessageBar intent="success">{t('dashboard.apiKeys.agentSetup.skillInstalled', { path: skillInstallResult.path })}</OutcomeMessageBar>)}
+    </section>}
 
     <div className={`grid ${PANE_GAP_CLASS} min-w-0 grid-cols-[190px_minmax(0,1fr)] max-[680px]:grid-cols-1`}>
       <nav className="grid content-start">

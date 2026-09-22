@@ -19,6 +19,7 @@ import { installDesktopSidecarLifecycle } from './desktop-sidecar-lifecycle.ts';
 import { createLocalApp } from './local-app.ts';
 import { applyMigrations } from './migrate.ts';
 import { listenNodeServer } from './node-listener.ts';
+import { createPersonalAgentSkillInstaller } from './personal-agent-skill.ts';
 import {
   preparePersonalDashboardBootstrap,
   takePersonalDashboardBootstrapToken,
@@ -46,6 +47,7 @@ import {
   initBackgroundSchedulerResolver,
   initCodexOAuthRelayChannel,
   initPersonalDashboardBootstrap,
+  initPersonalAgentSkillInstaller,
   initRepo,
   initOpenAIResponsesWebSocketUpgradeResolver,
   SqlRepo,
@@ -318,6 +320,10 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   if (dashboardBootstrap === null) {
     (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(null);
   }
+  initPersonalAgentSkillInstaller(personal === null ? null : createPersonalAgentSkillInstaller({
+    paths: personal.paths,
+    permissions: personal.storage,
+  }));
 
   // Passwordless admin login is a dev-only server shortcut. Personal production
   // uses the one-time bootstrap authority resolved above instead.

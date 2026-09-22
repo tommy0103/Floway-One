@@ -1,13 +1,13 @@
-# Floway One
+# Floway
 
 All models, one local entry.
 
-Floway One is a personal, local-first LLM gateway for people who use multiple
+Floway is a personal, local-first LLM gateway for people who use multiple
 AI coding tools. It puts subscription-backed and token-backed model providers
 behind one stable loopback address, then routes each model through the API
 shape the client already speaks — like Clash, but for AI model traffic.
 
-Floway One is a personal-product fork of [Floway](https://github.com/Menci/Floway).
+This repository is a personal desktop edition of [Floway](https://github.com/Menci/Floway).
 It keeps the full gateway, protocol translation, provider integrations, and
 Dashboard, and packages them as an installable desktop application that runs
 entirely on your machine. No Docker, Node.js, or database to install; no
@@ -36,7 +36,7 @@ specification lives in [docs/floway-one-spec.zh-CN.md](./docs/floway-one-spec.zh
 
 ## Quick Start
 
-Signed desktop installers are on the roadmap; today Floway One runs from
+Signed desktop installers are on the roadmap; today Floway runs from
 source. Requires Node.js 24 and pnpm 10:
 
 ```bash
@@ -69,7 +69,7 @@ user home directory or operating-system credential store.
 
 ## Architecture
 
-Floway One follows the Clash split between a long-lived core and a management
+Floway follows the Clash split between a long-lived core and a management
 shell:
 
 ```text
@@ -111,7 +111,7 @@ roadmap, and Windows and Linux shells are planned.
 | Jina Rerank | `POST /jina/v1/rerank` |
 | Voyage Rerank | `POST /voyage/v1/rerank` |
 
-`/v1/models` and `/models` return Floway One's public model superset to
+`/v1/models` and `/models` return Floway's public model superset to
 ordinary callers and select the Codex or Claude Code discovery shape for those
 clients' User-Agent.
 
@@ -136,10 +136,10 @@ responses retain their upstream wire shape.
 
 ## Relationship to Floway
 
-Floway One tracks the upstream [Floway](https://github.com/Menci/Floway)
+This project tracks the upstream [Floway](https://github.com/Menci/Floway)
 codebase and keeps it syncable. The multi-user server, Docker Compose, and
 Cloudflare Workers targets remain in the tree (see `docker/` and
-`wrangler.example.jsonc`) but are outside Floway One's product scope: the
+`wrangler.example.jsonc`) but are outside the personal desktop product's scope: the
 product is the personal, loopback-only desktop gateway with a single owner.
 
 ## Development
