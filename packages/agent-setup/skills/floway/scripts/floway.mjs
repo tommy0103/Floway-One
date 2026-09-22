@@ -81,6 +81,20 @@ const finishCreate = async record => {
   output({ status: 'verified', ...recordSummary(record), models });
 };
 const blueprint = async kind => await api('GET', `/api/upstreams/blueprint?kind=${encodeURIComponent(kind)}`);
+const pickHue = async () => {
+  const upstreams = await api('GET', '/api/upstreams');
+  const claimed = [...new Set(upstreams.map(upstream => upstream.hue))].sort((a, b) => a - b);
+  if (claimed.length === 0) return Math.floor(Math.random() * 360);
+  const gaps = claimed.map((hue, index) => ({
+    hue,
+    width: index === claimed.length - 1 ? claimed[0] + 360 - hue : claimed[index + 1] - hue,
+  }));
+  const widest = Math.max(...gaps.map(gap => gap.width));
+  const candidates = gaps.filter(gap => gap.width === widest);
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  return Math.round(chosen.hue + chosen.width / 2) % 360;
+};
+const createUpstream = async record => await api('POST', '/api/upstreams', { ...record, hue: await pickHue() });
 const stageDirectory = join(dataDir, 'agent-skill-pending');
 const stagePath = handle => {
   if (!/^[0-9a-f-]{36}$/.test(handle)) throw new Error('Invalid Copilot authorization handle.');
@@ -114,7 +128,7 @@ const [command, ...args] = process.argv.slice(2);
       if (!apiKey) throw new Error('The provider key file is empty.');
       secrets.add(apiKey);
       const draft = await blueprint('custom');
-      const created = await api('POST', '/api/upstreams', {
+      const created = await createUpstream({
         ...draft,
         name,
         enabled: true,
@@ -127,7 +141,7 @@ const [command, ...args] = process.argv.slice(2);
       if (args.length !== 2) throw new Error('Usage: floway create-ollama NAME BASE_URL');
       const [name, baseUrl] = args;
       const draft = await blueprint('ollama');
-      const created = await api('POST', '/api/upstreams', {
+      const created = await createUpstream({
         ...draft,
         name,
         enabled: true,
@@ -171,7 +185,7 @@ const [command, ...args] = process.argv.slice(2);
           deviceCode: pending.deviceCode,
         });
         if (result.status === 'complete') {
-          const created = await api('POST', '/api/upstreams', {
+          const created = await createUpstream({
             ...pending.draft,
             config: result.patch.config,
             state: result.patch.state,

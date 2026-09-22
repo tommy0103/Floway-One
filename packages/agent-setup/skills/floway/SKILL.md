@@ -7,7 +7,7 @@ description: Configure and inspect a running local Floway personal gateway throu
 
 # Floway
 
-Use the installed `scripts/floway` launcher beside this file (on Windows, `scripts/floway.ps1`). It reads local authorization and the current gateway port itself. Never read, print, paste, or send the contents of the private session file. If the launcher is missing or says authorization is unavailable, ask the owner to sign in to the local Dashboard and use **Install Floway Skill** on the API Keys page.
+Use the installed `scripts/floway` launcher beside this file (on Windows, `scripts/floway.ps1`). It reads local authorization and the current gateway port itself. Never read, print, paste, or send the contents of the private session file. If the launcher is missing or says authorization is unavailable, ask the owner to sign in to the local Dashboard and use **Install Floway Skill** on the Quick Start page.
 
 ## Workflow
 
