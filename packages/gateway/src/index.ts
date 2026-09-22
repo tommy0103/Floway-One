@@ -50,3 +50,5 @@ export { initDumpBroker, initDumpStore } from './dump/registry.ts';
 export { initOpenAIResponsesWebSocketUpgradeResolver } from './data-plane/chat/openai-responses/websocket.ts';
 export { runScheduledMaintenance } from './scheduled.ts';
 export { assertRuntimeProfileData } from './runtime/profile-policy.ts';
+
+export { initPersonalAgentSkillInstaller, type FlowaySkillAgent, type PersonalAgentSkillInstaller } from './control-plane/agent-skill.ts';

@@ -1,6 +1,7 @@
 import { Hono, type Next } from 'hono';
 
 import { AGENT_SETUP_ROUTE_PATH, agentSetupControlRoutes } from './agent-setup.ts';
+import { agentSkillRoutes } from './agent-skill.ts';
 import { createKey, deleteKey, listKeys, rotateKey, updateKey } from './api-keys/routes.ts';
 import { authLogin, authLogout, authMe } from './auth/routes.ts';
 import { createFullBackup, exportData, importData } from './data-transfer/routes.ts';
@@ -77,6 +78,7 @@ export const controlPlaneRoutes = new Hono<{ Variables: AuthVars }>()
     .post('/users', zValidator('json', createUserBody), createUser)
     .patch('/users/:id', zValidator('json', updateUserBody), updateUser)
     .delete('/users/:id', deleteUser)
+    .route('/agent-skill', agentSkillRoutes)
     .get('/upstreams', listUpstreams)
     .get('/upstreams/blueprint', getUpstreamBlueprint)
     .post('/upstreams/copilot/oauth/device-login/start', zValidator('json', copilotOAuthDeviceLoginStartBody), copilotOAuthDeviceLoginStart)
