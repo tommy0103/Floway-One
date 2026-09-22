@@ -29,7 +29,7 @@ use crate::bundle_contract::{
 use crate::desktop_i18n::{DesktopMessages, system_messages};
 use crate::desktop_paths::DesktopPaths;
 use crate::navigation::{
-    DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction, ExternalOpenError,
+    DESKTOP_STATUS_ROUTE, DashboardNavigationPolicy, DesktopAction,
     PERSONAL_DASHBOARD_BOOTSTRAP_ENV, desktop_action, enforce_dashboard_navigation,
     is_desktop_status_navigation, ready_dashboard_origin, recovery_surface_diagnostic,
     resolve_external_open, sanitized_page_load_diagnostic,
@@ -1574,7 +1574,7 @@ fn handle_shell_command(app: AppHandle, mut stream: UnixStream) {
             return;
         }
     };
-    let reply = dispatch_shell_command(&app, command).unwrap_or_else(|error| {
+    let reply = dispatch_shell_command(&app, command.clone()).unwrap_or_else(|error| {
         let chain = error_chain_text(error.as_ref());
         eprintln!("Floway desktop control command failed: {chain}");
         json!({ "error": chain, "ok": false })
@@ -1696,6 +1696,7 @@ const EXTERNAL_OPEN_NOT_READY_CODE: &str = "external-open:not-ready";
 // browser, mapping failures to the stable `external-open:*` codes the
 // Dashboard localizes; the original chain is logged here and mirrored in the
 // failed command's payload. Returns the policy-stripped URL on success.
+#[allow(deprecated)]
 fn open_external_resolved(
     app: &AppHandle,
     policy: &DashboardNavigationPolicy,
