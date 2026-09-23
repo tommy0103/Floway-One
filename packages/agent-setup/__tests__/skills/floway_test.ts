@@ -58,7 +58,7 @@ const runProbe = async ({ existingScoped = false, deleteFails = false, chatFails
       respond(502, { error: 'upstream failed' });
     } else if (path === '/v1/responses') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end('data: {"type":"response.output_text.delta","delta":"OK"}\n\ndata: {"type":"response.completed"}\n\n');
+      res.end('event: response.output_text.delta\ndata: {"delta":"OK"}\n\nevent: response.completed\ndata: {}\n\n');
     } else if (path === '/v1/chat/completions') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
