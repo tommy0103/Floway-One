@@ -97,6 +97,15 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
   let customCreated = false;
   let ollamaCreated = false;
   let copilotCreated = false;
+  let customPathOverride = false;
+  let customModelsEndpoint = false;
+  const expectedCustomBaseUrls: Record<string, string> = {
+    Nested: 'https://provider.example/api/',
+    Root: 'https://provider.example/',
+    Beta: 'https://provider.example/v1beta',
+    'Models Override': 'https://provider.example/v1/',
+    Override: 'https://provider.example/v1/',
+  };
   const hues = [90];
   const server = createServer((request, response) => {
     void (async () => {
@@ -107,7 +116,13 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       let reply: unknown;
       if (url.pathname === '/api/upstreams/blueprint') {
-        reply = { id: '', kind: url.searchParams.get('kind'), name: '', enabled: false, config: {}, state: null };
+        const kind = url.searchParams.get('kind');
+        const config: Record<string, unknown> = {};
+        if (kind === 'custom') {
+          config.modelsFetch = customModelsEndpoint ? { enabled: true, endpoint: '/models' } : { enabled: true };
+          if (customPathOverride) config.pathOverrides = { '/chat/completions': '/chat' };
+        }
+        reply = { id: '', kind, name: '', enabled: false, config, state: null };
       } else if (url.pathname === '/api/upstreams' && request.method === 'GET') {
         reply = hues.map(hue => ({ hue }));
       } else if (url.pathname === '/api/upstreams/copilot/oauth/device-login/start') {
@@ -125,6 +140,7 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
         if (body.kind === 'custom') {
           customCreated = true;
           assertEquals(body.config.apiKey, key);
+          assertEquals(body.config.baseUrl, expectedCustomBaseUrls[body.name]);
         } else if (body.kind === 'ollama') {
           ollamaCreated = true;
         } else {
@@ -150,11 +166,25 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
     await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
     const run = promisify(execFile);
-    const custom = await run(process.execPath, [helper, 'create-custom', 'Example', 'https://provider.example', keyPath]);
+    const custom = await run(process.execPath, [helper, 'create-custom', 'Nested', 'https://provider.example/api/v1/', keyPath]);
     assertEquals(JSON.parse(custom.stdout).status, 'verified');
     assertEquals(JSON.parse(custom.stdout).models, ['usable-model']);
+    assertEquals(JSON.parse(custom.stdout).baseUrl, 'https://provider.example/api/');
     assert(!custom.stdout.includes(key));
     assertEquals(hues[1], 270);
+    const rootUrl = await run(process.execPath, [helper, 'create-custom', 'Root', 'https://provider.example/v1', keyPath]);
+    assertEquals(JSON.parse(rootUrl.stdout).baseUrl, 'https://provider.example/');
+    const beta = await run(process.execPath, [helper, 'create-custom', 'Beta', 'https://provider.example/v1beta', keyPath]);
+    assertEquals(JSON.parse(beta.stdout).baseUrl, 'https://provider.example/v1beta');
+    customModelsEndpoint = true;
+    const modelsOverride = await run(process.execPath, [helper, 'create-custom', 'Models Override', 'https://provider.example/v1/', keyPath]);
+    assertEquals(JSON.parse(modelsOverride.stdout).baseUrl, 'https://provider.example/v1/');
+    customModelsEndpoint = false;
+    customPathOverride = true;
+    const overridden = await run(process.execPath, [helper, 'create-custom', 'Override', 'https://provider.example/v1/', keyPath]);
+    assertEquals(JSON.parse(overridden.stdout).baseUrl, 'https://provider.example/v1/');
+    await assertRejects(() => run(process.execPath, [helper, 'create-custom', 'Invalid', 'https://provider.example/v1?token=x', keyPath]), Error, 'provider URL');
+    await assertRejects(() => run(process.execPath, [helper, 'create-custom', 'Invalid', 'https://provider.example/v1#fragment', keyPath]), Error, 'provider URL');
     const ollama = await run(process.execPath, [helper, 'create-ollama', 'Ollama', 'http://127.0.0.1:11434']);
     assertEquals(JSON.parse(ollama.stdout).status, 'verified');
     const started = await run(process.execPath, [helper, 'copilot-start', 'Copilot']);
@@ -165,7 +195,85 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
     assertEquals(JSON.parse(finished.stdout).status, 'verified');
     assert(!finished.stdout.includes('oauth-secret'));
     assert(customCreated && ollamaCreated && copilotCreated);
-    assertEquals(new Set(hues).size, 4);
+    assertEquals(new Set(hues).size, 8);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
+test('installed helper tests the three Playground Gateway formats without printing API keys', () => withInstaller(async (_root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const helper = join(path, '../scripts/floway.mjs');
+  const gatewayKey = 'sk-gateway-secret';
+  const calls: string[] = [];
+  let failChat = false;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname === '/api/models') {
+        assertEquals(request.headers['x-floway-session'], TOKEN);
+        assertEquals(url.searchParams.get('aliases'), 'false');
+        assertEquals(url.searchParams.get('include_unlisted'), 'true');
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ data: [{ id: 'model-a', kind: 'chat', upstreams: [{ id: 'up-a', name: 'Provider A' }] }] }));
+        return;
+      }
+      if (url.pathname === '/api/keys') {
+        assertEquals(request.headers['x-floway-session'], TOKEN);
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify([{ name: 'Gateway key', key: gatewayKey, upstream_ids: ['up-a'] }]));
+        return;
+      }
+      calls.push(url.pathname);
+      assertEquals(request.headers['x-floway-session'], undefined);
+      assertEquals(request.headers['content-type'], 'application/json');
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; stream: boolean };
+      assertEquals(body.model, 'model-a');
+      assertEquals(body.stream, true);
+      if (url.pathname === '/v1/messages') {
+        assertEquals(request.headers['x-api-key'], gatewayKey);
+        assertEquals(request.headers['anthropic-version'], '2023-06-01');
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\ndata: {"type":"message_stop"}\n\n');
+      } else if (url.pathname === '/v1/responses') {
+        assertEquals(request.headers.authorization, `Bearer ${gatewayKey}`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"type":"response.output_text.delta","delta":"OK"}\n\ndata: {"type":"response.completed"}\n\n');
+      } else if (url.pathname === '/v1/chat/completions') {
+        assertEquals(request.headers.authorization, `Bearer ${gatewayKey}`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(failChat
+          ? `data: {"error":{"message":"Gateway rejected ${gatewayKey}"}}\n\n`
+          : 'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
+      } else {
+        response.writeHead(404).end();
+      }
+    })();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
+    await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, [helper, 'test-model', 'up-a', 'model-a']);
+    assertEquals(stderr, '');
+    const result = JSON.parse(stdout) as { status: string; possibleUpstreams: string[]; formats: { api: string; status: string }[] };
+    assertEquals(result.status, 'tested');
+    assertEquals(result.possibleUpstreams, ['Provider A']);
+    assertEquals(result.formats.map(format => [format.api, format.status]), [
+      ['openaiResponses', 'available'], ['openaiChatCompletions', 'available'], ['anthropicMessages', 'available'],
+    ]);
+    assertEquals(calls, ['/v1/responses', '/v1/chat/completions', '/v1/messages']);
+    assert(!stdout.includes(gatewayKey));
+    assert(!stdout.includes(TOKEN));
+    failChat = true;
+    const failed = await promisify(execFile)(process.execPath, [helper, 'test-model', 'up-a', 'model-a']);
+    const failedFormats = (JSON.parse(failed.stdout) as { formats: { status: string; issue?: string }[] }).formats;
+    assertEquals(failedFormats.map(format => format.status), ['available', 'failed', 'available']);
+    assertEquals(failedFormats[1]?.issue, 'Gateway rejected [redacted]');
+    assert(!failed.stdout.includes(gatewayKey));
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
