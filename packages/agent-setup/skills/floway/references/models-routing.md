@@ -1,0 +1,9 @@
+# Models and routing
+
+Read `concepts.md` first. Inspect **Upstreams** > the selected service > **Models** for the service catalog, disabled models, and metadata. Catalog availability is distinct from successful inference. Use **Playground** to send a short request for the chosen model and check the response and error detail. If the same ID exists in multiple services, a successful request without a restricted route does not identify which one answered.
+
+**Upstreams** lists routing priority. Moving a service up or down can change which provider receives a shared model ID. Enabling or disabling a service or a model changes the available catalog and routing. Show the current order/target and intended new order before a route edit, then refresh and verify it persisted. Use Requests to inspect a resulting route when capture is available.
+
+**Model Aliases** creates virtual model IDs with one or more target model IDs. In the alias dialog inspect **Alias ID**, optional display name, **Kind**, **Selection** and target order. **First available** tries targets in order; **Random** may pick any eligible target. A hidden alias stays callable by name even when absent from `/v1/models`. An alias ID can shadow a real model. Read warning text for unresolved targets, wrong kind, and unsupported reasoning rules instead of treating Save as validation of traffic.
+
+For a routing ambiguity, prefer a unique alias that points to the intended target, or use a Floway API key restricted to the intended Upstream when that is the owner's goal. An all-service agent key does not pin a duplicate model ID. After saving an alias, verify its target list and make a representative Gateway request; report which behavior was actually observed. Do not promise fallback or agent compatibility from catalog data alone.

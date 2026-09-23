@@ -1,0 +1,7 @@
+# Backup, restore and local settings
+
+Read `concepts.md` first. **Backup / Restore** in the personal app offers **Download Full Backup** and **Download Safe Export**. The full backup is password-protected, includes credentials and is restorable. Floway does not save its password; let the owner enter it and store the file safely. The safe export omits credentials and cannot be restored. **Include Performance Telemetry** can make the file larger. Verify a download exists before claiming a backup is complete; avoid reading or exposing backup contents.
+
+For restore, choose a full backup file and enter its password in the app. **Replace existing data** atomically replaces the local installation after validation; left unchecked, restored records merge with existing data. Explain the exact choice and current-data effect to the owner before the final **Import Data** / confirmation action. Inspect the result summary or error and current records after completion. Never infer success merely from selecting a file or closing the dialog.
+
+**Settings** is reached through the account row in the app's footer. It shows the local Gateway's status/version and an **Open logs** action; the security section changes the owner's password and signs out other logged-in devices. Do not ask the owner to disclose passwords in chat. For an app-not-running problem, inspect status and logs through the app if available, then report the observed error. Do not construct a browser Dashboard URL as a workaround.

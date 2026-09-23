@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
 import type { InitializedPersonalStorage } from './personal-storage.ts';
-import { FLOWAY_SKILL_HELPER, FLOWAY_SKILL_MARKDOWN } from '@floway-dev/agent-setup';
+import { FLOWAY_SKILL_HELPER, FLOWAY_SKILL_MARKDOWN, FLOWAY_SKILL_REFERENCES } from '@floway-dev/agent-setup';
 import type { PersonalAgentSkillInstaller } from '@floway-dev/gateway';
 
 export const PERSONAL_AGENT_SKILL_SESSION_FILE = 'agent-skill.session';
@@ -39,7 +39,7 @@ export const createPersonalAgentSkillInstaller = ({
   homeDir = userInfo().homedir,
   nodeExecutable = process.execPath,
   platform = process.platform,
-}: PersonalAgentSkillOptions): PersonalAgentSkillInstaller => {
+}: PersonalAgentSkillOptions): PersonalAgentSkillInstaller & { refreshInstalled(): void } => {
   if (!isAbsolute(paths.dataDir) || !isAbsolute(homeDir) || !isAbsolute(nodeExecutable)) {
     throw new Error('Floway Skill requires absolute local paths');
   }
@@ -54,37 +54,62 @@ export const createPersonalAgentSkillInstaller = ({
     return token;
   };
 
-  const install = async (sessionToken: string): Promise<{ path: string }> => {
-    if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error('Floway Skill session token is invalid');
+  const skillRoots = (): string[] => {
     const configuredClaudeDir = process.env.CLAUDE_CONFIG_DIR;
     const claudeDir = configuredClaudeDir === undefined || configuredClaudeDir === ''
       ? join(homeDir, '.claude')
       : configuredClaudeDir;
-    const sharedRoot = join(homeDir, '.agents', 'skills', 'floway');
     // Claude Code currently discovers personal skills in ~/.claude/skills.
     // https://code.claude.com/docs/en/skills#choose-where-skills-load
-    const roots = [...new Set([sharedRoot, join(claudeDir, 'skills', 'floway')])];
+    return [...new Set([join(homeDir, '.agents', 'skills', 'floway'), join(claudeDir, 'skills', 'floway')])];
+  };
+
+  const managedSkill = (skillPath: string): boolean => {
+    if (!existsSync(skillPath)) return false;
+    if (!lstatSync(skillPath).isFile()) throw new Error(`Floway Skill path is not a regular file: ${skillPath}`);
+    return readFileSync(skillPath, 'utf8').includes(MANAGED_SKILL_MARKER);
+  };
+
+  const launcher = platform === 'win32'
+    ? `$script = Join-Path $PSScriptRoot 'floway.mjs'\n& ${powerShellLiteral(nodeExecutable)} $script @args\nexit $LASTEXITCODE\n`
+    : `#!/bin/sh\nexec ${shellLiteral(nodeExecutable)} "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/floway.mjs" "$@"\n`;
+
+  const writeBundle = (root: string): void => {
+    mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, 'references'), { recursive: true, mode: 0o700 });
+    writeAtomic(join(root, 'scripts', 'floway.mjs'), FLOWAY_SKILL_HELPER, 0o644);
+    writeAtomic(join(root, 'scripts', platform === 'win32' ? 'floway.ps1' : 'floway'), launcher, platform === 'win32' ? 0o644 : 0o755);
+    writeAtomic(join(root, 'connection.json'), `${JSON.stringify({ dataDir: paths.dataDir })}\n`, 0o644);
+    for (const [file, contents] of FLOWAY_SKILL_REFERENCES) {
+      writeAtomic(join(root, 'references', file), contents, 0o644);
+    }
+    // Publish the entrypoint last, after every referenced file is available.
+    writeAtomic(join(root, 'SKILL.md'), FLOWAY_SKILL_MARKDOWN, 0o644);
+  };
+
+  const install = async (sessionToken: string): Promise<{ path: string }> => {
+    if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error('Floway Skill session token is invalid');
+    const roots = skillRoots();
     for (const root of roots) {
       const skillPath = join(root, 'SKILL.md');
-      if (existsSync(skillPath) && !readFileSync(skillPath, 'utf8').includes(MANAGED_SKILL_MARKER)) {
+      if (existsSync(skillPath) && !managedSkill(skillPath)) {
         throw new Error(`Floway Skill cannot replace an unmanaged skill at ${skillPath}`);
       }
     }
-
-    const launcher = platform === 'win32'
-      ? `$script = Join-Path $PSScriptRoot 'floway.mjs'\n& ${powerShellLiteral(nodeExecutable)} $script @args\nexit $LASTEXITCODE\n`
-      : `#!/bin/sh\nexec ${shellLiteral(nodeExecutable)} "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/floway.mjs" "$@"\n`;
-    for (const root of roots) {
-      mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
-      writeAtomic(join(root, 'scripts', 'floway.mjs'), FLOWAY_SKILL_HELPER, 0o644);
-      writeAtomic(join(root, 'scripts', platform === 'win32' ? 'floway.ps1' : 'floway'), launcher, platform === 'win32' ? 0o644 : 0o755);
-      writeAtomic(join(root, 'connection.json'), `${JSON.stringify({ dataDir: paths.dataDir })}\n`, 0o644);
-      writeAtomic(join(root, 'SKILL.md'), FLOWAY_SKILL_MARKDOWN, 0o644);
-    }
+    for (const root of roots) writeBundle(root);
     writeAtomic(sessionPath, `${sessionToken}\n`, 0o600);
     permissions.hardenFile(sessionPath);
-    return { path: join(sharedRoot, 'SKILL.md') };
+    return { path: join(roots[0], 'SKILL.md') };
   };
 
-  return { readSessionToken, install };
+  // An app update refreshes only already-installed managed copies. Missing or
+  // owner-managed skills stay untouched; the existing private session remains valid.
+  const refreshInstalled = (): void => {
+    if (readSessionToken() === null) return;
+    for (const root of skillRoots()) {
+      if (managedSkill(join(root, 'SKILL.md'))) writeBundle(root);
+    }
+  };
+
+  return { readSessionToken, install, refreshInstalled };
 };

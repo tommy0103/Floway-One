@@ -17,4 +17,4 @@ export {
   AgentSetupTokenCollisionError,
 } from './repository.ts';
 
-export { FLOWAY_SKILL_MARKDOWN, FLOWAY_SKILL_HELPER } from './script-assets.generated.ts';
+export { FLOWAY_SKILL_MARKDOWN, FLOWAY_SKILL_HELPER, FLOWAY_SKILL_REFERENCES } from './script-assets.generated.ts';

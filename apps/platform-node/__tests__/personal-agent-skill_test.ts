@@ -10,6 +10,7 @@ import { test } from 'vitest';
 import { createPersonalAgentSkillInstaller, PERSONAL_AGENT_SKILL_SESSION_FILE } from '../src/personal-agent-skill.ts';
 import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
 import { initializePersonalStorage } from '../src/personal-storage.ts';
+import { FLOWAY_SKILL_HELPER, FLOWAY_SKILL_MARKDOWN, FLOWAY_SKILL_REFERENCES } from '@floway-dev/agent-setup';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
 const TOKEN = 'a'.repeat(64);
@@ -34,6 +35,12 @@ test('personal Floway Skill installs once for Codex and Claude with private auth
     const contents = await readFile(skillPath, 'utf8');
     assert(contents.startsWith('---\nname: floway\n'));
     assert(!contents.includes(TOKEN));
+    assertEquals(contents, FLOWAY_SKILL_MARKDOWN);
+    assertEquals(await readFile(join(skillPath, '../scripts/floway.mjs'), 'utf8'), FLOWAY_SKILL_HELPER);
+    for (const [file, expected] of FLOWAY_SKILL_REFERENCES) {
+      assertEquals(await readFile(join(skillPath, '../references', file), 'utf8'), expected);
+      assert(!expected.includes(TOKEN));
+    }
     const connection = JSON.parse(await readFile(join(skillPath, '../connection.json'), 'utf8'));
     assertEquals(connection, { dataDir });
   }
@@ -41,6 +48,40 @@ test('personal Floway Skill installs once for Codex and Claude with private auth
   assertEquals(installer.readSessionToken(), TOKEN);
   assertEquals((await readFile(sessionPath, 'utf8')).trim(), TOKEN);
   if (process.platform !== 'win32') assertEquals((await stat(sessionPath)).mode & 0o777, 0o600);
+}));
+
+test('installed managed Floway Skill refreshes with the app without changing authorization', () => withInstaller(async (root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const oldEntry = '---\nname: floway\n---\n\n<!-- Managed by Floway. -->\nOld version\n';
+  const sharedRoot = join(root, '.agents/skills/floway');
+  const claudeRoot = join(root, '.claude/skills/floway');
+  await writeFile(path, oldEntry);
+  await writeFile(join(sharedRoot, 'references/concepts.md'), 'Old concepts\n');
+  await writeFile(join(claudeRoot, 'references/concepts.md'), 'Old concepts\n');
+  await writeFile(join(sharedRoot, 'scripts/floway.mjs'), 'Old helper\n');
+  installer.refreshInstalled();
+  for (const skillRoot of [sharedRoot, claudeRoot]) {
+    assertEquals(await readFile(join(skillRoot, 'SKILL.md'), 'utf8'), FLOWAY_SKILL_MARKDOWN);
+    assertEquals(await readFile(join(skillRoot, 'references/concepts.md'), 'utf8'), FLOWAY_SKILL_REFERENCES[0][1]);
+    assertEquals(await readFile(join(skillRoot, 'scripts/floway.mjs'), 'utf8'), FLOWAY_SKILL_HELPER);
+  }
+  assertEquals((await readFile(join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE), 'utf8')).trim(), TOKEN);
+}));
+
+test('refresh leaves missing and owner-managed Skill roots untouched', () => withInstaller(async (root, installer) => {
+  const sharedRoot = join(root, '.agents/skills/floway');
+  const claudeRoot = join(root, '.claude/skills/floway');
+  await mkdir(sharedRoot, { recursive: true });
+  await writeFile(join(sharedRoot, 'SKILL.md'), 'Owner Skill\n');
+  installer.refreshInstalled();
+  assertEquals(await readFile(join(sharedRoot, 'SKILL.md'), 'utf8'), 'Owner Skill\n');
+  await assertRejects(() => readFile(join(claudeRoot, 'SKILL.md')), Error);
+  // A valid session alone does not grant permission to overwrite an unmanaged copy.
+  await mkdir(join(root, 'data'), { recursive: true });
+  await writeFile(join(root, 'data', PERSONAL_AGENT_SKILL_SESSION_FILE), `${TOKEN}\n`, { mode: 0o600 });
+  installer.refreshInstalled();
+  assertEquals(await readFile(join(sharedRoot, 'SKILL.md'), 'utf8'), 'Owner Skill\n');
+  await assertRejects(() => readFile(join(claudeRoot, 'SKILL.md')), Error);
 }));
 
 test('personal Floway Skill preserves an unmanaged skill and its authorization', () => withInstaller(async (root, installer, dataDir) => {
