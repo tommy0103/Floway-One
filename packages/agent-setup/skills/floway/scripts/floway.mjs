@@ -19,15 +19,14 @@ const readRequired = (path, guidance) => {
     throw cause;
   }
 };
-const { dataDir } = JSON.parse(readRequired(join(skillRoot, 'connection.json'), 'Floway Skill is incomplete. Reinstall it from the Dashboard.'));
+const { dataDir } = JSON.parse(readRequired(join(skillRoot, 'connection.json'), 'Floway Skill is incomplete. Open Floway.app, go to Quick Start, and reinstall the Skill.'));
 const runtime = JSON.parse(readRequired(join(dataDir, 'runtime.json'), 'Floway is not running. Start the local app and retry.'));
 if (!Number.isInteger(runtime.port) || runtime.port < 1 || runtime.port > 65535) {
   throw new Error('Floway runtime state has no valid local port. Restart Floway.');
 }
 const origin = `http://127.0.0.1:${runtime.port}`;
-const quickStart = `${origin}/dashboard/quick-start`;
-const sessionToken = readRequired(join(dataDir, 'agent-skill.session'), `Floway Skill is not authorized. Sign in and reinstall it from ${quickStart}.`).trim();
-if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error(`Floway Skill authorization is invalid. Reinstall it from ${quickStart}.`);
+const sessionToken = readRequired(join(dataDir, 'agent-skill.session'), 'Floway Skill is not authorized. Open Floway.app, sign in, and reinstall the Skill from Quick Start.').trim();
+if (!/^[0-9a-f]{64}$/.test(sessionToken)) throw new Error('Floway Skill authorization is invalid. Open Floway.app and reinstall the Skill from Quick Start.');
 secrets.add(sessionToken);
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 const errorText = payload => {
@@ -46,11 +45,10 @@ const api = async (method, path, body) => {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }).catch(cause => { throw new Error(`Cannot reach local Floway at ${origin}. Start the app and retry.`, { cause }); });
   const payload = await response.json().catch(() => null);
-  if (response.status === 401) throw new Error(`Floway Skill authorization expired. Sign in and reinstall it from ${quickStart}.`);
+  if (response.status === 401) throw new Error('Floway Skill authorization expired. Open Floway.app, sign in, and reinstall the Skill from Quick Start.');
   if (!response.ok) throw new Error(`Floway HTTP ${response.status}: ${safe(errorText(payload))}`);
   return payload;
 };
-const dashboard = `${origin}/dashboard/providers/upstreams`;
 const agentKeyName = 'Floway Skill agent access';
 const agentKeyDir = join(dataDir, 'agent-skill-keys');
 const agentKeyPath = join(agentKeyDir, 'gateway.key');
@@ -61,7 +59,6 @@ const recordSummary = row => ({
   kind: row.kind,
   enabled: row.enabled,
   modelsCache: row.modelsCache ?? null,
-  dashboard,
 });
 const modelIds = payload => Array.isArray(payload?.data)
   ? payload.data.map(row => row.publicModelId ?? row.id).filter(id => typeof id === 'string')
@@ -87,7 +84,7 @@ const verifyModels = async id => {
   const record = await api('GET', `/api/upstreams/${encodeURIComponent(id)}`);
   const result = await api('POST', '/api/upstreams/list-models', { record });
   const models = modelIds(result);
-  if (models.length === 0) throw new Error(`Floway found no models for Upstream ${id}. Check its URL, credentials, and model-list settings in ${dashboard}.`);
+  if (models.length === 0) throw new Error(`Floway found no models for Upstream ${id}. Check its URL, credentials, and model-list settings in Floway.app under Upstreams.`);
   return models;
 };
 const finishCreate = async (record, details = {}) => {
@@ -228,7 +225,7 @@ const probeCustom = async (inputUrl, keyFile, requestedModel, requestedAuthStyle
   const config = { ...draft.config, baseUrl, apiKey, authStyle };
   const catalog = await api('POST', '/api/upstreams/list-models', { record: { ...draft, config } });
   const models = modelIds(catalog);
-  if (models.length === 0) throw new Error(`Floway found no models at ${baseUrl}. Check the URL, credentials, and model-list path in ${dashboard}.`);
+  if (models.length === 0) throw new Error(`Floway found no models at ${baseUrl}. Check the URL, credentials, and model-list path in Floway.app under Upstreams.`);
   if (requestedModel !== undefined && !models.includes(requestedModel)) {
     throw new Error(`Model ${requestedModel} was not in the upstream catalog. Choose one of the listed models.`);
   }
@@ -242,7 +239,7 @@ const probeCustom = async (inputUrl, keyFile, requestedModel, requestedAuthStyle
   }
   const confirmedFormats = formats.filter(format => format.status === 'available').map(format => format.api);
   output({ status: confirmedFormats.length ? 'probed' : 'needs_attention', baseUrl, authStyle, models, model, formats,
-    confirmedFormats, dashboard });
+    confirmedFormats });
   if (!confirmedFormats.length) process.exitCode = 2;
 };
 const readProviderKey = keyFile => {
@@ -367,17 +364,17 @@ const [command, ...args] = process.argv.slice(2);
   switch (command) {
     case 'status': {
       const me = await api('GET', '/auth/me');
-      output({ status: 'authorized', gateway: origin, owner: me.user?.username ?? null, dashboard });
+      output({ status: 'authorized', gateway: origin, owner: me.user?.username ?? null });
       break;
     }
     case 'list': {
       const rows = await api('GET', '/api/upstreams');
-      output({ gateway: origin, upstreams: rows.map(recordSummary), dashboard });
+      output({ gateway: origin, upstreams: rows.map(recordSummary) });
       break;
     }
     case 'models': {
       if (args.length !== 1) throw new Error('Usage: floway models UPSTREAM_ID');
-      output({ status: 'verified', upstreamId: args[0], models: await verifyModels(args[0]), dashboard });
+      output({ status: 'verified', upstreamId: args[0], models: await verifyModels(args[0]) });
       break;
     }
     case 'test-model': {
