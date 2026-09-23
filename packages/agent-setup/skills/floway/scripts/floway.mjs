@@ -186,16 +186,43 @@ const testModel = async (upstreamId, modelId) => {
   const keys = await api('GET', '/api/keys');
   if (!Array.isArray(keys)) throw new Error('Floway did not return its API key list.');
   for (const key of keys) if (typeof key.key === 'string') secrets.add(key.key);
-  const eligible = keys.filter(key => typeof key.key === 'string' && key.key.length > 0
-    && (key.upstream_ids === null || key.upstream_ids?.includes(upstreamId)));
-  eligible.sort((a, b) => (a.upstream_ids?.length ?? Number.MAX_SAFE_INTEGER) - (b.upstream_ids?.length ?? Number.MAX_SAFE_INTEGER));
-  const key = eligible[0];
-  if (!key) throw new Error(`No Floway API key can reach ${upstreamId}. Create a key in ${origin}/dashboard/services/api-keys and retry.`);
+  const scoped = keys.find(key => typeof key.key === 'string' && key.key.length > 0
+    && Array.isArray(key.upstream_ids) && key.upstream_ids.length === 1 && key.upstream_ids[0] === upstreamId);
+  const key = scoped ?? await api('POST', '/api/keys', {
+    name: `Floway Skill test ${upstreamId}`,
+    upstream_ids: [upstreamId],
+    key_source: 'generate',
+  });
+  if (typeof key?.key === 'string') secrets.add(key.key);
+  const created = scoped === undefined;
   const formats = [];
-  for (const format of playgroundFormats) formats.push(await probePlaygroundFormat(format, modelId, key.key));
-  const possibleUpstreams = model.upstreams.filter(upstream => key.upstream_ids === null || key.upstream_ids?.includes(upstream.id));
-  output({ status: 'tested', model: modelId, gateway: origin, keyName: key.name,
-    possibleUpstreams: possibleUpstreams.map(upstream => upstream.name), formats });
+  let testIssue;
+  let cleanupIssue;
+  try {
+    if (typeof key?.key !== 'string' || !key.key || !Array.isArray(key.upstream_ids)
+      || key.upstream_ids.length !== 1 || key.upstream_ids[0] !== upstreamId) {
+      throw new Error('Floway did not return a key restricted to the selected model service.');
+    }
+    for (const format of playgroundFormats) formats.push(await probePlaygroundFormat(format, modelId, key.key));
+  } catch (error) {
+    testIssue = safe(error instanceof Error ? error.message : error);
+  } finally {
+    if (created) {
+      if (typeof key?.id !== 'string' || !key.id) {
+        cleanupIssue = 'Floway did not return the temporary key ID, so it could not be revoked.';
+      } else {
+        try { await api('DELETE', `/api/keys/${encodeURIComponent(key.id)}`); }
+        catch (error) { cleanupIssue = safe(error instanceof Error ? error.message : error); }
+      }
+    }
+  }
+  const upstream = model.upstreams.find(candidate => candidate.id === upstreamId);
+  output({ status: testIssue || cleanupIssue ? 'needs_attention' : 'tested', upstreamId, upstreamName: upstream.name,
+    model: modelId, gateway: origin, keyName: key?.name ?? null, formats,
+    ...(testIssue ? { issue: testIssue } : {}),
+    ...(cleanupIssue ? { keyCleanup: { status: 'failed', keyId: key?.id ?? null, keyName: key?.name ?? null, issue: cleanupIssue } } : {}),
+  });
+  if (testIssue || cleanupIssue) process.exitCode = 2;
 };
 const blueprint = async kind => await api('GET', `/api/upstreams/blueprint?kind=${encodeURIComponent(kind)}`);
 const pickHue = async () => {

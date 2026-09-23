@@ -259,9 +259,10 @@ test('installed helper tests the three Playground Gateway formats without printi
     await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
     const { stdout, stderr } = await promisify(execFile)(process.execPath, [helper, 'test-model', 'up-a', 'model-a']);
     assertEquals(stderr, '');
-    const result = JSON.parse(stdout) as { status: string; possibleUpstreams: string[]; formats: { api: string; status: string }[] };
+    const result = JSON.parse(stdout) as { status: string; upstreamId: string; upstreamName: string; formats: { api: string; status: string }[] };
     assertEquals(result.status, 'tested');
-    assertEquals(result.possibleUpstreams, ['Provider A']);
+    assertEquals(result.upstreamId, 'up-a');
+    assertEquals(result.upstreamName, 'Provider A');
     assertEquals(result.formats.map(format => [format.api, format.status]), [
       ['openaiResponses', 'available'], ['openaiChatCompletions', 'available'], ['anthropicMessages', 'available'],
     ]);
