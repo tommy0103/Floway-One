@@ -1,6 +1,6 @@
 ---
 name: floway
-description: Help the owner configure, navigate, and troubleshoot the running local Floway personal app. Use for model services/providers, models and routing, API keys and Agent Setup, monitoring, backups, or local settings. Supports direct helper setup, app GUI operation, and guided owner actions; not for remote or team gateways.
+description: Help the owner configure, navigate, and troubleshoot the running local Floway personal app. Use for 新增 provider, 配置模型服务, 接入 Floway, models and routing, API keys and Agent Setup, monitoring, backups, or local settings. Supports direct helper setup, app GUI operation, and guided owner actions; not for remote or team gateways.
 ---
 
 <!-- Managed by Floway. -->
