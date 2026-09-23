@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +51,9 @@ const api = async (method, path, body) => {
   return payload;
 };
 const dashboard = `${origin}/dashboard/providers/upstreams`;
+const agentKeyName = 'Floway Skill agent access';
+const agentKeyDir = join(dataDir, 'agent-skill-keys');
+const agentKeyPath = join(agentKeyDir, 'gateway.key');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const recordSummary = row => ({
   id: row.id,
@@ -252,6 +255,49 @@ const readProviderKey = keyFile => {
   secrets.add(apiKey);
   return apiKey;
 };
+const writeAgentKey = value => {
+  mkdirSync(agentKeyDir, { recursive: true, mode: 0o700 });
+  const directory = lstatSync(agentKeyDir);
+  if (!directory.isDirectory() || (process.platform !== 'win32' && (directory.mode & 0o077) !== 0)) {
+    throw new Error('The Floway Skill key directory must be owner-only and must not be a symlink.');
+  }
+  if (existsSync(agentKeyPath) && !lstatSync(agentKeyPath).isFile()) {
+    throw new Error('The Floway Skill key path is not a regular file.');
+  }
+  const stage = join(agentKeyDir, `.gateway.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(stage, `${value}\n`, { mode: 0o600, flag: 'wx' });
+    renameSync(stage, agentKeyPath);
+  } catch (cause) {
+    rmSync(stage, { force: true });
+    throw new Error('Could not write the Floway Skill agent key file.', { cause });
+  }
+};
+const ensureAgentKey = async () => {
+  const me = await api('GET', '/auth/me');
+  if (me.user?.upstreamIds !== null) throw new Error('The Floway Skill owner does not have unrestricted model service access.');
+  const keys = await api('GET', '/api/keys');
+  if (!Array.isArray(keys)) throw new Error('Floway did not return its API key list.');
+  for (const key of keys) if (typeof key.key === 'string') secrets.add(key.key);
+  const existing = keys.find(key => key.name === agentKeyName && key.upstream_ids === null && typeof key.key === 'string' && key.key.length > 0);
+  const key = existing ?? await api('POST', '/api/keys', { name: agentKeyName, upstream_ids: null, key_source: 'generate' });
+  if (typeof key?.key === 'string') secrets.add(key.key);
+  try {
+    if (typeof key?.id !== 'string' || typeof key?.key !== 'string' || !key.key || key.upstream_ids !== null) {
+      throw new Error('Floway did not return an unrestricted API key.');
+    }
+    writeAgentKey(key.key);
+  } catch (cause) {
+    if (existing === undefined && typeof key?.id === 'string') {
+      try { await api('DELETE', `/api/keys/${encodeURIComponent(key.id)}`); }
+      catch (cleanupCause) {
+        throw new Error(`Could not provision the agent key file or revoke the new Floway key ${key.id}: ${safe(cleanupCause instanceof Error ? cleanupCause.message : cleanupCause)}`, { cause });
+      }
+    }
+    throw cause;
+  }
+  output({ status: 'ready', path: agentKeyPath, keyId: key.id, keyName: key.name, scope: 'all-model-services', created: existing === undefined });
+};
 const testModel = async (upstreamId, modelId) => {
   const catalog = await api('GET', '/api/models?aliases=false&include_unlisted=true');
   const model = catalog.data?.find(row => row.id === modelId && row.kind === 'chat' && row.upstreams?.some(upstream => upstream.id === upstreamId));
@@ -337,6 +383,11 @@ const [command, ...args] = process.argv.slice(2);
     case 'test-model': {
       if (args.length !== 2) throw new Error('Usage: floway test-model UPSTREAM_ID MODEL_ID');
       await testModel(args[0], args[1]);
+      break;
+    }
+    case 'agent-key': {
+      if (args.length !== 0) throw new Error('Usage: floway agent-key');
+      await ensureAgentKey();
       break;
     }
     case 'probe-custom': {
@@ -430,7 +481,7 @@ const [command, ...args] = process.argv.slice(2);
       break;
     }
     default:
-      throw new Error('Usage: floway status | list | models ID | test-model UPSTREAM_ID MODEL_ID | probe-custom BASE_URL KEY_FILE [MODEL_ID] [--auth-style=anthropic] | create-custom NAME BASE_URL KEY_FILE [FORMATS] [--auth-style=anthropic] | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
+      throw new Error('Usage: floway status | list | models ID | test-model UPSTREAM_ID MODEL_ID | agent-key | probe-custom BASE_URL KEY_FILE [MODEL_ID] [--auth-style=anthropic] | create-custom NAME BASE_URL KEY_FILE [FORMATS] [--auth-style=anthropic] | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
   }
 } catch (error) {
   process.stderr.write(`${safe(error instanceof Error ? error.message : error)}\n`);

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -278,6 +278,86 @@ test('custom probe checks four native paths with user-only requests and creates 
     assertEquals(JSON.parse(unavailable.stdout).status, 'needs_attention');
     assertEquals(JSON.parse(unavailable.stdout).confirmedFormats, []);
     assert(!unavailable.stdout.includes(key));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
+test('installed helper provisions and reuses an unrestricted agent key without displaying it', () => withInstaller(async (_root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const helper = join(path, '../scripts/floway.mjs');
+  const secret = 'sk-private-all-services-key';
+  const keys: Array<{ id: string; name: string; key: string; upstream_ids: null }> = [];
+  let creates = 0;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> : {};
+      const json = (value: unknown, status = 200) => response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+      if (url.pathname === '/auth/me') return void json({ user: { username: 'owner', upstreamIds: null } });
+      if (url.pathname === '/api/keys' && request.method === 'GET') return void json(keys);
+      if (url.pathname === '/api/keys' && request.method === 'POST') {
+        assertEquals(body, { name: 'Floway Skill agent access', upstream_ids: null, key_source: 'generate' });
+        creates++;
+        const key = { id: 'all-services', name: body.name as string, key: secret, upstream_ids: null };
+        keys.push(key);
+        return void json(key, 201);
+      }
+      json({ error: 'unexpected request' }, 404);
+    })().catch(error => response.destroy(error));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
+    await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
+    const run = promisify(execFile);
+    const first = await run(process.execPath, [helper, 'agent-key']);
+    const ready = JSON.parse(first.stdout) as { path: string; keyId: string; scope: string; created: boolean };
+    assertEquals(ready.keyId, 'all-services');
+    assertEquals(ready.scope, 'all-model-services');
+    assertEquals(ready.created, true);
+    assertEquals(ready.path, join(dataDir, 'agent-skill-keys/gateway.key'));
+    assertEquals(await readFile(ready.path, 'utf8'), `${secret}\n`);
+    if (process.platform !== 'win32') assertEquals((await stat(ready.path)).mode & 0o777, 0o600);
+    assert(!first.stdout.includes(secret));
+    const second = await run(process.execPath, [helper, 'agent-key']);
+    assertEquals(JSON.parse(second.stdout).created, false);
+    assertEquals(creates, 1);
+    assert(!second.stdout.includes(secret));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
+test('agent key provisioning revokes a new key when its private file cannot be written', () => withInstaller(async (root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const helper = join(path, '../scripts/floway.mjs');
+  await symlink(root, join(dataDir, 'agent-skill-keys'));
+  const secret = 'sk-unwritten-agent-key';
+  const methods: string[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      methods.push(`${request.method} ${url.pathname}`);
+      const json = (value: unknown, status = 200) => response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+      if (url.pathname === '/auth/me') return void json({ user: { upstreamIds: null } });
+      if (url.pathname === '/api/keys' && request.method === 'GET') return void json([]);
+      if (url.pathname === '/api/keys' && request.method === 'POST') return void json({ id: 'revoke-me', name: 'Floway Skill agent access', key: secret, upstream_ids: null }, 201);
+      if (url.pathname === '/api/keys/revoke-me' && request.method === 'DELETE') return void json({ ok: true });
+      json({ error: 'unexpected request' }, 404);
+    })().catch(error => response.destroy(error));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
+    await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
+    const run = promisify(execFile);
+    await assertRejects(() => run(process.execPath, [helper, 'agent-key']), Error, 'owner-only');
+    assertEquals(methods.at(-1), 'DELETE /api/keys/revoke-me');
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
