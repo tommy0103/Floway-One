@@ -75,9 +75,19 @@ const scriptSources = {
 } as const satisfies Record<string, PlatformSources>;
 
 const allSections = Object.values(scriptSources).flatMap(({ common, agents }) => [...common, ...agents]);
+const productSkillReferences = [
+  ['FLOWAY_SKILL_CONCEPTS', 'concepts.md'],
+  ['FLOWAY_SKILL_MODEL_SERVICES', 'model-services.md'],
+  ['FLOWAY_SKILL_MODELS_ROUTING', 'models-routing.md'],
+  ['FLOWAY_SKILL_KEYS_AGENT_SETUP', 'keys-agent-setup.md'],
+  ['FLOWAY_SKILL_MONITORING', 'monitoring.md'],
+  ['FLOWAY_SKILL_BACKUP_SETTINGS', 'backup-settings.md'],
+  ['FLOWAY_SKILL_DIRECT_SETUP', 'direct-setup.md'],
+] as const;
 const productSkillFiles = [
   ['FLOWAY_SKILL_MARKDOWN', 'skills/floway/SKILL.md'],
   ['FLOWAY_SKILL_HELPER', 'skills/floway/scripts/floway.mjs'],
+  ...productSkillReferences.map(([name, file]) => [name, `skills/floway/references/${file}`] as const),
 ] as const;
 const sourceFiles = new Map<string, string>();
 for (const [name, file] of productSkillFiles) sourceFiles.set(name, file);
@@ -111,6 +121,7 @@ const sourceConstants = [...sourceFiles].map(([name]) => {
   if (source === undefined) throw new Error(`source not loaded for ${name}`);
   return `export const ${name} = ${typescriptString(source)};`;
 }).join('\n\n');
+const skillReferences = `export const FLOWAY_SKILL_REFERENCES = [\n${productSkillReferences.map(([name, file]) => `  [${typescriptString(file)}, ${name}],`).join('\n')}\n] as const;`;
 const commonConstants = Object.entries(scriptSources).map(([platform, { common }]) =>
   `export const SETUP_${platform.toUpperCase()}_COMMON = ${typescriptString(common.map(renderSection).join(''))};`).join('\n\n');
 const sourceFragments = [...sourceFiles].map(([name, file]) => `  [${typescriptString(file)}, ${name}],`).join('\n');
@@ -123,6 +134,8 @@ ${fileList}
 // \`pnpm --filter @floway-dev/agent-setup run generate-assets\`.
 
 ${sourceConstants}
+
+${skillReferences}
 
 ${commonConstants}
 

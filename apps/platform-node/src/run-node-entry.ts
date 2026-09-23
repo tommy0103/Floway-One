@@ -320,10 +320,18 @@ export const runNodeEntry = async (overrides: NodeEntryOverrides = {}): Promise<
   if (dashboardBootstrap === null) {
     (overrides.initPersonalDashboardBootstrap ?? initPersonalDashboardBootstrap)(null);
   }
-  initPersonalAgentSkillInstaller(personal === null ? null : createPersonalAgentSkillInstaller({
+  const agentSkillInstaller = personal === null ? null : createPersonalAgentSkillInstaller({
     paths: personal.paths,
     permissions: personal.storage,
-  }));
+  });
+  if (agentSkillInstaller !== null) {
+    try {
+      agentSkillInstaller.refreshInstalled();
+    } catch (cause) {
+      throw startupFailure('storage', 'Floway could not refresh its installed Skill', cause);
+    }
+  }
+  initPersonalAgentSkillInstaller(agentSkillInstaller);
 
   // Passwordless admin login is a dev-only server shortcut. Personal production
   // uses the one-time bootstrap authority resolved above instead.
