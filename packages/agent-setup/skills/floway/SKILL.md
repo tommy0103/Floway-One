@@ -13,7 +13,7 @@ This Skill is for the running local Floway personal app. The installed files in 
 
 - Honor the owner's stated surface. For direct configuration, use the installed `scripts/floway` launcher (Windows: `scripts/floway.ps1`) and the direct setup reference. Do not silently switch a GUI request to helper mutations.
 - For an app task, use available computer-use tools to inspect and operate **Floway.app**. Focus the running app, inspect its current accessibility tree or semantic controls, and locate sections by their visible names. Use role, label, and current state instead of coordinates or remembered element indices. After each navigation or mutation, inspect the resulting view, notification, or persisted state before claiming success. If the app or a control is unavailable, report what was observed and ask for the specific missing step.
-- If computer use is unavailable, guide the owner in Floway.app one action at a time. Name the section, control, and expected visible result; wait for the owner's observation before the next action. A requested explanation can be answered without taking control.
+- If the owner requested app operation but computer use is unavailable, explain that limitation and offer step-by-step app guidance or the supported direct helper path; let the owner choose. When guiding, give one action at a time: name the section, control, and expected visible result, then wait for the owner's observation before the next action. A requested explanation can be answered without taking control.
 - If no surface was specified, use the direct helper for supported model-service setup and testing; use the app for browsing or editing areas the helper does not cover. State which surface you are using when it matters.
 
 ## Boundaries
