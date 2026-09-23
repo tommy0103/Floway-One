@@ -201,6 +201,88 @@ test('installed helper creates Upstreams with distinct hues and keeps provider s
   }
 }));
 
+test('custom probe checks four native paths with user-only requests and creates only selected endpoints', () => withInstaller(async (root, installer, dataDir) => {
+  const { path } = await installer.install(TOKEN);
+  const helper = join(path, '../scripts/floway.mjs');
+  const key = 'sk-native-format-secret';
+  const keyPath = join(root, 'provider-key');
+  await writeFile(keyPath, key, { mode: 0o600 });
+  const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
+  let createdEndpoints: Record<string, unknown> | null = null;
+  let rejectAll = false;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> : {};
+      const json = (value: unknown, status = 200) => response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+      if (url.pathname === '/api/upstreams/blueprint') return void json({
+        id: '', kind: 'custom', name: '', enabled: false,
+        config: { baseUrl: '', authStyle: 'bearer', apiKey: '', endpoints: { openaiChatCompletions: {} }, modelsFetch: { enabled: true }, models: [] }, state: null,
+      });
+      if (url.pathname === '/api/upstreams/list-models') return void json({ data: [{ id: 'chat-model' }] });
+      if (url.pathname === '/api/upstreams' && request.method === 'GET') return void json([]);
+      if (url.pathname === '/api/upstreams' && request.method === 'POST') {
+        createdEndpoints = (body.config as Record<string, unknown>).endpoints as Record<string, unknown>;
+        return void json({ id: 'up-custom', name: body.name, kind: 'custom', enabled: true });
+      }
+      if (url.pathname === '/api/upstreams/up-custom') return void json({ id: 'up-custom', kind: 'custom', config: {} });
+      if (url.pathname.startsWith('/v1/')) {
+        if (request.headers['x-api-key']) {
+          assertEquals(request.headers['x-api-key'], key);
+          assertEquals(request.headers['anthropic-version'], '2023-06-01');
+        } else {
+          assertEquals(request.headers.authorization, `Bearer ${key}`);
+        }
+        seen.push({ path: url.pathname, body });
+        if (rejectAll) return void json({ error: 'not available for this model' }, 404);
+        if (url.pathname === '/v1/responses') return void json({ error: 'unknown endpoint' }, 404);
+        const event = url.pathname === '/v1/messages'
+          ? 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\ndata: {"type":"message_stop"}\n\n'
+          : `data: {"choices":[{"${url.pathname === '/v1/completions' ? 'text' : 'delta'}":${url.pathname === '/v1/completions' ? '"OK"' : '{"content":"OK"}'}}]}\n\ndata: [DONE]\n\n`;
+        response.writeHead(200, { 'content-type': 'text/event-stream' }).end(event);
+        return;
+      }
+      json({ error: 'unexpected request' }, 404);
+    })().catch(error => response.destroy(error));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP server address');
+    await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: address.port }));
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const run = promisify(execFile);
+    const probed = await run(process.execPath, [helper, 'probe-custom', baseUrl, keyPath, 'chat-model']);
+    const result = JSON.parse(probed.stdout) as { confirmedFormats: string[]; formats: Array<{ status: string }> };
+    assertEquals(result.formats.map(format => format.status), ['available', 'available', 'failed', 'available']);
+    assertEquals(result.confirmedFormats, ['openaiCompletions', 'openaiChatCompletions', 'anthropicMessages']);
+    assertEquals(seen.map(call => call.path), ['/v1/completions', '/v1/chat/completions', '/v1/responses', '/v1/messages']);
+    assert(seen.every(call => !JSON.stringify(call.body).includes('developer')));
+    assert(!probed.stdout.includes(key));
+    const created = await run(process.execPath, [helper, 'create-custom', 'Native', baseUrl, keyPath, result.confirmedFormats.join(',')]);
+    assertEquals(JSON.parse(created.stdout).enabledFormats, result.confirmedFormats);
+    assertEquals(Object.keys(createdEndpoints ?? {}), result.confirmedFormats);
+    assert(!created.stdout.includes(key));
+    const anthropicAuth = await run(process.execPath, [helper, 'probe-custom', baseUrl, keyPath, '--auth-style=anthropic']);
+    assertEquals(JSON.parse(anthropicAuth.stdout).authStyle, 'anthropic');
+    assert(!anthropicAuth.stdout.includes(key));
+    rejectAll = true;
+    const unavailable = await new Promise<{ code: number; stdout: string }>(resolve => {
+      execFile(process.execPath, [helper, 'probe-custom', baseUrl, keyPath, 'chat-model'], (error, stdout) => {
+        resolve({ code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout });
+      });
+    });
+    assertEquals(unavailable.code, 2);
+    assertEquals(JSON.parse(unavailable.stdout).status, 'needs_attention');
+    assertEquals(JSON.parse(unavailable.stdout).confirmedFormats, []);
+    assert(!unavailable.stdout.includes(key));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
 test('installed helper tests the three Playground Gateway formats without printing API keys', () => withInstaller(async (_root, installer, dataDir) => {
   const { path } = await installer.install(TOKEN);
   const helper = join(path, '../scripts/floway.mjs');

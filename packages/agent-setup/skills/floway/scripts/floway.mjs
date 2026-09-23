@@ -98,21 +98,29 @@ const finishCreate = async (record, details = {}) => {
   }
   output({ status: 'verified', ...recordSummary(record), ...details, models });
 };
-const playgroundFormats = [
+const customFormats = [
   {
-    api: 'openaiResponses', path: '/v1/responses',
-    body: model => ({ model, stream: true, input: [{ type: 'message', role: 'user', content: 'Reply with OK.' }] }),
+    api: 'openaiCompletions', path: '/v1/completions',
+    body: model => ({ model, stream: true, prompt: 'Reply with OK.', max_tokens: 64 }),
   },
   {
     api: 'openaiChatCompletions', path: '/v1/chat/completions',
     body: model => ({ model, stream: true, messages: [{ role: 'user', content: 'Reply with OK.' }] }),
   },
   {
+    api: 'openaiResponses', path: '/v1/responses',
+    body: model => ({ model, stream: true, input: [{ type: 'message', role: 'user', content: 'Reply with OK.' }] }),
+  },
+  {
     api: 'anthropicMessages', path: '/v1/messages',
     body: model => ({ model, stream: true, max_tokens: 256, messages: [{ role: 'user', content: 'Reply with OK.' }] }),
   },
 ];
+const playgroundFormats = [
+  customFormats[2], customFormats[1], customFormats[3],
+];
 const probeText = (api, event) => {
+  if (api === 'openaiCompletions') return event.choices?.[0]?.text ?? '';
   if (api === 'openaiChatCompletions') return event.choices?.[0]?.delta?.content ?? '';
   if (api === 'anthropicMessages') return event.type === 'content_block_delta' && event.delta?.type === 'text_delta' ? event.delta.text : '';
   return event.type === 'response.output_text.delta' ? event.delta : '';
@@ -122,18 +130,17 @@ const probeError = event => {
   if (event.type === 'error' || event.error) return errorText(event);
   return null;
 };
-const probePlaygroundFormat = async (format, model, apiKey) => {
+const probeStreamingFormat = async (format, model, url, headers) => {
   const result = { api: format.api, path: format.path };
   try {
-    const response = await fetch(`${origin}${format.path}`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(format.api === 'anthropicMessages'
-          ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-          : { authorization: `Bearer ${apiKey}` }),
+        ...headers,
       },
       body: JSON.stringify(format.body(model)),
+      redirect: 'manual',
       signal: AbortSignal.timeout(45_000),
     });
     if (!response.ok) {
@@ -143,7 +150,7 @@ const probePlaygroundFormat = async (format, model, apiKey) => {
       return { ...result, status: 'failed', httpStatus: response.status, issue: safe(payload ? errorText(payload) : body || `HTTP ${response.status}`) };
     }
     if (!response.body || !response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
-      return { ...result, status: 'failed', httpStatus: response.status, issue: 'The Gateway did not return a Playground event stream.' };
+      return { ...result, status: 'failed', httpStatus: response.status, issue: 'The endpoint did not return a streaming event response.' };
     }
     const decoder = new TextDecoder();
     let pending = '';
@@ -152,11 +159,17 @@ const probePlaygroundFormat = async (format, model, apiKey) => {
     let completed = false;
     let failure = null;
     const readFrame = frame => {
-      const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+      const lines = frame.split('\n');
+      const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
       if (data === '[DONE]') { completed = true; return; }
       if (!data) return;
       let event;
       try { event = JSON.parse(data); } catch { return; }
+      if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+      if (event.type === undefined) {
+        const name = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+        if (name) event.type = name;
+      }
       failure ??= probeError(event);
       if (event.type === 'response.completed' || event.type === 'message_stop') completed = true;
       const delta = probeText(format.api, event);
@@ -178,6 +191,66 @@ const probePlaygroundFormat = async (format, model, apiKey) => {
   } catch (cause) {
     return { ...result, status: 'failed', issue: safe(cause instanceof Error ? cause.message : cause) };
   }
+};
+const probePlaygroundFormat = (format, model, apiKey) => probeStreamingFormat(
+  format, model, `${origin}${format.path}`,
+  format.api === 'anthropicMessages'
+    ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+    : { authorization: `Bearer ${apiKey}` },
+);
+const parseAuthStyle = value => {
+  if (value === undefined || value === 'bearer') return 'bearer';
+  if (value === 'anthropic') return value;
+  throw new Error('AUTH_STYLE must be bearer or anthropic.');
+};
+const parseCustomOptions = values => {
+  const authOptions = values.filter(value => value.startsWith('--auth-style='));
+  const positional = values.filter(value => !value.startsWith('--auth-style='));
+  if (authOptions.length > 1 || positional.length > 1) throw new Error('Expected at most one model or format list and one --auth-style option.');
+  return { value: positional[0], authStyle: parseAuthStyle(authOptions[0]?.slice('--auth-style='.length)) };
+};
+const parseCustomEndpoints = value => {
+  if (value === undefined) return { openaiChatCompletions: {} };
+  const keys = value.split(',');
+  if (keys.length === 0 || keys.some(key => !customFormats.some(format => format.api === key)) || new Set(keys).size !== keys.length) {
+    throw new Error(`FORMATS must be a comma-separated nonempty subset of ${customFormats.map(format => format.api).join(', ')}.`);
+  }
+  return Object.fromEntries(keys.map(key => [key, {}]));
+};
+const probeCustom = async (inputUrl, keyFile, requestedModel, requestedAuthStyle) => {
+  const draft = await blueprint('custom');
+  const baseUrl = normalizeCustomBaseUrl(inputUrl, draft.config);
+  const authStyle = parseAuthStyle(requestedAuthStyle);
+  const apiKey = readProviderKey(keyFile);
+  const config = { ...draft.config, baseUrl, apiKey, authStyle };
+  const catalog = await api('POST', '/api/upstreams/list-models', { record: { ...draft, config } });
+  const models = modelIds(catalog);
+  if (models.length === 0) throw new Error(`Floway found no models at ${baseUrl}. Check the URL, credentials, and model-list path in ${dashboard}.`);
+  if (requestedModel !== undefined && !models.includes(requestedModel)) {
+    throw new Error(`Model ${requestedModel} was not in the upstream catalog. Choose one of the listed models.`);
+  }
+  const model = requestedModel ?? models[0];
+  const headers = authStyle === 'anthropic'
+    ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+    : { authorization: `Bearer ${apiKey}` };
+  const formats = [];
+  for (const format of customFormats) {
+    formats.push(await probeStreamingFormat(format, model, `${baseUrl.replace(/\/+$/, '')}${format.path}`, headers));
+  }
+  const confirmedFormats = formats.filter(format => format.status === 'available').map(format => format.api);
+  output({ status: confirmedFormats.length ? 'probed' : 'needs_attention', baseUrl, authStyle, models, model, formats,
+    confirmedFormats, dashboard });
+  if (!confirmedFormats.length) process.exitCode = 2;
+};
+const readProviderKey = keyFile => {
+  const keyStat = statSync(keyFile);
+  if (!keyStat.isFile() || (process.platform !== 'win32' && (keyStat.mode & 0o077) !== 0)) {
+    throw new Error('The provider key must be in an owner-only regular file (mode 0600).');
+  }
+  const apiKey = readFileSync(keyFile, 'utf8').trim();
+  if (!apiKey) throw new Error('The provider key file is empty.');
+  secrets.add(apiKey);
+  return apiKey;
 };
 const testModel = async (upstreamId, modelId) => {
   const catalog = await api('GET', '/api/models?aliases=false&include_unlisted=true');
@@ -266,25 +339,27 @@ const [command, ...args] = process.argv.slice(2);
       await testModel(args[0], args[1]);
       break;
     }
+    case 'probe-custom': {
+      if (args.length < 2 || args.length > 4) throw new Error('Usage: floway probe-custom BASE_URL KEY_FILE [MODEL_ID] [--auth-style=anthropic]');
+      const { value: modelId, authStyle } = parseCustomOptions(args.slice(2));
+      await probeCustom(args[0], args[1], modelId, authStyle);
+      break;
+    }
     case 'create-custom': {
-      if (args.length !== 3) throw new Error('Usage: floway create-custom NAME BASE_URL KEY_FILE');
+      if (args.length < 3 || args.length > 5) throw new Error('Usage: floway create-custom NAME BASE_URL KEY_FILE [FORMATS] [--auth-style=anthropic]');
       const [name, inputUrl, keyFile] = args;
+      const { value: formatKeys, authStyle } = parseCustomOptions(args.slice(3));
       const draft = await blueprint('custom');
       const baseUrl = normalizeCustomBaseUrl(inputUrl, draft.config);
-      const keyStat = statSync(keyFile);
-      if (!keyStat.isFile() || (process.platform !== 'win32' && (keyStat.mode & 0o077) !== 0)) {
-        throw new Error('The provider key must be in an owner-only regular file (mode 0600).');
-      }
-      const apiKey = readFileSync(keyFile, 'utf8').trim();
-      if (!apiKey) throw new Error('The provider key file is empty.');
-      secrets.add(apiKey);
+      const apiKey = readProviderKey(keyFile);
+      const endpoints = parseCustomEndpoints(formatKeys);
       const created = await createUpstream({
         ...draft,
         name,
         enabled: true,
-        config: { ...draft.config, baseUrl, apiKey },
+        config: { ...draft.config, baseUrl, apiKey, endpoints, authStyle },
       });
-      await finishCreate(created, { baseUrl });
+      await finishCreate(created, { baseUrl, authStyle, enabledFormats: Object.keys(endpoints) });
       break;
     }
     case 'create-ollama': {
@@ -355,7 +430,7 @@ const [command, ...args] = process.argv.slice(2);
       break;
     }
     default:
-      throw new Error('Usage: floway status | list | models ID | test-model UPSTREAM_ID MODEL_ID | create-custom NAME BASE_URL KEY_FILE | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
+      throw new Error('Usage: floway status | list | models ID | test-model UPSTREAM_ID MODEL_ID | probe-custom BASE_URL KEY_FILE [MODEL_ID] [--auth-style=anthropic] | create-custom NAME BASE_URL KEY_FILE [FORMATS] [--auth-style=anthropic] | create-ollama NAME BASE_URL | copilot-start NAME | copilot-finish HANDLE');
   }
 } catch (error) {
   process.stderr.write(`${safe(error instanceof Error ? error.message : error)}\n`);
