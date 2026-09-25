@@ -123,7 +123,6 @@ const zhHansCN = {
         users: '用户',
         backupRestore: '备份 / 恢复',
         settings: '设置',
-        localOwner: '本机 Owner',
       },
       logout: {
         label: '退出登录',

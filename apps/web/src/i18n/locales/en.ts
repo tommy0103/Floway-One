@@ -125,7 +125,6 @@ const en = {
         users: 'Users',
         backupRestore: 'Backup / Restore',
         settings: 'Settings',
-        localOwner: 'Local owner',
       },
       logout: {
         label: 'Sign out',
