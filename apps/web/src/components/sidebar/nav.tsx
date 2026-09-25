@@ -180,7 +180,7 @@ export function Sidebar({ capabilities, onNavigate, personal, user }: {
             onNavigate={onNavigate}
             pending={pendingValue === accountPage.to}
             to={accountPage.to}
-          >{capabilities.userManagement ? user.username : t('dashboard.nav.localOwner')}</SidebarLink>
+          >{capabilities.userManagement ? user.username : t('dashboard.nav.settings')}</SidebarLink>
           <NavItem className={styles.item} icon={<ShareIos20Color className={styles.signOutIcon} idPrefix={iconIdPrefix} />} value="logout">{t('dashboard.logout.label')}</NavItem>
         </div>
       </NavDrawerFooter>

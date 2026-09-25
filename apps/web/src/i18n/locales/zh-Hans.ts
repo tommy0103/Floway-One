@@ -123,7 +123,6 @@ const zhHansCN = {
         users: '用户',
         backupRestore: '备份 / 恢复',
         settings: '设置',
-        localOwner: '本机 Owner',
       },
       logout: {
         label: '退出登录',
@@ -249,8 +248,15 @@ const zhHansCN = {
         },
       },
       settings: {
-        description: '管理你的 Floway 账户安全设置',
-        personalDescription: '管理本机 Owner 的安全设置',
+        description: '管理 Floway 的偏好设置和账户安全',
+        personalDescription: '管理 Floway 的偏好设置和本机 Owner 安全',
+        language: {
+          title: '语言',
+          description: '选择 Floway 的显示语言。',
+          system: '跟随系统',
+          english: 'English',
+          chinese: '简体中文',
+        },
         changePassword: '修改密码',
         currentPassword: '当前密码',
         newPassword: '新密码',

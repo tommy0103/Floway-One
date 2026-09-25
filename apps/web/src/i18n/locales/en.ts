@@ -125,7 +125,6 @@ const en = {
         users: 'Users',
         backupRestore: 'Backup / Restore',
         settings: 'Settings',
-        localOwner: 'Local owner',
       },
       logout: {
         label: 'Sign out',
@@ -262,8 +261,15 @@ const en = {
         },
       },
       settings: {
-        description: 'Manage your Floway account security',
-        personalDescription: 'Manage security for this local owner',
+        description: 'Manage your Floway preferences and account security',
+        personalDescription: 'Manage Floway preferences and local owner security',
+        language: {
+          title: 'Language',
+          description: 'Choose the language used in Floway.',
+          system: 'Follow system',
+          english: 'English',
+          chinese: '简体中文',
+        },
         changePassword: 'Change password',
         currentPassword: 'Current password',
         newPassword: 'New password',
