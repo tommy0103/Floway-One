@@ -133,7 +133,7 @@ const zhHansCN = {
       },
       pages: {
         overview: '查看本机网关是否健康、监听地址，以及需要处理的问题',
-        quickStart: '安装 Floway Skill，让 Agent 配置本机网关',
+        quickStart: '让你的 Agent 通过 Floway 完成第一次请求',
         playground: '在控制台中运行模型对话，并检查请求行为',
         upstreams:
             '管理模型提供商的路由优先级、可用状态、模型目录和连接配置',
@@ -379,15 +379,56 @@ const zhHansCN = {
         validation: '至少选择一个上游，或关闭限制。',
       },
       quickStart: {
-        installTitle: '安装 Floway Skill',
-        installDescription: '安装一次即可在 Codex 和 Claude Code 中使用；这一步不需要 API 密钥。',
-        accessDescription: '安装会创建私有的本机会话，允许 Skill 查看和修改上游配置。',
         install: '安装 Floway Skill',
+        reinstall: '重新安装 Floway Skill',
         installing: '正在安装 Floway Skill…',
         installed: 'Floway Skill 已安装到 {{path}}。请开启新的 Agent 对话使用。',
-        tryTitle: '试一试',
-        tryDescription: '开启新的 Codex 或 Claude Code 对话，让 Agent 列出 Floway 的上游。',
-        openUpstreams: '在 Floway 查看上游',
+        installAccess: '安装会创建一个仅本机可用的私有会话，允许 Skill 查看和修改上游配置。',
+        nextStep: '下一步',
+        statusTitle: '接入状态',
+        prompt: '用 Floway Skill 帮我完成 Floway 的接入。',
+        askAgent: '在新的 Agent 对话中说：',
+        gatewayDown: '本机网关没有响应。请确认 Floway 正在运行。',
+        firstRequestGuide: '在已接入的 Agent 里开一个新对话，发送任意消息；请求到达后本页会自动前进。',
+        latestRequestFailed: '最近一次请求未成功：{{detail}}',
+        openUpstreams: '打开上游',
+        openApiKeys: '打开 API 密钥',
+        skip: '跳过快速开始',
+        openOverview: '进入概览',
+        status: {
+          done: '已完成',
+          current: '当前',
+          pending: '待办',
+          unavailable: '不可用',
+        },
+        prerequisite: {
+          title: '先装好 Codex 或 Claude Code',
+          description: 'Floway 把你在 Codex 或 Claude Code 里的模型请求汇聚到本机。请先安装并能正常使用其中一个，再回到本页。',
+        },
+        objectives: {
+          gateway: {
+            title: '网关运行中',
+          },
+          skill: {
+            title: '安装 Floway Skill',
+          },
+          modelService: {
+            title: '接入一个模型服务',
+          },
+          apiKey: {
+            title: '创建一个 API 密钥',
+          },
+          agentSetup: {
+            title: '把 Agent 接入 Floway',
+          },
+          firstRequest: {
+            title: '完成第一次请求',
+          },
+        },
+        completed: {
+          title: '接入完成',
+          description: '你的 Agent 已经通过 Floway 完成了第一次请求。',
+        },
       },
       apiKeys: {
         empty: '还没有 API 密钥。创建一个后即可调用 Floway。',

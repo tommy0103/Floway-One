@@ -136,7 +136,7 @@ const en = {
       pages: {
         overview:
             'Check whether this local gateway is healthy, where it is listening, and what needs attention',
-        quickStart: 'Install the Floway Skill and let an agent configure this local gateway',
+        quickStart: 'Get your agent to its first successful request through Floway',
         playground:
             'Run model conversations and inspect request behavior from the control plane',
         upstreams:
@@ -395,15 +395,56 @@ const en = {
         validation: 'Select at least one upstream, or turn off the limit.',
       },
       quickStart: {
-        installTitle: 'Install the Floway Skill',
-        installDescription: 'Install once to make the Skill available to Codex and Claude Code. No API key is needed for this step.',
-        accessDescription: 'Installation creates a private local session that lets the Skill view and change your Upstreams.',
         install: 'Install Floway Skill',
+        reinstall: 'Reinstall Floway Skill',
         installing: 'Installing Floway Skill…',
         installed: 'Floway Skill installed at {{path}}. Start a new agent conversation to use it.',
-        tryTitle: 'Try it',
-        tryDescription: 'Start a new Codex or Claude Code conversation and ask the agent to list your Floway Upstreams.',
-        openUpstreams: 'View Upstreams in Floway',
+        installAccess: 'Installation creates a private local session that lets the Skill view and change your Upstreams.',
+        nextStep: 'Next step',
+        statusTitle: 'Setup status',
+        prompt: 'Use the Floway Skill to finish setting up Floway.',
+        askAgent: 'In a new agent conversation, say:',
+        gatewayDown: 'The local gateway is not responding. Make sure Floway is running.',
+        firstRequestGuide: 'Open a new conversation in your connected agent and send any message. This page advances as soon as the request arrives.',
+        latestRequestFailed: 'The latest request did not succeed: {{detail}}',
+        openUpstreams: 'Open Upstreams',
+        openApiKeys: 'Open API Keys',
+        skip: 'Skip Quick Start',
+        openOverview: 'Open the overview',
+        status: {
+          done: 'Done',
+          current: 'Current',
+          pending: 'To do',
+          unavailable: 'Unavailable',
+        },
+        prerequisite: {
+          title: 'Set up Codex or Claude Code first',
+          description: 'Floway brings the model requests you make in Codex or Claude Code to this machine. Get one of them working, then come back to this page.',
+        },
+        objectives: {
+          gateway: {
+            title: 'Gateway running',
+          },
+          skill: {
+            title: 'Install the Floway Skill',
+          },
+          modelService: {
+            title: 'Connect a model service',
+          },
+          apiKey: {
+            title: 'Create an API key',
+          },
+          agentSetup: {
+            title: 'Point your agent at Floway',
+          },
+          firstRequest: {
+            title: 'Make a first request',
+          },
+        },
+        completed: {
+          title: 'Setup complete',
+          description: 'Your agent has made its first request through Floway.',
+        },
       },
       apiKeys: {
         empty: 'No API keys yet. Create one to call Floway.',

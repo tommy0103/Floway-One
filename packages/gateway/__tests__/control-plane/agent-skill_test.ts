@@ -16,9 +16,63 @@ const requestInstall = (session: string) => requestApp('/api/agent-skill/install
   body: JSON.stringify({}),
 });
 
+const requestStatus = (session: string) => requestApp('/api/agent-skill/status', {
+  headers: { 'x-floway-session': session },
+});
+
+const stubStatus = { installed: false, clients: [] };
+
+test('Floway Skill status requires a personal owner Dashboard session', async () => {
+  const server = await setupAppTest();
+  initPersonalAgentSkillInstaller({ readSessionToken: () => null, install: async () => ({ path: '/skill' }), readStatus: async () => stubStatus });
+  assertEquals((await requestStatus(server.adminSession)).status, 404);
+
+  const personal = await setupPersonalAppTest();
+  const apiKeyResponse = await requestApp('/api/agent-skill/status', {
+    headers: { 'x-api-key': personal.adminKey },
+  });
+  assertEquals(apiKeyResponse.status, 401);
+  assertEquals((await requestStatus(personal.adminSession)).status, 200);
+});
+
+test('Floway Skill status reports installation only while its session stays valid', async () => {
+  const { repo, adminSession } = await setupPersonalAppTest();
+  let savedToken: string | null = null;
+  initPersonalAgentSkillInstaller({
+    readSessionToken: () => savedToken,
+    install: async token => {
+      savedToken = token;
+      return { path: '/skills/floway/SKILL.md' };
+    },
+    readStatus: async () => ({
+      installed: savedToken !== null,
+      clients: [
+        { agent: 'claude', installed: true, configured: false },
+        { agent: 'codex', installed: false, configured: false },
+      ],
+    }),
+  });
+
+  const before = await (await requestStatus(adminSession)).json();
+  assertEquals(before, {
+    installed: false, clients: [
+      { agent: 'claude', installed: true, configured: false },
+      { agent: 'codex', installed: false, configured: false },
+    ],
+  });
+
+  assertEquals((await requestInstall(adminSession)).status, 200);
+  const installed = await (await requestStatus(adminSession)).json();
+  assertEquals(installed.installed, true);
+
+  await repo.sessions.deleteById(savedToken!);
+  const orphaned = await (await requestStatus(adminSession)).json();
+  assertEquals(orphaned.installed, false);
+});
+
 test('Floway Skill installation requires a personal owner Dashboard session', async () => {
   const server = await setupAppTest();
-  initPersonalAgentSkillInstaller({ readSessionToken: () => null, install: async () => ({ path: '/skill' }) });
+  initPersonalAgentSkillInstaller({ readSessionToken: () => null, install: async () => ({ path: '/skill' }), readStatus: async () => stubStatus });
   assertEquals((await requestInstall(server.adminSession)).status, 404);
 
   const personal = await setupPersonalAppTest();
@@ -49,6 +103,7 @@ test('Floway Skill installation reuses one authorized session across concurrent 
       savedToken = token;
       return { path: '/skills/floway/SKILL.md' };
     },
+    readStatus: async () => stubStatus,
   });
 
   const responses = await Promise.all([requestInstall(adminSession), requestInstall(adminSession)]);
@@ -67,6 +122,7 @@ test('failed Floway Skill installation removes its newly minted session', async 
       minted = token;
       throw new Error('disk full');
     },
+    readStatus: async () => stubStatus,
   });
 
   assertEquals((await requestInstall(adminSession)).status, 500);

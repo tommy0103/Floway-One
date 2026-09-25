@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 
 import { createPersonalAgentSkillInstaller, PERSONAL_AGENT_SKILL_SESSION_FILE } from '../src/personal-agent-skill.ts';
 import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
@@ -26,6 +26,75 @@ const withInstaller = async (operation: (root: string, installer: ReturnType<typ
     await rm(root, { recursive: true, force: true });
   }
 };
+
+test('readStatus reports Skill authorization and local client state', () => withInstaller(async (root, installer, dataDir) => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '');
+  vi.stubEnv('CODEX_HOME', '');
+  const origin = 'http://127.0.0.1:8788';
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: 8788 }));
+
+  const blank = await installer.readStatus();
+  assertEquals(blank, {
+    installed: false,
+    clients: [
+      { agent: 'claude', installed: false, configured: false },
+      { agent: 'codex', installed: false, configured: false },
+    ],
+  });
+
+  await installer.install(TOKEN);
+  assertEquals((await installer.readStatus()).installed, true);
+
+  await mkdir(join(root, '.claude'), { recursive: true });
+  await writeFile(join(root, '.claude', 'settings.json'), JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: `${origin}/`, ANTHROPIC_AUTH_TOKEN: 'sk-client-secret' },
+  }));
+  await mkdir(join(root, '.codex'), { recursive: true });
+  await writeFile(join(root, '.codex', 'config.toml'), `model_provider = "floway"\n[model_providers.floway]\nbase_url = "${origin}/azure-api.codex"\n`);
+
+  const configured = await installer.readStatus();
+  assertEquals(configured.clients, [
+    { agent: 'claude', installed: true, configured: true },
+    { agent: 'codex', installed: true, configured: true },
+  ]);
+}));
+
+test('readStatus never treats another gateway or a corrupt client file as configured', () => withInstaller(async (root, installer, dataDir) => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '');
+  vi.stubEnv('CODEX_HOME', '');
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ version: 1, port: 8788 }));
+
+  await mkdir(join(root, '.claude'), { recursive: true });
+  // Port 87880 shares a decimal prefix with this gateway's 8788.
+  await writeFile(join(root, '.claude', 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:87880' } }));
+  await mkdir(join(root, '.codex'), { recursive: true });
+  await writeFile(join(root, '.codex', 'config.toml'), 'base_url = "http://127.0.0.1:87880/azure-api.codex"\n');
+  assertEquals((await installer.readStatus()).clients, [
+    { agent: 'claude', installed: true, configured: false },
+    { agent: 'codex', installed: true, configured: false },
+  ]);
+
+  await writeFile(join(root, '.claude', 'settings.json'), '{ not json');
+  assertEquals((await installer.readStatus()).clients[0], { agent: 'claude', installed: true, configured: false });
+
+  await rm(join(dataDir, 'runtime.json'), { force: true });
+  await writeFile(join(root, '.codex', 'config.toml'), 'base_url = "http://127.0.0.1:8788/azure-api.codex"\n');
+  assertEquals((await installer.readStatus()).clients[1], { agent: 'codex', installed: true, configured: false });
+}));
+
+test('readStatus keeps working when the session file or a Skill copy is unusable', () => withInstaller(async (root, installer, dataDir) => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '');
+  vi.stubEnv('CODEX_HOME', '');
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE), 'not-a-token\n');
+  assertEquals((await installer.readStatus()).installed, false);
+
+  await writeFile(join(dataDir, PERSONAL_AGENT_SKILL_SESSION_FILE), `${TOKEN}\n`, { mode: 0o600 });
+  await mkdir(join(root, '.agents/skills/floway/SKILL.md'), { recursive: true });
+  assertEquals((await installer.readStatus()).installed, false);
+}));
 
 test('personal Floway Skill installs once for Codex and Claude with private authorization', () => withInstaller(async (root, installer, dataDir) => {
   assertEquals(installer.readSessionToken(), null);

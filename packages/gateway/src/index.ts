@@ -60,4 +60,9 @@ export { CODEX_REDIRECT_PORT } from '@floway-dev/provider-codex';
 export { runScheduledMaintenance } from './scheduled.ts';
 export { assertRuntimeProfileData } from './runtime/profile-policy.ts';
 
-export { initPersonalAgentSkillInstaller, type PersonalAgentSkillInstaller } from './control-plane/agent-skill.ts';
+export {
+  initPersonalAgentSkillInstaller,
+  type PersonalAgentSkillClientState,
+  type PersonalAgentSkillInstaller,
+  type PersonalAgentSkillStatus,
+} from './control-plane/agent-skill.ts';

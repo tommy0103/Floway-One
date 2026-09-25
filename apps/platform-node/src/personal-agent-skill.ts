@@ -3,9 +3,10 @@ import { userInfo } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
+import { PERSONAL_HOSTNAME } from './personal-runtime.ts';
 import type { InitializedPersonalStorage } from './personal-storage.ts';
 import { FLOWAY_SKILL_HELPER, FLOWAY_SKILL_MARKDOWN, FLOWAY_SKILL_REFERENCES } from '@floway-dev/agent-setup';
-import type { PersonalAgentSkillInstaller } from '@floway-dev/gateway';
+import type { PersonalAgentSkillInstaller, PersonalAgentSkillStatus } from '@floway-dev/gateway';
 
 export const PERSONAL_AGENT_SKILL_SESSION_FILE = 'agent-skill.session';
 const MANAGED_SKILL_MARKER = '<!-- Managed by Floway. -->';
@@ -54,14 +55,101 @@ export const createPersonalAgentSkillInstaller = ({
     return token;
   };
 
-  const skillRoots = (): string[] => {
+  const claudeConfigDir = (): string => {
     const configuredClaudeDir = process.env.CLAUDE_CONFIG_DIR;
-    const claudeDir = configuredClaudeDir === undefined || configuredClaudeDir === ''
+    return configuredClaudeDir === undefined || configuredClaudeDir === ''
       ? join(homeDir, '.claude')
       : configuredClaudeDir;
+  };
+
+  const codexConfigDir = (): string => {
+    const configuredCodexDir = process.env.CODEX_HOME;
+    return configuredCodexDir === undefined || configuredCodexDir === ''
+      ? join(homeDir, '.codex')
+      : configuredCodexDir;
+  };
+
+  const skillRoots = (): string[] => {
     // Claude Code currently discovers personal skills in ~/.claude/skills.
     // https://code.claude.com/docs/en/skills#choose-where-skills-load
-    return [...new Set([join(homeDir, '.agents', 'skills', 'floway'), join(claudeDir, 'skills', 'floway')])];
+    return [...new Set([join(homeDir, '.agents', 'skills', 'floway'), join(claudeConfigDir(), 'skills', 'floway')])];
+  };
+
+  // The gateway's own loopback origin, from the same runtime state the
+  // installed helper reads. Unknown when the runtime has never written it, in
+  // which case no client can be configured against it either.
+  const readGatewayOrigin = (): string | null => {
+    try {
+      const runtime: unknown = JSON.parse(readFileSync(paths.runtimeStatePath, 'utf8'));
+      const port = (runtime as { port?: unknown }).port;
+      if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) return null;
+      return `http://${PERSONAL_HOSTNAME}:${port as number}`;
+    } catch {
+      return null;
+    }
+  };
+
+  const directoryExists = (path: string): boolean => {
+    try {
+      return lstatSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+
+  // Client configuration reads answer a boolean for the status surface: a
+  // corrupt settings file must not break the page, and the file's contents
+  // (which include the client's API key) never leave this process. The install
+  // path stays loud about the same corruption.
+  const claudeConfigured = (origin: string | null): boolean => {
+    if (origin === null) return false;
+    try {
+      const settings: unknown = JSON.parse(readFileSync(join(claudeConfigDir(), 'settings.json'), 'utf8'));
+      const env = (settings as { env?: unknown }).env;
+      const baseUrl = env !== null && typeof env === 'object'
+        ? (env as Record<string, unknown>).ANTHROPIC_BASE_URL
+        : undefined;
+      return typeof baseUrl === 'string' && baseUrl.replace(/\/+$/, '') === origin;
+    } catch {
+      return false;
+    }
+  };
+
+  const codexConfigured = (origin: string | null): boolean => {
+    if (origin === null) return false;
+    try {
+      // Agent Setup writes model_providers.floway.base_url as origin plus a
+      // path, so the slash also keeps one port's prefix from matching another.
+      return readFileSync(join(codexConfigDir(), 'config.toml'), 'utf8').includes(`${origin}/`);
+    } catch {
+      return false;
+    }
+  };
+
+  const managedSkillInstalled = (): boolean => {
+    try {
+      return readSessionToken() !== null
+        && skillRoots().some(root => {
+          try {
+            return managedSkill(join(root, 'SKILL.md'));
+          } catch {
+            return false;
+          }
+        });
+    } catch {
+      return false;
+    }
+  };
+
+  const readStatus = async (): Promise<PersonalAgentSkillStatus> => {
+    const origin = readGatewayOrigin();
+    return {
+      installed: managedSkillInstalled(),
+      clients: [
+        { agent: 'claude', installed: directoryExists(claudeConfigDir()), configured: claudeConfigured(origin) },
+        { agent: 'codex', installed: directoryExists(codexConfigDir()), configured: codexConfigured(origin) },
+      ],
+    };
   };
 
   const managedSkill = (skillPath: string): boolean => {
@@ -111,5 +199,5 @@ export const createPersonalAgentSkillInstaller = ({
     }
   };
 
-  return { readSessionToken, install, refreshInstalled };
+  return { readSessionToken, install, readStatus, refreshInstalled };
 };

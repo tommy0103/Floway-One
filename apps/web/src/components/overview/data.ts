@@ -40,7 +40,7 @@ export type OverviewRecentRequest =
   // says so instead of reading as an empty deployment.
   | { kind: 'capture-off' };
 
-const gather = async <T>(load: () => Promise<T>): Promise<OverviewRegion<T>> => {
+export const gather = async <T>(load: () => Promise<T>): Promise<OverviewRegion<T>> => {
   try {
     return { value: await load(), failure: null };
   } catch (error) {
@@ -51,20 +51,24 @@ const gather = async <T>(load: () => Promise<T>): Promise<OverviewRegion<T>> => 
   }
 };
 
-const unwrap = <T>(result: ApiResult<T>): T => {
+export const unwrap = <T>(result: ApiResult<T>): T => {
   if (result.error) throw new Error(result.error.message);
   return result.data;
 };
 
+// The health region shared by the overview and Quick Start: a 200 that is not
+// the health contract is a failure with no message of its own, and its region
+// renders the shared unavailable line for it.
+export const loadHealthRegion = (signal?: AbortSignal): Promise<OverviewRegion<{ ok: true }>> =>
+  gather(async () => {
+    const data = unwrap(await callApi(() => api.api.health.$get({}, { init: { signal } })));
+    if (data.status !== 'ok') throw new HealthContractError();
+    return { ok: true as const };
+  });
+
 export const loadOverviewSnapshot = async (signal?: AbortSignal): Promise<OverviewSnapshot> => {
   const [health, upstreams, keyRecords] = await Promise.all([
-    gather(async () => {
-      const data = unwrap(await callApi(() => api.api.health.$get({}, { init: { signal } })));
-      // A 200 that is not the health contract is a failure with no message of
-      // its own; the region renders the shared unavailable line for it.
-      if (data.status !== 'ok') throw new HealthContractError();
-      return { ok: true as const };
-    }),
+    loadHealthRegion(signal),
     gather(async () => unwrap(await callApi(() => api.api.upstreams.$get(undefined, { init: { signal } })))),
     gather(async () => unwrap(await callApi(() => api.api.keys.$get(undefined, { init: { signal } })))),
   ]);
@@ -104,7 +108,7 @@ export const loadOverviewSnapshot = async (signal?: AbortSignal): Promise<Overvi
 // message.
 class HealthContractError extends Error {}
 
-const loadRecentRequest = async (
+export const loadRecentRequest = async (
   keyRecords: OverviewRegion<ApiKey[]>,
   signal?: AbortSignal,
 ): Promise<OverviewRegion<OverviewRecentRequest>> => {
@@ -149,5 +153,5 @@ export const mergeOverviewSnapshot = (
   };
 };
 
-const mergeRegion = <T>(current: OverviewRegion<T>, next: OverviewRegion<T>): OverviewRegion<T> =>
+export const mergeRegion = <T>(current: OverviewRegion<T>, next: OverviewRegion<T>): OverviewRegion<T> =>
   next.failure !== null && current.failure !== null ? current : next;
