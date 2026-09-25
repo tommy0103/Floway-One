@@ -13,7 +13,7 @@ import { changeOwnPassword } from '../api/auth';
 import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
 import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
-import { Input } from '../components/ui/fluent-form-controls';
+import { Dropdown, Input } from '../components/ui/fluent-form-controls';
 import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS, STATUS_HEADER_CLASS } from '../components/ui/layout';
 import { OpenLogsButton } from '../components/ui/open-logs-button';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
@@ -22,10 +22,13 @@ import { Panel } from '../components/ui/panel';
 import { SectionHeader } from '../components/ui/section-header';
 import { StatusBadge } from '../components/ui/status-badge';
 import { fluentComponents } from '../fluent';
+import { setLanguagePreference } from '../i18n';
+import { languagePreference, type LanguagePreference } from '../i18n/languages';
 
 const {
   Button,
   Field,
+  Option,
   Text,
 } = fluentComponents;
 
@@ -87,6 +90,9 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
   const fetcher = useFetcher<SettingsActionData>();
   const toasts = useOutcomeToasts();
   const [dismissed, setDismissed] = useState<SettingsActionData | null>(null);
+  const [language, setCurrentLanguage] = useState<LanguagePreference>(languagePreference);
+  const [languageBusy, setLanguageBusy] = useState(false);
+  const [languageError, setLanguageError] = useState<string | null>(null);
   const saving = fetcher.state !== 'idle';
   const {
     control,
@@ -123,6 +129,23 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
     void fetcher.submit(values, { method: 'post' });
   };
 
+  const changeLanguage = (next: LanguagePreference) => {
+    if (languageBusy) return;
+    setLanguageBusy(true);
+    setLanguageError(null);
+    void setLanguagePreference(next).then(() => {
+      setCurrentLanguage(next);
+    }).catch((cause: unknown) => {
+      setLanguageError(cause instanceof Error ? cause.message : String(cause));
+    }).finally(() => setLanguageBusy(false));
+  };
+
+  const languageLabel = language === 'system'
+    ? t('dashboard.settings.language.system')
+    : language === 'en'
+      ? t('dashboard.settings.language.english')
+      : t('dashboard.settings.language.chinese');
+
   return (
     <section className="dashboard-page max-w-[960px]">
       <DashboardPageHeader
@@ -131,6 +154,27 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
           : 'dashboard.settings.personalDescription')}
         title={t('dashboard.nav.settings')}
       />
+
+      <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
+        <SectionHeader level={2} title={t('dashboard.settings.language.title')} />
+        <Text size={200} className="text-fui-fg2">{t('dashboard.settings.language.description')}</Text>
+        <Dropdown
+          aria-label={t('dashboard.settings.language.title')}
+          disabled={languageBusy}
+          selectedOptions={[language]}
+          value={languageLabel}
+          onOptionSelect={(_, data) => {
+            if (data.optionValue === 'system' || data.optionValue === 'en' || data.optionValue === 'zh-Hans') {
+              changeLanguage(data.optionValue);
+            }
+          }}
+        >
+          <Option value="system">{t('dashboard.settings.language.system')}</Option>
+          <Option value="en">{t('dashboard.settings.language.english')}</Option>
+          <Option value="zh-Hans">{t('dashboard.settings.language.chinese')}</Option>
+        </Dropdown>
+        {languageError && <OutcomeMessageBar onDismiss={() => setLanguageError(null)}>{languageError}</OutcomeMessageBar>}
+      </Panel>
 
       {loaderData.desktop && <Panel className={`${PANEL_STACK_CLASS} w-full`}>
         <div className={STATUS_HEADER_CLASS}>

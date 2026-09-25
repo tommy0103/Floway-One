@@ -5,7 +5,10 @@ import {
   browserLanguage,
   defaultLanguage,
   htmlLanguageFor,
+  saveLanguagePreference,
+  selectedLanguage,
   supportedLanguages,
+  type LanguagePreference,
   type SupportedLanguage,
 } from './languages';
 import { numberFormatter } from './number-format';
@@ -27,7 +30,7 @@ import { shellResources } from './shell';
 // loaded here. Every key outside the shell resolves through that fallback,
 // which puts whatever renders between hydration and BrowserLanguageSync in the
 // visitor's language rather than briefly in English.
-const language = browserLanguage();
+const language = selectedLanguage();
 const loaded = new Set<SupportedLanguage>([language]);
 
 void i18n.use(numberFormatter).use(initReactI18next).init({
@@ -56,6 +59,11 @@ export const setLanguage = async (next: SupportedLanguage): Promise<void> => {
     loaded.add(next);
   }
   await i18n.changeLanguage(next);
+};
+
+export const setLanguagePreference = async (preference: LanguagePreference): Promise<void> => {
+  await setLanguage(preference === 'system' ? browserLanguage() : preference);
+  saveLanguagePreference(preference);
 };
 
 export { i18n };

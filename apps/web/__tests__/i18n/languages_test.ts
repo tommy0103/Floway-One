@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { htmlLanguageFor, localeForLanguage, normalizeLanguage } from '../../src/i18n/languages';
+import { browserLanguage, htmlLanguageFor, languagePreference, localeForLanguage, normalizeLanguage, saveLanguagePreference, selectedLanguage } from '../../src/i18n/languages';
+import { stubLocalStorage } from '../local-storage-stub';
+
+stubLocalStorage();
 
 describe('normalizeLanguage', () => {
   it.each([
@@ -51,5 +54,25 @@ describe('language locales', () => {
     expect(htmlLanguageFor('zh-Hans')).toBe('zh-Hans');
     expect(htmlLanguageFor('zh-TW')).toBe('zh-Hans');
     expect(htmlLanguageFor('ko-KR')).toBe('en');
+  });
+});
+
+describe('language preference', () => {
+  it('follows the system until a supported language is selected', () => {
+    expect(languagePreference()).toBe('system');
+    expect(selectedLanguage()).toBe(browserLanguage());
+
+    saveLanguagePreference('zh-Hans');
+    expect(languagePreference()).toBe('zh-Hans');
+    expect(selectedLanguage()).toBe('zh-Hans');
+
+    saveLanguagePreference('system');
+    expect(languagePreference()).toBe('system');
+    expect(selectedLanguage()).toBe(browserLanguage());
+  });
+
+  it('ignores unsupported stored values', () => {
+    window.localStorage.setItem('floway.language', 'fr');
+    expect(languagePreference()).toBe('system');
   });
 });
