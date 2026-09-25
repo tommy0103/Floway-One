@@ -1,5 +1,6 @@
 import type { NavItemProps } from '@fluentui/react-components';
-import { DismissRegular, ShareIos20Color } from '@fluentui/react-icons';
+import { DismissRegular, Power20Regular, ShareIos20Color } from '@fluentui/react-icons';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useId, useRef } from 'react';
 import type { MouseEventHandler, ReactNode } from 'react';
 import { useLinkClickHandler, useLocation, useNavigation } from 'react-router';
@@ -100,6 +101,7 @@ export function Sidebar({ capabilities, onNavigate, personal, user }: {
   const logout = useAuthStore(state => state.logout);
   const styles = useStyles();
   const logoutDialog = useDialogInvocation<void>();
+  const quitDialog = useDialogInvocation<void>();
   // Signing out redirects away and unmounts this sidebar, so it waits for the
   // dialog's exit. The exit also runs on a dismissal, so only a confirmed one
   // signs out.
@@ -124,6 +126,7 @@ export function Sidebar({ capabilities, onNavigate, personal, user }: {
           signOutConfirmed.current = false;
           logoutDialog.open();
         }
+        if (data.value === 'quit-app') quitDialog.open();
       }}
       open
       selectedValue={selectedValue}
@@ -181,10 +184,25 @@ export function Sidebar({ capabilities, onNavigate, personal, user }: {
             pending={pendingValue === accountPage.to}
             to={accountPage.to}
           >{capabilities.userManagement ? user.username : t('dashboard.nav.settings')}</SidebarLink>
-          <NavItem className={styles.item} icon={<ShareIos20Color className={styles.signOutIcon} idPrefix={iconIdPrefix} />} value="logout">{t('dashboard.logout.label')}</NavItem>
+          {/* Personal mode has a single bootstrap-issued owner session, so
+              signing out only strands the owner at a login form that accepts
+              no password. The desktop app instead offers the one lifecycle
+              action its window lacks: quitting Floway outright. */}
+          {!personal && <NavItem className={styles.item} icon={<ShareIos20Color className={styles.signOutIcon} idPrefix={iconIdPrefix} />} value="logout">{t('dashboard.logout.label')}</NavItem>}
+          {personal && isTauri() && <NavItem className={styles.item} icon={<Power20Regular />} value="quit-app">{t('dashboard.quitApp.label')}</NavItem>}
         </div>
       </NavDrawerFooter>
     </NavDrawer>
+    {quitDialog.invocation && <ConfirmDialog
+      open={quitDialog.isOpen}
+      actionLabel={t('dashboard.quitApp.action')}
+      actionIntent="primary"
+      key={quitDialog.invocation.key}
+      message={t('dashboard.quitApp.message')}
+      onConfirm={() => { quitDialog.close(); void invoke('quit_app'); }}
+      onOpenChange={open => { if (!open) quitDialog.close(); }}
+      title={t('dashboard.quitApp.title')}
+    />}
     {logoutDialog.invocation && <ConfirmDialog
       open={logoutDialog.isOpen}
       actionLabel={t('dashboard.logout.action')}

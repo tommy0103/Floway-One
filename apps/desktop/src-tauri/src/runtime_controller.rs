@@ -1504,6 +1504,12 @@ fn quit_floway(app: &AppHandle) {
     });
 }
 
+// The dashboard footer's "Quit Floway" takes the same path as the tray item.
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    quit_floway(&app);
+}
+
 fn shell_status_snapshot(app: &AppHandle) -> Result<Value, Box<dyn Error>> {
     let controller = app.state::<Arc<DesktopController>>();
     let window = main_window(app)?;
@@ -1994,6 +2000,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
             open_external,
+            quit_app,
             report_desktop_recovery_surface,
         ])
         .setup(|app| {
