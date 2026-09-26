@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { redirect, useNavigate } from 'react-router';
 
 import type { Route } from './+types/dashboard-quick-start';
@@ -10,8 +10,8 @@ import {
   mergeActivationSnapshot,
   type ActivationSnapshot,
 } from '../components/quick-start/data';
-import { currentObjective, deriveObjectives } from '../components/quick-start/objectives';
-import { NextStepPanel, StatusPanel } from '../components/quick-start/panel';
+import { currentObjective, deriveObjectives, type ObjectiveId } from '../components/quick-start/objectives';
+import { StageNavigator } from '../components/quick-start/panel';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { EmptyState } from '../components/ui/empty-state';
 import { PANEL_STACK_CLASS } from '../components/ui/layout';
@@ -76,6 +76,25 @@ export default function DashboardQuickStart({ loaderData }: Route.ComponentProps
   const clients = snapshot.skill.value?.clients ?? [];
   const noClient = snapshot.skill.value !== null && !clients.some(client => client.installed);
 
+  // Stage selection follows the current objective until the owner picks a
+  // completed stage to review. A pin equal to the stage being advanced past
+  // was just following along and releases; a deliberate look back stays.
+  const [pinned, setPinned] = useState<ObjectiveId | null>(null);
+  const previousCurrentRef = useRef<ObjectiveId | null>(null);
+  useEffect(() => {
+    const previous = previousCurrentRef.current;
+    const now = current?.id ?? null;
+    previousCurrentRef.current = now;
+    if (previous !== null && previous !== now) {
+      setPinned(stage => (stage === previous ? null : stage));
+    }
+  }, [current?.id]);
+  // A pinned stage the state can no longer show (it regressed to incomplete)
+  // releases back to the current stage.
+  const pinnedObjective = pinned === null ? null : objectives.find(objective => objective.id === pinned) ?? null;
+  const pinValid = pinnedObjective !== null && (pinnedObjective.complete || pinned === (current?.id ?? null));
+  const selectedId = (pinValid ? pinned : null) ?? current?.id ?? 'firstRequest';
+
   return <section className="dashboard-page max-w-[960px]">
     <DashboardPageHeader description={t('dashboard.pages.quickStart')} title={t('dashboard.nav.quickStart')} />
 
@@ -84,8 +103,8 @@ export default function DashboardQuickStart({ loaderData }: Route.ComponentProps
       <Text size={200}>{t('dashboard.quickStart.prerequisite.description')}</Text>
     </Panel>}
 
-    {current !== null && <NextStepPanel
-      current={current}
+    <StageNavigator
+      currentId={current?.id ?? null}
       installAction={<div className="grid gap-2 justify-items-start">
         <div>
           <Button appearance="primary" disabled={installing} onClick={() => void install()}>
@@ -94,7 +113,10 @@ export default function DashboardQuickStart({ loaderData }: Route.ComponentProps
         </div>
         <Text size={200} className="text-fui-fg2">{t('dashboard.quickStart.installAccess')}</Text>
       </div>}
-    />}
+      objectives={objectives}
+      onSelect={setPinned}
+      selectedId={selectedId}
+    />
 
     {/* The install outcome outlives the objective it completed: the page
         advances past the install step, while this bar stays readable. */}
@@ -109,8 +131,6 @@ export default function DashboardQuickStart({ loaderData }: Route.ComponentProps
         title={t('dashboard.quickStart.completed.title')}
       />
     </Panel>}
-
-    <StatusPanel currentId={current?.id ?? null} objectives={objectives} />
 
     {current !== null && <div>
       <Button appearance="subtle" onClick={() => void navigate('/dashboard')}>{t('dashboard.quickStart.skip')}</Button>

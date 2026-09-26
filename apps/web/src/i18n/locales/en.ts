@@ -406,8 +406,7 @@ const en = {
         installing: 'Installing Floway Skill…',
         installed: 'Floway Skill installed at {{path}}. Start a new agent conversation to use it.',
         installAccess: 'Installation creates a private local session that lets the Skill view and change your Upstreams.',
-        nextStep: 'Next step',
-        statusTitle: 'Setup status',
+        stages: 'Setup stages',
         prompt: 'Use the Floway Skill to finish setting up Floway.',
         askAgent: 'In a new agent conversation, say:',
         gatewayDown: 'The local gateway is not responding. Make sure Floway is running.',
@@ -420,7 +419,6 @@ const en = {
         status: {
           done: 'Done',
           current: 'Current',
-          pending: 'To do',
           unavailable: 'Unavailable',
         },
         prerequisite: {
@@ -430,21 +428,27 @@ const en = {
         objectives: {
           gateway: {
             title: 'Gateway running',
+            done: 'The local gateway is answering health checks.',
           },
           skill: {
             title: 'Install the Floway Skill',
+            done: 'The Floway Skill is installed and authorized.',
           },
           modelService: {
             title: 'Connect a model service',
+            done: 'A model service is enabled and listing models.',
           },
           apiKey: {
             title: 'Create an API key',
+            done: 'An API key is ready.',
           },
           agentSetup: {
             title: 'Point your agent at Floway',
+            done: 'Your agent is connected to Floway.',
           },
           firstRequest: {
             title: 'Make a first request',
+            done: 'Your agent has made its first request through Floway.',
           },
         },
         completed: {

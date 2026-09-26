@@ -390,8 +390,7 @@ const zhHansCN = {
         installing: '正在安装 Floway Skill…',
         installed: 'Floway Skill 已安装到 {{path}}。请开启新的 Agent 对话使用。',
         installAccess: '安装会创建一个仅本机可用的私有会话，允许 Skill 查看和修改上游配置。',
-        nextStep: '下一步',
-        statusTitle: '接入状态',
+        stages: '接入阶段',
         prompt: '用 Floway Skill 帮我完成 Floway 的接入。',
         askAgent: '在新的 Agent 对话中说：',
         gatewayDown: '本机网关没有响应。请确认 Floway 正在运行。',
@@ -404,7 +403,6 @@ const zhHansCN = {
         status: {
           done: '已完成',
           current: '当前',
-          pending: '待办',
           unavailable: '不可用',
         },
         prerequisite: {
@@ -414,21 +412,27 @@ const zhHansCN = {
         objectives: {
           gateway: {
             title: '网关运行中',
+            done: '本机网关正在响应健康检查。',
           },
           skill: {
             title: '安装 Floway Skill',
+            done: 'Skill 已安装并授权。',
           },
           modelService: {
             title: '接入一个模型服务',
+            done: '已有已启用且可列出模型的模型服务。',
           },
           apiKey: {
             title: '创建一个 API 密钥',
+            done: '已有可用的 API 密钥。',
           },
           agentSetup: {
             title: '把 Agent 接入 Floway',
+            done: '客户端已接入 Floway。',
           },
           firstRequest: {
             title: '完成第一次请求',
+            done: '你的 Agent 已经通过 Floway 完成了第一次请求。',
           },
         },
         completed: {

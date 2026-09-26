@@ -53,26 +53,34 @@ const renderPage = async () => {
   return router;
 };
 
-it('derives the current objective from gateway state and advances after install', async () => {
+it('derives the current stage from gateway state and advances after install', async () => {
   apiState.upstreams = [];
   apiState.keys = [];
   apiState.skill = { installed: false, clients: apiState.blankClients() };
   await renderPage();
 
   expect(screen.getByRole('heading', { name: 'Quick Start' })).toBeTruthy();
-  expect(screen.getByText('Gateway running')).toBeTruthy();
-  expect(screen.getByText('Done')).toBeTruthy();
+  // The rail lists every stage; the current one is selected, completed ones
+  // stay reviewable, and anything past the current stage is locked.
+  expect(screen.getByRole('tab', { name: 'Gateway running' })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Connect a model service' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('heading', { name: 'Install the Floway Skill' })).toBeTruthy();
   expect(screen.getByText('Current')).toBeTruthy();
-  expect(screen.getByText('Install the Floway Skill')).toBeTruthy();
   expect(screen.queryByText('Set up Codex or Claude Code first')).toBeNull();
 
+  // Reviewing a completed stage shows its done state.
+  await act(async () => { screen.getByRole('tab', { name: 'Gateway running' }).click(); });
+  expect(screen.getByRole('heading', { name: 'Gateway running' })).toBeTruthy();
+  expect(screen.getByText('The local gateway is answering health checks.')).toBeTruthy();
+
+  await act(async () => { screen.getByRole('tab', { name: 'Install the Floway Skill' }).click(); });
   await act(async () => { screen.getByRole('button', { name: 'Install Floway Skill' }).click(); });
   expect(installPost).toHaveBeenCalledWith({ json: {} });
   expect(screen.getByText(/Floway Skill installed at/)).toBeTruthy();
-  // The page re-read the state the skill objective is derived from and moved
-  // to the next one on its own, where the one recommended prompt covers the
+  // The page re-read the state the skill stage is derived from and moved to
+  // the next one on its own, where the one recommended prompt covers the
   // whole remaining setup.
-  expect(screen.getByText('Connect a model service')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Connect a model service' })).toBeTruthy();
   expect(screen.getByText('In a new agent conversation, say:')).toBeTruthy();
   expect(screen.getByText('Use the Floway Skill to finish setting up Floway.')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Open Upstreams' })).toBeTruthy();
