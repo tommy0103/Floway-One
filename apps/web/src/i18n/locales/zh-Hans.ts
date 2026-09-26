@@ -130,6 +130,12 @@ const zhHansCN = {
         message: '退出后，需要重新登录才能访问 Floway 控制台。',
         action: '退出登录',
       },
+      quitApp: {
+        label: '退出 Floway',
+        title: '退出 Floway？',
+        message: '退出后本机网关将停止，所有客户端会断开。可从托盘或应用图标重新打开。',
+        action: '退出 Floway',
+      },
       pages: {
         overview: '查看本机网关是否健康、监听地址，以及需要处理的问题',
         quickStart: '让你的 Agent 通过 Floway 完成第一次请求',
@@ -249,7 +255,7 @@ const zhHansCN = {
       },
       settings: {
         description: '管理 Floway 的偏好设置和账户安全',
-        personalDescription: '管理 Floway 的偏好设置和本机 Owner 安全',
+        personalDescription: '管理 Floway 的偏好设置，查看本机运行时状态',
         language: {
           title: '语言',
           description: '选择 Floway 的显示语言。',
@@ -266,8 +272,6 @@ const zhHansCN = {
         passwordUpdated: '密码已更新，其他设备已退出登录。',
         desktop: {
           openLogs: '打开日志',
-          protocol: '兼容协议',
-          running: '运行中',
           title: '本机 Gateway',
           version: '版本',
         },

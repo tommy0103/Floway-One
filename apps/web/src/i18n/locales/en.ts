@@ -132,6 +132,12 @@ const en = {
         message: 'You will need to sign in again to access the Floway console.',
         action: 'Sign out',
       },
+      quitApp: {
+        label: 'Quit Floway',
+        title: 'Quit Floway?',
+        message: 'Quitting stops the local gateway and disconnects every client. Reopen Floway from the tray or the app icon.',
+        action: 'Quit Floway',
+      },
       pages: {
         overview:
             'Check whether this local gateway is healthy, where it is listening, and what needs attention',
@@ -262,7 +268,7 @@ const en = {
       },
       settings: {
         description: 'Manage your Floway preferences and account security',
-        personalDescription: 'Manage Floway preferences and local owner security',
+        personalDescription: 'Manage Floway preferences and view the local runtime',
         language: {
           title: 'Language',
           description: 'Choose the language used in Floway.',
@@ -279,8 +285,6 @@ const en = {
         passwordUpdated: 'Password updated. Other devices have been signed out.',
         desktop: {
           openLogs: 'Open logs',
-          protocol: 'Compatibility protocol',
-          running: 'Running',
           title: 'Local Gateway',
           version: 'Version',
         },

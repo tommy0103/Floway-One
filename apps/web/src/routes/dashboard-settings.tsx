@@ -14,13 +14,12 @@ import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
 import { loadRuntimeInfo } from '../api/runtime-info';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Dropdown, Input } from '../components/ui/fluent-form-controls';
-import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS, STATUS_HEADER_CLASS } from '../components/ui/layout';
+import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS } from '../components/ui/layout';
 import { OpenLogsButton } from '../components/ui/open-logs-button';
 import { OutcomeMessageBar } from '../components/ui/outcome-message-bar';
 import { useOutcomeToasts } from '../components/ui/outcome-toast';
 import { Panel } from '../components/ui/panel';
 import { SectionHeader } from '../components/ui/section-header';
-import { StatusBadge } from '../components/ui/status-badge';
 import { fluentComponents } from '../fluent';
 import { setLanguagePreference } from '../i18n';
 import { languagePreference, type LanguagePreference } from '../i18n/languages';
@@ -155,7 +154,7 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
         title={t('dashboard.nav.settings')}
       />
 
-      <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
+      <Panel className={`${PANEL_STACK_CLASS} w-full`}>
         <SectionHeader level={2} title={t('dashboard.settings.language.title')} />
         <Text size={200} className="text-fui-fg2">{t('dashboard.settings.language.description')}</Text>
         <Dropdown
@@ -177,15 +176,10 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
       </Panel>
 
       {loaderData.desktop && <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-        <div className={STATUS_HEADER_CLASS}>
-          <SectionHeader level={2} title={t('dashboard.settings.desktop.title')} />
-          <StatusBadge tone="success">{t('dashboard.settings.desktop.running')}</StatusBadge>
-        </div>
+        <SectionHeader level={2} title={t('dashboard.settings.desktop.title')} />
         <dl className={`${STATUS_DETAILS_CLASS} text-sm`}>
           <dt className="text-fui-fg2">{t('dashboard.settings.desktop.version')}</dt>
           <dd className="m-0 font-mono">{loaderData.desktop.compatibility.releaseVersion}</dd>
-          <dt className="text-fui-fg2">{t('dashboard.settings.desktop.protocol')}</dt>
-          <dd className="m-0 font-mono">{loaderData.desktop.compatibility.protocolVersion}</dd>
         </dl>
         {isTauri() && (
           <div>
@@ -194,7 +188,9 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
         )}
       </Panel>}
 
-      <Panel className={`${PANEL_STACK_CLASS} w-full max-w-[480px]`}>
+      {/* The personal owner has no password (bootstrap-issued sessions only),
+          so the form could only fail there; server mode keeps it. */}
+      {capabilities.userManagement && <Panel className={`${PANEL_STACK_CLASS} w-full`}>
         <SectionHeader level={2} title={t('dashboard.settings.changePassword')} />
 
         <form className="grid gap-4" onSubmit={event => void handleSubmit(submit)(event)}>
@@ -254,7 +250,7 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
             </Button>
           </div>
         </form>
-      </Panel>
+      </Panel>}
     </section>
   );
 }
