@@ -1,4 +1,4 @@
-import { CheckmarkCircle20Color, Circle20Filled } from '@fluentui/react-icons';
+import { CheckmarkCircle20Color, Circle20Regular } from '@fluentui/react-icons';
 import type { ReactNode } from 'react';
 
 import type { Objective, ObjectiveId } from './objectives';
@@ -45,11 +45,9 @@ export function StageNavigator({ currentId, installAction, objectives, onSelect,
       <TabList onTabSelect={(_, data) => onSelect(data.value as ObjectiveId)} selectedValue={selected.id} vertical>
         {objectives.map(objective => {
           const locked = !objective.complete && objective.id !== currentId;
-          const icon = objective.complete
-            ? <CheckmarkCircle20Color />
-            : objective.id === currentId
-              ? <Circle20Filled />
-              : undefined;
+          // Stepper idiom: a checked disc for done, an open circle otherwise;
+          // the current stage reads from the selection itself, not an icon.
+          const icon = objective.complete ? <CheckmarkCircle20Color /> : <Circle20Regular />;
           return <Tab disabled={locked} icon={icon} key={objective.id} value={objective.id}>
             {t(`dashboard.quickStart.objectives.${objective.id}.title`)}
           </Tab>;
