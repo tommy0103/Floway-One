@@ -1,3 +1,4 @@
+import { CheckmarkCircle20Color, Circle20Filled } from '@fluentui/react-icons';
 import type { ReactNode } from 'react';
 
 import type { Objective, ObjectiveId } from './objectives';
@@ -5,7 +6,7 @@ import { fluentComponents } from '../../fluent';
 import { useTranslation } from '../../i18n/translation';
 import { FailureLine } from '../overview/panel';
 import { CodeBlock } from '../ui/code-block';
-import { PANEL_STACK_CLASS } from '../ui/layout';
+import { PANEL_STACK_CLASS, STATUS_HEADER_CLASS } from '../ui/layout';
 import { OpenLinkLabel } from '../ui/open-link-label';
 import { OutcomeMessageBar } from '../ui/outcome-message-bar';
 import { Panel } from '../ui/panel';
@@ -14,10 +15,9 @@ import { SectionHeader } from '../ui/section-header';
 import { StatusBadge } from '../ui/status-badge';
 import { useCopyToClipboard } from '../ui/use-copy-to-clipboard';
 
-const { Text } = fluentComponents;
+const { Tab, TabList, Text } = fluentComponents;
 
-// Configuration objectives expose their established management page beside
-// the status row; the remaining rows are observations with nothing to open.
+// Configuration stages keep their established management page one click away.
 const OBJECTIVE_LINKS: Partial<Record<ObjectiveId, {
   to: string;
   labelKey: 'dashboard.quickStart.openUpstreams' | 'dashboard.quickStart.openApiKeys';
@@ -27,30 +27,99 @@ const OBJECTIVE_LINKS: Partial<Record<ObjectiveId, {
   agentSetup: { to: '/dashboard/services/api-keys', labelKey: 'dashboard.quickStart.openApiKeys' },
 };
 
-// The one thing the owner has to do once the Skill is installed: hand the
-// whole setup to their agent. The Skill inspects the current state itself and
-// continues wherever the activation actually stands.
-export function NextStepPanel({ current, installAction }: {
-  current: Objective;
-  installAction?: ReactNode;
+// The stage rail is the page's frame: completed stages stay reviewable, the
+// current stage is where the state puts the owner, and anything past it is
+// locked because a state-driven page has nothing to show or do there yet.
+export function StageNavigator({ currentId, installAction, objectives, onSelect, selectedId }: {
+  currentId: ObjectiveId | null;
+  installAction: ReactNode;
+  objectives: Objective[];
+  onSelect: (id: ObjectiveId) => void;
+  selectedId: ObjectiveId;
+}) {
+  const { t } = useTranslation();
+  const selected = objectives.find(objective => objective.id === selectedId) ?? objectives[0];
+
+  return <div className="grid grid-cols-[190px_minmax(0,1fr)] max-[680px]:grid-cols-1 gap-[var(--floway-page-inset)] min-w-0">
+    <nav aria-label={t('dashboard.quickStart.stages')} className="grid content-start">
+      <TabList onTabSelect={(_, data) => onSelect(data.value as ObjectiveId)} selectedValue={selected.id} vertical>
+        {objectives.map(objective => {
+          const locked = !objective.complete && objective.id !== currentId;
+          const icon = objective.complete
+            ? <CheckmarkCircle20Color />
+            : objective.id === currentId
+              ? <Circle20Filled />
+              : undefined;
+          return <Tab disabled={locked} icon={icon} key={objective.id} value={objective.id}>
+            {t(`dashboard.quickStart.objectives.${objective.id}.title`)}
+          </Tab>;
+        })}
+      </TabList>
+    </nav>
+
+    <Panel className={`${PANEL_STACK_CLASS} w-full content-start`}>
+      <div className={STATUS_HEADER_CLASS}>
+        <SectionHeader level={2} title={t(`dashboard.quickStart.objectives.${selected.id}.title`)} />
+        <StatusBadge tone={selected.complete ? 'success' : selected.failure !== null ? 'danger' : 'accent'}>
+          {t(selected.complete
+            ? 'dashboard.quickStart.status.done'
+            : selected.failure !== null
+              ? 'dashboard.quickStart.status.unavailable'
+              : 'dashboard.quickStart.status.current')}
+        </StatusBadge>
+      </div>
+      <StageBody installAction={installAction} objective={selected} />
+    </Panel>
+  </div>;
+}
+
+function StageBody({ installAction, objective }: {
+  installAction: ReactNode;
+  objective: Objective;
 }) {
   const { t } = useTranslation();
   const clipboard = useCopyToClipboard();
   const copyTag = 'quick-start-prompt';
   const prompt = t('dashboard.quickStart.prompt');
+  const link = OBJECTIVE_LINKS[objective.id];
+  const done = t(`dashboard.quickStart.objectives.${objective.id}.done`);
 
-  return <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-    <SectionHeader level={2} title={t('dashboard.quickStart.nextStep')} />
-    {current.id === 'gateway' && <>
+  if (objective.complete) {
+    return <>
+      <Text size={200}>{done}</Text>
+      {objective.id === 'skill' && installAction}
+      {link && <div>
+        <RouteLink to={link.to}>
+          <OpenLinkLabel>{t(link.labelKey)}</OpenLinkLabel>
+        </RouteLink>
+      </div>}
+    </>;
+  }
+
+  switch (objective.id) {
+  case 'gateway':
+    return <>
       <Text size={200}>{t('dashboard.quickStart.gatewayDown')}</Text>
-      {current.failure !== null && <FailureLine failure={current.failure} />}
-    </>}
-    {current.id === 'skill' && <>
+      {objective.failure !== null && <FailureLine failure={objective.failure} />}
+    </>;
+  case 'skill':
+    return <>
       {installAction}
-      {current.failure !== null && <FailureLine failure={current.failure} />}
-    </>}
-    {(current.id === 'modelService' || current.id === 'apiKey' || current.id === 'agentSetup') && <>
-      {current.failure !== null && <FailureLine failure={current.failure} />}
+      {objective.failure !== null && <FailureLine failure={objective.failure} />}
+    </>;
+  case 'firstRequest':
+    return <>
+      <Text size={200}>{t('dashboard.quickStart.firstRequestGuide')}</Text>
+      {objective.failure !== null && <FailureLine failure={objective.failure} />}
+      {objective.detail !== null && <OutcomeMessageBar intent="warning">
+        {t('dashboard.quickStart.latestRequestFailed', { detail: objective.detail })}
+      </OutcomeMessageBar>}
+    </>;
+  default:
+    // The one remaining thing to do at a configuration stage is always the
+    // same: hand the setup to the owner's agent through the Skill.
+    return <>
+      {objective.failure !== null && <FailureLine failure={objective.failure} />}
       <Text size={200} className="text-fui-fg2">{t('dashboard.quickStart.askAgent')}</Text>
       <CodeBlock
         code={prompt}
@@ -58,49 +127,11 @@ export function NextStepPanel({ current, installAction }: {
         language="markdown"
         onCopy={() => clipboard.copy(prompt, copyTag)}
       />
-    </>}
-    {current.id === 'firstRequest' && <>
-      <Text size={200}>{t('dashboard.quickStart.firstRequestGuide')}</Text>
-      {current.failure !== null && <FailureLine failure={current.failure} />}
-      {current.detail !== null && <OutcomeMessageBar intent="warning">
-        {t('dashboard.quickStart.latestRequestFailed', { detail: current.detail })}
-      </OutcomeMessageBar>}
-    </>}
-  </Panel>;
-}
-
-// The activation state as the gateway sees it: a row per checkpoint, nothing
-// to work through. The page watches and the badges move on their own.
-export function StatusPanel({ currentId, objectives }: {
-  currentId: ObjectiveId | null;
-  objectives: Objective[];
-}) {
-  const { t } = useTranslation();
-  return <Panel className={`${PANEL_STACK_CLASS} w-full`}>
-    <SectionHeader level={2} title={t('dashboard.quickStart.statusTitle')} />
-    <div className="grid gap-3">
-      {objectives.map(objective => {
-        const link = OBJECTIVE_LINKS[objective.id];
-        return <div className="flex items-center gap-2 min-w-0" key={objective.id}>
-          <StatusBadge tone={objective.failure !== null && !objective.complete ? 'danger' : objective.complete ? 'success' : objective.id === currentId ? 'accent' : 'neutral'}>
-            {t(objective.failure !== null && !objective.complete
-              ? 'dashboard.quickStart.status.unavailable'
-              : objective.complete
-                ? 'dashboard.quickStart.status.done'
-                : objective.id === currentId
-                  ? 'dashboard.quickStart.status.current'
-                  : 'dashboard.quickStart.status.pending')}
-          </StatusBadge>
-          <Text size={300} weight={objective.id === currentId ? 'semibold' : 'regular'} className={objective.complete || objective.id === currentId ? '' : 'text-fui-fg2'}>
-            {t(`dashboard.quickStart.objectives.${objective.id}.title`)}
-          </Text>
-          {link && <span className="ml-auto shrink-0">
-            <RouteLink to={link.to}>
-              <OpenLinkLabel>{t(link.labelKey)}</OpenLinkLabel>
-            </RouteLink>
-          </span>}
-        </div>;
-      })}
-    </div>
-  </Panel>;
+      {link && <div>
+        <RouteLink to={link.to}>
+          <OpenLinkLabel>{t(link.labelKey)}</OpenLinkLabel>
+        </RouteLink>
+      </div>}
+    </>;
+  }
 }
