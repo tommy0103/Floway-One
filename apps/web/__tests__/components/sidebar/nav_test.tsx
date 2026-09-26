@@ -17,14 +17,14 @@ const renderSidebar = (capabilities: DashboardRuntimeCapabilities, personal: boo
 };
 
 describe('Sidebar runtime capabilities', () => {
-  it('omits Users and identifies the local owner in personal mode', () => {
+  it('omits Users and exposes a named Settings link in personal mode', () => {
     renderSidebar({ userManagement: false, remoteAccess: false, desktopIntegration: true }, true);
 
     expect(screen.queryByText('Users')).toBeNull();
     expect(screen.getByText('Overview')).toBeTruthy();
     expect(screen.getByText('Quick Start')).toBeTruthy();
     expect(screen.getByText('Backup / Restore')).toBeTruthy();
-    expect(screen.getByText('Local owner')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/dashboard/settings');
     expect(screen.queryByText('admin')).toBeNull();
   });
 
@@ -33,7 +33,7 @@ describe('Sidebar runtime capabilities', () => {
 
     expect(screen.getByText('Users')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
-    expect(screen.queryByText('Local owner')).toBeNull();
+    expect(screen.queryByText('Settings')).toBeNull();
     expect(screen.queryByText('Overview')).toBeNull();
     expect(screen.queryByText('Quick Start')).toBeNull();
   });

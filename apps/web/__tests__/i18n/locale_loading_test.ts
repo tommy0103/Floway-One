@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { i18n, setLanguage } from '../../src/i18n';
+import { i18n, setLanguage, setLanguagePreference } from '../../src/i18n';
+import { browserLanguage, languagePreference } from '../../src/i18n/languages';
+import { stubLocalStorage } from '../local-storage-stub';
+
+stubLocalStorage();
 
 // A session boots with its own language and nothing else, so reaching another
 // one has to fetch that bundle first. happy-dom reports en-US, which leaves
@@ -23,5 +27,15 @@ describe('locale loading', () => {
     expect(i18n.language).toBe('en');
     expect(i18n.t('common.loading')).toBe('Loading…');
     expect(i18n.t('auth.login.submit')).toBe('Sign in');
+  });
+
+  it('persists a manual selection and restores system language on request', async () => {
+    await setLanguagePreference('zh-Hans');
+    expect(languagePreference()).toBe('zh-Hans');
+    expect(i18n.language).toBe('zh-Hans');
+
+    await setLanguagePreference('system');
+    expect(languagePreference()).toBe('system');
+    expect(i18n.language).toBe(browserLanguage());
   });
 });

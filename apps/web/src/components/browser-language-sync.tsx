@@ -1,11 +1,11 @@
 import { useEffect } from 'react';
 
 import { setLanguage } from '../i18n';
-import { browserLanguage } from '../i18n/languages';
+import { selectedLanguage } from '../i18n/languages';
 
 export function BrowserLanguageSync() {
   useEffect(() => {
-    void setLanguage(browserLanguage());
+    void setLanguage(selectedLanguage());
   }, []);
 
   return null;

@@ -44,6 +44,7 @@ import {
   LEGACY_PLAINTEXT_SCHEMA_MIGRATION,
   app,
   assertRuntimeProfileData,
+  ensurePersonalInitialKey,
   initBackgroundSchedulerResolver,
   initCodexOAuthRelayChannel,
   initPersonalDashboardBootstrap,
@@ -156,6 +157,13 @@ export const prepareNodePlatform = async (
   initRepo(repo);
   if (overrides.assertRuntimeProfileData === undefined) await assertRuntimeProfileData();
   else await overrides.assertRuntimeProfileData(repo);
+  if (profile === 'personal') {
+    try {
+      await ensurePersonalInitialKey(repo);
+    } catch (cause) {
+      throw startupFailure('storage', 'Floway could not create its initial local API key', cause);
+    }
+  }
 };
 
 const startNodeListener = async (
