@@ -296,6 +296,7 @@ export const assertNativeFailureSurface = async (
     readonly dataRoot: string;
     readonly expectedLocale?: 'en' | 'zh-Hans';
     readonly expectedLogsAvailable?: boolean;
+    readonly expectedPreviousVersionDownload?: boolean;
     readonly expectedRenderedFragments?: readonly string[];
     readonly failureKind: string;
     readonly forbiddenSnapshotText: readonly string[];
@@ -305,6 +306,7 @@ export const assertNativeFailureSurface = async (
   const { encoded: recoveryEncoded, snapshot: recovery } = parseRecoverySurfaceSnapshot(output);
   const expectedLocale = options.expectedLocale ?? 'en';
   const expectedLogsAvailable = options.expectedLogsAvailable ?? true;
+  const expectedPreviousVersionDownload = options.expectedPreviousVersionDownload ?? false;
   for (const forbidden of options.forbiddenSnapshotText) {
     if (encoded.includes(forbidden) || recoveryEncoded.includes(forbidden)) {
       throw new Error(`Floway surface diagnostic exposed unrestricted text: ${JSON.stringify(forbidden)}`);
@@ -340,10 +342,18 @@ export const assertNativeFailureSurface = async (
     || !Number.isSafeInteger(recovery.renderedSnapshot.byteLength)
     || recovery.renderedSnapshot.byteLength < 1
     || !/^[0-9a-f]{64}$/.test(recovery.renderedSnapshot.sha256)
+    // The updater public key ships in every build, so a crash after a healthy
+    // run offers the previous release as a download; a first-run startup
+    // failure has no previous version and offers nothing to download.
     || JSON.stringify(recovery.actions) !== JSON.stringify([
       'restart',
       ...(expectedLogsAvailable ? ['open-logs'] : []),
+      ...(expectedPreviousVersionDownload ? ['download-previous-version'] : []),
     ])
+    || (recovery.update?.previousVersionDownload ?? false) !== expectedPreviousVersionDownload
+    || (expectedPreviousVersionDownload
+      && (recovery.update?.recoveryPointAvailable !== false
+        || recovery.update.version !== null))
   ) {
     throw new Error(`Floway recovery support diagnostic is incomplete: ${JSON.stringify(recovery)}`);
   }
