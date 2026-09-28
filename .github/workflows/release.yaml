@@ -1,13 +1,18 @@
 name: Release
 
-# Publishes the signed and notarized macOS installers for Apple Silicon and
-# Intel from one tag, with the updater manifest and digest evidence attached.
-# Secrets the signing path needs (repository settings):
+# Publishes the macOS installers for Apple Silicon and Intel from one tag,
+# with the updater manifest and digest evidence attached. When the Apple
+# credentials below exist, the installers are additionally Developer ID signed
+# and notarized; without them the same pipeline publishes unsigned installers
+# whose release notes carry the Gatekeeper instructions. The minisign updater
+# signature is independent of Apple and applies in both shapes.
+#
+# Secrets the signing layer reads (repository settings):
 #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
 #   APPLE_API_ISSUER / APPLE_API_KEY / APPLE_API_KEY_CONTENT
 #   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD (optional)
 # A manual run may pass sign=false to exercise the pipeline unsigned; unsigned
-# artifacts stay workflow artifacts and are never published.
+# dispatch artifacts stay workflow artifacts and are never published.
 
 on:
   push:
@@ -42,6 +47,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -56,22 +63,32 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install the macOS Rust target
         run: rustup target add ${{ matrix.target }}
-      - name: Refuse to sign without the signing secrets
-        if: env.SIGN == 'true'
+      # Signing is a layer the pipeline adds when the Apple credentials exist:
+      # an owner without a Developer account still gets a working, updateable
+      # installer, and adding the secrets later upgrades the same workflow in
+      # place. What never degrades silently is a release that was asked to sign.
+      - name: Resolve the signing mode
+        id: signing
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          for name in APPLE_CERTIFICATE APPLE_API_KEY_CONTENT TAURI_SIGNING_PRIVATE_KEY; do
-            eval "value=\${$name}"
-            if [ -z "$value" ]; then
-              echo "::error::Release signing requires the $name secret. See docs/release-runbook.zh-CN.md."
-              exit 1
-            fi
-          done
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_API_KEY_CONTENT" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$SIGN" = "true" ] && [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Publishing requires the TAURI_SIGNING_PRIVATE_KEY secret. See docs/release-runbook.zh-CN.md."
+            exit 1
+          fi
+          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sign || 'false' }}" = "true" ] && [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::error::A signed dispatch requires the Apple signing secrets. See docs/release-runbook.zh-CN.md."
+            exit 1
+          fi
       - name: Import the Developer ID certificate
-        if: env.SIGN == 'true'
+        if: steps.signing.outputs.signed == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -96,7 +113,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ "$SIGN" = "true" ]; then
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
             echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
             export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
           fi
@@ -146,11 +163,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
           {
             echo "Floway $TAG"
             echo
             echo "- Source commit: ${{ github.sha }}"
+            if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_API_KEY_CONTENT" ]; then
+              echo
+              echo '> [!IMPORTANT]'
+              echo '> This build is not Developer ID signed or notarized. To install: open the DMG, drag Floway to Applications, then right-click the app and choose Open — or run `xattr -dr com.apple.quarantine /Applications/Floway.app` once. Updates remain integrity-protected by the built-in updater signature.'
+              echo '>'
+              echo '> 本安装包未经 Developer ID 签名与公证。安装方式：打开 DMG 并将 Floway 拖入“应用程序”，然后右键点 App 选“打开”——或执行一次 `xattr -dr com.apple.quarantine /Applications/Floway.app`。内置更新签名不受影响。'
+            fi
             echo
             echo '```'
             cat release-artifacts/sha256sums.txt
