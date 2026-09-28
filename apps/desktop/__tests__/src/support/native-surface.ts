@@ -340,10 +340,17 @@ export const assertNativeFailureSurface = async (
     || !Number.isSafeInteger(recovery.renderedSnapshot.byteLength)
     || recovery.renderedSnapshot.byteLength < 1
     || !/^[0-9a-f]{64}$/.test(recovery.renderedSnapshot.sha256)
+    // Every build carries the updater public key, so even a crash surface
+    // offers the previous release as a download; with no update in flight its
+    // section reports no staged recovery point and no version.
     || JSON.stringify(recovery.actions) !== JSON.stringify([
       'restart',
       ...(expectedLogsAvailable ? ['open-logs'] : []),
+      'download-previous-version',
     ])
+    || recovery.update?.previousVersionDownload !== true
+    || recovery.update.recoveryPointAvailable !== false
+    || recovery.update.version !== null
   ) {
     throw new Error(`Floway recovery support diagnostic is incomplete: ${JSON.stringify(recovery)}`);
   }
