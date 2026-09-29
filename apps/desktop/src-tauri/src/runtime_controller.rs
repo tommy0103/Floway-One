@@ -2057,8 +2057,16 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 }
             })
             .title("Floway")
-            .inner_size(720.0, 560.0)
-            .min_inner_size(520.0, 420.0)
+            // Sized from the Dashboard layout rather than picked: the sidebar
+            // tops out at 290px (clamp(240px, 18vw, 290px) in
+            // apps/web/src/routes/dashboard.tsx), the page inset is 28px per
+            // side (--floway-page-inset in apps/web/src/global.css), and page
+            // content caps at 960px (dashboard-page). 290 + 56 + 960 = 1306,
+            // rounded up. The minimum keeps the sidebar layout (the shell
+            // collapses it to a top bar at 900px) while letting the 680px
+            // content breakpoint collapse forms.
+            .inner_size(1320.0, 800.0)
+            .min_inner_size(960.0, 600.0)
             .build()?;
             let status_url = window.url()?;
             // Closing the window only hides it; the shell, tray, and Gateway
