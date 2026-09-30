@@ -135,16 +135,7 @@ if (launchSupported) {
     await assertDesktopShellLifecycle(nativeWindowProbe, context, isolatedRoot);
     console.log('Floway production shell kept the Gateway live through window hide, tray restore, repeated-launch delegation, restart, launch-at-login toggles, and graceful quit');
 
-    // The external-open gate drives a verifier-only control command that
-    // release builds deliberately reject
-    // (apps/desktop/src-tauri/src/runtime_controller.rs `verify_external_open_command`);
-    // the debug profile keeps covering the navigation policy itself.
-    if (buildProfile === 'debug') {
-      await assertExternalOpenGate(context, isolatedRoot);
-      console.log('Floway production shell handed external links to the system browser and refused policy-forbidden targets through the real navigation path (#45)');
-    } else {
-      console.log('Floway release build carries no verifier external-open transport; the debug profile covers the navigation policy');
-    }
+    await assertExternalOpenGate(context, isolatedRoot, buildProfile);
 
     await assertForcedTerminationReapsSidecar(context, isolatedRoot);
     console.log('Floway forced shell termination reaped its sidecar through the owner-lifetime channel and relaunched without a port conflict');
