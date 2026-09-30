@@ -340,7 +340,9 @@ export const waitForOutput = async (
   child: CapturedChild,
   output: () => string,
   expectedFragments: readonly string[],
-  timeoutMs = 10_000,
+  // 10s proved marginal for a packaged app's first failure emission on the
+  // loaded x86_64 CI runner; observation returns as soon as the lines appear.
+  timeoutMs = 30_000,
 ): Promise<string> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -405,9 +407,13 @@ export const observePackagedFailureSurface = async (options: {
       await new Promise(resolveWait => setTimeout(resolveWait, 10));
     }
   };
-  await observeUntil(Date.now() + 10_000, failureEvidence);
+  // Failure evidence waits only ever observe: a passing run returns as soon
+  // as the lines appear, so the window prices a genuinely stuck run. 10s was
+  // marginal on the loaded x86_64 runner and flaked twice; 30s matches the
+  // other startup windows in this file.
+  await observeUntil(Date.now() + 30_000, failureEvidence);
   if (failureEvidence.every(fragment => captured.includes(fragment))) {
-    await observeUntil(Date.now() + 10_000, surfaceEvidence);
+    await observeUntil(Date.now() + 30_000, surfaceEvidence);
   }
   for (const fragment of [...failureEvidence, ...surfaceEvidence]) {
     if (!captured.includes(fragment)) {

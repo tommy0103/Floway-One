@@ -7,6 +7,7 @@
     "build": "pnpm run test:desktop",
     "prepare:bundle": "jiti entry.ts",
     "release:manifest": "jiti release-manifest.ts",
+    "generate:icon": "jiti generate-icon.ts",
     "test:desktop": "jiti src/test-desktop.ts",
     "test:packaged:macos": "jiti __tests__/src/packaged-desktop-verifier.ts",
     "test:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
@@ -15,6 +16,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "^22",
+    "sharp": "^0.35.3",
     "typescript": "^5.9.3",
     "yaml": "^2.9.0"
   }
