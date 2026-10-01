@@ -188,3 +188,14 @@ export function resumeVerification(options: { repository: string; branch: string
   const verifiedOrRunning = runs.workflow_runs.some(run => ['queued', 'in_progress', 'completed'].includes(run.status) && run.conclusion !== 'action_required');
   if (!verifiedOrRunning) gh(['workflow', 'run', 'verify.yaml', '--repo', repository, '--ref', branch]);
 }
+
+export function pendingSyncPulls(options: { repository: string; baseBranch: string; gh: (args: string[]) => string }): { url: string; branch: string; sha: string }[] {
+  const { repository, baseBranch, gh } = options;
+  const pages = JSON.parse(gh(['api', `repos/${repository}/pulls`, '--method', 'GET', '--paginate', '--slurp', '-f', 'state=open', '-f', `base=${baseBranch}`, '-f', 'per_page=100'])) as {
+    html_url: string;
+    head: { ref: string; sha: string; repo: { full_name: string } | null };
+  }[][];
+  return pages.flat()
+    .filter(pull => pull.head.ref.startsWith(BRANCH_PREFIX) && pull.head.repo?.full_name.toLowerCase() === repository.toLowerCase())
+    .map(pull => ({ url: pull.html_url, branch: pull.head.ref, sha: pull.head.sha }));
+}

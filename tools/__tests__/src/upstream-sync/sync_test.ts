@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, expect, test } from 'vitest';
 
-import { CHECKPOINT_PATH, command, prepareSync, publishSync, renderReport, resumeVerification, syncBranch, UpstreamConflict } from '../../../src/upstream-sync/sync.ts';
+import { CHECKPOINT_PATH, command, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, syncBranch, UpstreamConflict } from '../../../src/upstream-sync/sync.ts';
 
 const directories: string[] = [];
 afterEach(() => {
@@ -193,4 +193,20 @@ test('Floway resumes a missing Verify dispatch and leaves an existing or failed 
     expect(calls[0]).toContain('event=workflow_dispatch');
     expect(calls.length).toBe(runs.length === 0 ? 2 : 1);
   }
+});
+
+test('Floway finds its pending sync PR across every API page and excludes other forks', () => {
+  const calls: string[][] = [];
+  const pull = (ref: string, repository = 'owner/Floway') => ({ html_url: 'https://github.com/owner/Floway/pull/7', head: { ref, sha: 'a'.repeat(40), repo: { full_name: repository } } });
+  const pending = pendingSyncPulls({
+    repository: 'owner/Floway',
+    baseBranch: 'main',
+    gh: args => {
+      calls.push(args);
+      return JSON.stringify([[pull('codex/other-work')], [pull('codex/upstream-sync-other', 'another/fork'), pull('codex/upstream-sync-owned')]]);
+    },
+  });
+  expect(pending).toEqual([{ url: 'https://github.com/owner/Floway/pull/7', branch: 'codex/upstream-sync-owned', sha: 'a'.repeat(40) }]);
+  expect(calls[0]).toContain('--paginate');
+  expect(calls[0]).toContain('--slurp');
 });

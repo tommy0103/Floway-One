@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { BRANCH_PREFIX, command, prepareSync, publishSync, renderReport, resumeVerification, UpstreamConflict } from './sync.ts';
+import { BRANCH_PREFIX, command, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, UpstreamConflict } from './sync.ts';
 
 const checkout = process.cwd();
 const dryRun = process.argv.includes('--dry-run') || process.env.UPSTREAM_SYNC_DRY_RUN === 'true';
@@ -23,12 +23,11 @@ try {
     if (command(checkout, 'git', ['branch', '--show-current']) !== baseBranch) {
       throw new Error('Publish upstream sync only from the default branch; use --dry-run on work branches');
     }
-    const pulls = JSON.parse(command(checkout, 'gh', ['pr', 'list', '--repo', repository, '--base', baseBranch, '--state', 'open', '--json', 'url,headRefName,headRefOid'])) as { url: string; headRefName: string; headRefOid: string }[];
-    const pending = pulls.filter(pull => pull.headRefName.startsWith(BRANCH_PREFIX));
+    const pending = pendingSyncPulls({ repository, baseBranch, gh: args => command(checkout, 'gh', args) });
     if (pending.length > 1) throw new Error('Multiple upstream sync PRs are open; review them before preparing another batch');
     if (pending.length > 0) {
       const pull = pending[0]!;
-      resumeVerification({ repository, branch: pull.headRefName, sha: pull.headRefOid, gh: args => command(checkout, 'gh', args), dispatchOnly: dispatchVerify });
+      resumeVerification({ repository, branch: pull.branch, sha: pull.sha, gh: args => command(checkout, 'gh', args), dispatchOnly: dispatchVerify });
       record(`Existing Floway upstream PR: ${pending.map(pull => pull.url).join(', ')}. No new batch is prepared while it is under review.\n`);
     } else {
       const report = prepareSync({ checkout, directory: join(temporaryRoot, 'candidate'), batchSize: Number(process.env.UPSTREAM_SYNC_BATCH_SIZE ?? '10') });
