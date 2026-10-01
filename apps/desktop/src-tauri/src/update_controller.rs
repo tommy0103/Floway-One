@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -720,7 +721,7 @@ impl DesktopUpdateController {
         bytes: Vec<u8>,
     ) -> Result<(), UpdatePhaseError> {
         let version = update.version.clone();
-        let artifact_file = format!("staged-{version}.bin");
+        let artifact_file = format!("staged-{version}-{:x}.bin", Sha256::digest(&bytes));
         let staged = StagedUpdate {
             artifact_bytes: bytes.len() as u64,
             artifact_file: artifact_file.clone(),
@@ -761,7 +762,6 @@ impl DesktopUpdateController {
                 Some(version.clone()),
             )
         })?;
-        self.remove_staged_artifacts(Some(&artifact_file));
         self.mutate_state(|state| {
             state.record_staged(staged);
             if state.failure.as_ref().is_some_and(|failure| {
@@ -783,6 +783,9 @@ impl DesktopUpdateController {
                 Some(version.clone()),
             )
         })?;
+        // Garbage collection follows the durable state commit. A failed save
+        // must leave the previously authenticated artifact available.
+        self.remove_staged_artifacts(Some(&artifact_file));
         emit_update_diagnostic(&json!({
             "phase": "staged",
             "version": version,
