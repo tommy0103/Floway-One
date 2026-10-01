@@ -20,6 +20,9 @@ function record(markdown: string): void {
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'floway-upstream-sync-'));
 try {
   if (!dryRun) {
+    if (command(checkout, 'git', ['branch', '--show-current']) !== baseBranch) {
+      throw new Error('Publish upstream sync only from the default branch; use --dry-run on work branches');
+    }
     const pulls = JSON.parse(command(checkout, 'gh', ['pr', 'list', '--repo', repository, '--base', baseBranch, '--state', 'open', '--json', 'url,headRefName,headRefOid'])) as { url: string; headRefName: string; headRefOid: string }[];
     const pending = pulls.filter(pull => pull.headRefName.startsWith(BRANCH_PREFIX));
     if (pending.length > 1) throw new Error('Multiple upstream sync PRs are open; review them before preparing another batch');

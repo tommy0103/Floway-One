@@ -43,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
           UPSTREAM_SYNC_DISPATCH_VERIFY: ${{ secrets.UPSTREAM_SYNC_TOKEN == '' }}
           UPSTREAM_SYNC_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
-          UPSTREAM_SYNC_BATCH_SIZE: ${{ inputs.batch_size || '10' }}
+          UPSTREAM_SYNC_BATCH_SIZE: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.batch_size) || '10' }}
           UPSTREAM_SYNC_BASE_BRANCH: ${{ github.event.repository.default_branch }}
           UPSTREAM_SYNC_REPORT_DIR: ${{ runner.temp }}/upstream-sync-report
           # https://api.github.com/users/github-actions%5Bbot%5D

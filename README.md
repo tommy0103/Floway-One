@@ -148,6 +148,43 @@ Cloudflare Workers targets remain in the tree (see `docker/` and
 `wrangler.example.jsonc`) but are outside the personal desktop product's scope: the
 product is the personal, loopback-only desktop gateway with a single owner.
 
+### Upstream cherry-pick automation
+
+[Upstream cherry-pick](.github/workflows/upstream-sync.yaml) checks upstream
+`main` daily at 02:15 UTC (10:15 China time), and supports manual runs. Each
+batch takes the oldest ten consecutive first-parent commits; manual runs can
+choose 1–50. Merge commits use their first parent. A pending sync PR freezes the
+batch until human review finishes, avoiding repeated full CI runs as upstream
+keeps changing. The automation creates draft PRs and never merges them.
+
+The checked-in `.github/upstream-sync.generated.json` records the last reviewed
+upstream SHA. It advances with the sync PR, so a squash merge does not cause the
+same upstream commits to be imported again. `CHANGELOG.md`, this fork's Verify
+and sync workflows, and the checkpoint remain fork-owned; each omitted upstream
+change is listed in the PR report. Other conflicts discard the entire candidate,
+leave the cursor unchanged, and fail the workflow with a report in the run
+summary and `upstream-sync-report` artifact.
+
+The default `GITHUB_TOKEN` needs **Allow GitHub Actions to create and approve
+pull requests** enabled under repository Settings → Actions → General. The
+workflow uses that permission to create drafts, and explicitly dispatches full
+Verify on the candidate branch. It recovers a missing dispatch on the next run
+without adding commits or rerunning existing checks. An optional dedicated
+`UPSTREAM_SYNC_TOKEN` can instead have Contents, Pull requests, and Actions write
+permissions (plus Workflows write when importing workflow changes); PR events
+then start Verify directly. Publish runs use the default branch. Manual runs
+start in dry-run mode; uncheck `dry_run` to publish.
+
+To inspect a batch locally without pushing or creating a PR:
+
+```bash
+pnpm run tools:sync-upstream --dry-run
+```
+
+Use the packaged Node version in `apps/desktop/.node-version`. Reports are
+written to `.tmp/upstream-sync/`. Review the complete Verify results and personal
+Gateway/desktop behavior before merging an upstream PR.
+
 ## Development
 
 ```bash
