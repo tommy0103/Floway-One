@@ -135,8 +135,7 @@ if (launchSupported) {
     await assertDesktopShellLifecycle(nativeWindowProbe, context, isolatedRoot);
     console.log('Floway production shell kept the Gateway live through window hide, tray restore, repeated-launch delegation, restart, launch-at-login toggles, and graceful quit');
 
-    await assertExternalOpenGate(context, isolatedRoot);
-    console.log('Floway production shell handed external links to the system browser and refused policy-forbidden targets through the real navigation path (#45)');
+    await assertExternalOpenGate(context, isolatedRoot, buildProfile);
 
     await assertForcedTerminationReapsSidecar(context, isolatedRoot);
     console.log('Floway forced shell termination reaped its sidecar through the owner-lifetime channel and relaunched without a port conflict');

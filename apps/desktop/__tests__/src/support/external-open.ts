@@ -41,7 +41,16 @@ const waitForMarker = async (output: () => string, needle: string, timeoutMs = 3
 export const assertExternalOpenGate = async (
   context: InstalledAppVerificationContext,
   isolatedRoot: string,
+  profile: 'debug' | 'release',
 ): Promise<void> => {
+  // The gate drives a verifier-only control command that release builds
+  // deliberately reject
+  // (apps/desktop/src-tauri/src/runtime_controller.rs `verify_external_open_command`);
+  // the debug profile keeps covering the navigation policy itself.
+  if (profile === 'release') {
+    console.log('Floway release build carries no verifier external-open transport; the debug profile covers the navigation policy');
+    return;
+  }
   const applicationHome = resolve(isolatedRoot, 'PersonalData-external-open-gate');
   const port = PERSONAL_DASHBOARD_PORT;
   const origin = `http://127.0.0.1:${port}`;
@@ -85,6 +94,7 @@ export const assertExternalOpenGate = async (
 
     await openAction('not a url at all');
     await waitForMarker(output, 'invalid-url');
+    console.log('Floway production shell handed external links to the system browser and refused policy-forbidden targets through the real navigation path (#45)');
   });
   await assertLoopbackPortReleased(port);
 };
