@@ -13,7 +13,7 @@ use crate::failure_chain::bounded_failure_chain;
 pub const UPDATE_STATE_FILE_NAME: &str = "update-state.json";
 const UPDATE_STATE_SCHEMA_VERSION: u64 = 1;
 
-const UPDATE_NOTES_MAXIMUM_CHARS: usize = 2000;
+const UPDATE_NOTES_MAXIMUM_CHARS: usize = 65_536;
 
 fn is_exact_version(value: &str) -> bool {
     let segments = value.split('.').collect::<Vec<_>>();

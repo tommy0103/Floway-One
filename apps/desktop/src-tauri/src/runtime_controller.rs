@@ -1227,7 +1227,7 @@ fn emit_update_surface_snapshot(controller: &DesktopController) {
     }
 }
 
-fn refresh_update_tray(app: &AppHandle) {
+pub(crate) fn refresh_update_tray(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
     let (staged, update_failed) = controller.update.tray_state();
     if let Err(error) = controller.tray.set_update(staged.as_deref(), update_failed) {
@@ -1272,6 +1272,9 @@ fn install_staged_update_requested() -> bool {
 // request can be served while the application bundle is being replaced.
 fn run_install_sequence(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
+    if !controller.update.begin_install_sequence(app) {
+        return;
+    }
     let runtime_active = matches!(
         controller.phase(),
         RuntimePhase::Ready | RuntimePhase::Starting
@@ -1286,6 +1289,9 @@ fn run_install_sequence(app: &AppHandle) {
             "Floway could not stop its packaged runtime before installing an update",
         );
         print_error_chain(&error);
+        controller
+            .update
+            .fail_install_sequence(app, vec![error.to_string()]);
         fail_current_attempt(
             app,
             controller.current_generation(),
@@ -1298,6 +1304,9 @@ fn run_install_sequence(app: &AppHandle) {
         Ok(bundle) => bundle,
         Err(error) => {
             print_error_chain(error.as_ref());
+            controller
+                .update
+                .fail_install_sequence(app, vec![error_chain_text(error.as_ref())]);
             return;
         }
     };
@@ -1969,6 +1978,85 @@ fn report_desktop_recovery_surface(
     Ok(())
 }
 
+fn require_update_window(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let controller = app.state::<Arc<DesktopController>>();
+    let policy = controller
+        .dashboard_policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner());
+    let url = window.url().map_err(|error| error.to_string())?;
+    if window.label() != "main"
+        || !policy.as_ref().is_some_and(|policy| {
+            matches!(
+                policy.decide(&url, false),
+                super::navigation::DashboardNavigationDecision::AllowInWebview
+            )
+        })
+    {
+        return Err("Floway updates require the trusted desktop Dashboard".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_update_status(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    require_update_window(&app, &window)?;
+    Ok(app
+        .state::<Arc<DesktopController>>()
+        .update
+        .status_snapshot())
+}
+
+#[tauri::command]
+fn desktop_check_for_updates(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    require_update_window(&app, &window)?;
+    let callback_app = app.clone();
+    app.state::<Arc<DesktopController>>()
+        .update
+        .spawn_background_check(&app, move || refresh_update_tray(&callback_app));
+    Ok(app
+        .state::<Arc<DesktopController>>()
+        .update
+        .status_snapshot())
+}
+
+#[tauri::command]
+fn desktop_install_update(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_update_window(&app, &window)?;
+    if app
+        .state::<Arc<DesktopController>>()
+        .update
+        .staged_version()
+        .is_none()
+    {
+        return Err("Floway has no staged update to install".to_owned());
+    }
+    install_update_from_tray(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_dismiss_update(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    version: String,
+) -> Result<(), String> {
+    require_update_window(&app, &window)?;
+    app.state::<Arc<DesktopController>>()
+        .update
+        .dismiss(&app, &version)
+        .map_err(|error| {
+            print_error_chain(&error);
+            error_chain_text(&error)
+        })
+}
+
 #[tauri::command]
 fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
     let controller = app.state::<Arc<DesktopController>>();
@@ -1999,6 +2087,10 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
+            desktop_update_status,
+            desktop_check_for_updates,
+            desktop_install_update,
+            desktop_dismiss_update,
             open_external,
             quit_app,
             report_desktop_recovery_surface,

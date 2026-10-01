@@ -64,6 +64,10 @@ path = "__tests__/src/update_signature_test.rs"
 name = "update_state"
 path = "__tests__/src/update_state_test.rs"
 
+[[test]]
+name = "update_activity"
+path = "__tests__/src/update_activity_test.rs"
+
 [features]
 default = ["desktop"]
 desktop = [
