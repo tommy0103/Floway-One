@@ -185,10 +185,10 @@ fn observe_script(window: &tauri::WebviewWindow, script: String) -> Result<Strin
                 let webview = view.inner().cast::<AnyObject>();
                 let () = unsafe {
                     msg_send![webview,
-                        callAsyncJavaScript: source
-                        arguments: std::ptr::null::<AnyObject>()
-                        inFrame: std::ptr::null::<AnyObject>()
-                        inContentWorld: world
+                        callAsyncJavaScript: source,
+                        arguments: std::ptr::null::<AnyObject>(),
+                        inFrame: std::ptr::null::<AnyObject>(),
+                        inContentWorld: world,
                         completionHandler: &*completion
                     ]
                 };
