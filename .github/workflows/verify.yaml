@@ -79,12 +79,9 @@ jobs:
       # https://github.com/mozilla/sccache/blob/v0.18.0/docs/GHA.md
       SCCACHE_GHA_ENABLED: 'true'
       RUSTC_WRAPPER: sccache
-      # Bound compiler parallelism on hosted runners, including update builds.
-      # https://doc.rust-lang.org/cargo/reference/environment-variables.html
-      CARGO_BUILD_JOBS: '2'
+      # Rust incremental compilation is incompatible with compiler caching.
+      # https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_CODEGEN_UNITS: '16'
-      CARGO_PROFILE_DEV_DEBUG: '0'
     permissions:
       contents: read
     steps:
