@@ -131,6 +131,8 @@ describe('desktop bundle preparation', () => {
       permissions: [
         'core:event:allow-listen',
         'core:event:allow-unlisten',
+        'allow-desktop-navigation',
+        'allow-desktop-recovery',
       ],
       windows: ['main'],
     });
