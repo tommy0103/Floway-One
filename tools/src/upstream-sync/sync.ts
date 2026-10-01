@@ -90,7 +90,7 @@ export function prepareSync(options: { checkout: string; directory: string; batc
   };
   for (const sha of batch) {
     const parents = git(directory, ['rev-list', '--parents', '-n', '1', sha]).split(' ').slice(1);
-    const paths = git(directory, ['diff', '--name-only', parents[0]!, sha]).split('\n').filter(Boolean);
+    const paths = git(directory, ['diff', '--no-renames', '--name-only', parents[0]!, sha]).split('\n').filter(Boolean);
     const preservedPaths = paths.filter(path => PRESERVED_PATHS.includes(path));
     const subject = git(directory, ['show', '-s', '--format=%s', sha]);
     let failure: Error | undefined;

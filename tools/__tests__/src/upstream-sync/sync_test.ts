@@ -221,3 +221,13 @@ test('Floway preserves the original command error when an executable cannot star
     expect((error as CommandError).cause).toMatchObject({ code: 'ENOENT' });
   }
 });
+
+test('Floway preserves human release notes when upstream renames the changelog', () => {
+  const f = fixture();
+  f.git(f.upstream, 'mv', 'CHANGELOG.md', 'RELEASE_NOTES.md');
+  f.git(f.upstream, 'commit', '-m', 'Rename release notes');
+  const report = f.prepare();
+  expect(report.commits[0]?.preservedPaths).toEqual(['CHANGELOG.md']);
+  expect(readFileSync(join(f.candidate, 'CHANGELOG.md'), 'utf8')).toBe('human notes\n');
+  expect(report.changedFiles).not.toContain('CHANGELOG.md');
+});
