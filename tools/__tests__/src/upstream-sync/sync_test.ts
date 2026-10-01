@@ -154,10 +154,17 @@ test('Floway publishes a candidate to a new branch and explicitly starts full Ve
   const bodyFile = join(f.directory, 'report.md');
   writeFileSync(bodyFile, renderReport(report));
   const url = publishSync({
-    checkout: f.checkout, directory: f.candidate, repository: 'owner/Floway', baseBranch: 'main', report, bodyFile, destination: remote, gh: args => {
-    calls.push(args);
-    return 'https://github.com/owner/Floway/pull/1';
-  },
+    checkout: f.checkout,
+    directory: f.candidate,
+    repository: 'owner/Floway',
+    baseBranch: 'main',
+    report,
+    bodyFile,
+    destination: remote,
+    gh: args => {
+      calls.push(args);
+      return 'https://github.com/owner/Floway/pull/1';
+    },
   });
   expect(url).toContain('/pull/1');
   expect(f.git(remote, 'rev-parse', `refs/heads/${syncBranch(report)}`)).toBe(f.git(f.candidate, 'rev-parse', 'HEAD'));
@@ -174,10 +181,14 @@ test('Floway resumes a missing Verify dispatch and leaves an existing or failed 
   for (const runs of [[], [{ status: 'completed', conclusion: 'failure' }], [{ status: 'in_progress', conclusion: null }]]) {
     const calls: string[][] = [];
     resumeVerification({
-      repository: 'owner/Floway', branch: 'codex/upstream-sync-test', sha: 'a'.repeat(40), dispatchOnly: true, gh: args => {
-      calls.push(args);
-      return JSON.stringify({ workflow_runs: runs });
-    },
+      repository: 'owner/Floway',
+      branch: 'codex/upstream-sync-test',
+      sha: 'a'.repeat(40),
+      dispatchOnly: true,
+      gh: args => {
+        calls.push(args);
+        return JSON.stringify({ workflow_runs: runs });
+      },
     });
     expect(calls[0]).toContain('event=workflow_dispatch');
     expect(calls.length).toBe(runs.length === 0 ? 2 : 1);
