@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import type { DesktopUpdateSnapshot } from '../../../src/api/desktop-update';
@@ -137,4 +137,23 @@ test('a signature-rejected staged package retains its metadata without offering 
   expect(screen.queryByText('Floway 0.2.0 is ready')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Update and restart' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Check for updates' }).hasAttribute('disabled')).toBe(false);
+});
+
+test('an open restart confirmation follows native installation permission changes', async () => {
+  setup(ready());
+  render();
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Update and restart' }))[0]);
+  const dialog = await screen.findByRole('dialog');
+  const confirm = within(dialog).getByRole('button', { name: 'Update and restart' });
+  emit({ ...ready(3), phase: 'checking' });
+  expect(confirm.getAttribute('aria-disabled')).toBe('true');
+  fireEvent.click(confirm);
+  expect(native.invoke).not.toHaveBeenCalledWith('desktop_install_update');
+  emit({ ...ready(4), phase: 'error', failure: { phase: 'signature', chain: ['rejected'], version: '0.2.0' } });
+  expect(confirm.getAttribute('aria-disabled')).toBe('true');
+  expect(within(dialog).getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
+  emit(ready(5));
+  expect(confirm.getAttribute('aria-disabled')).not.toBe('true');
+  fireEvent.click(confirm);
+  await waitFor(() => expect(native.invoke).toHaveBeenCalledWith('desktop_install_update'));
 });

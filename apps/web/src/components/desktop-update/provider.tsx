@@ -94,6 +94,7 @@ export function DesktopUpdateProvider({ children, enabled }: PropsWithChildren<{
     {active && <>
       <ReleaseNotesDialog body={notes?.body ?? null} onExited={restoreFocus} onOpenChange={setNotesOpen} open={notesOpen} version={notes?.version ?? ''} />
       <ConfirmDialog
+        actionDisabled={!snapshot || !installableDesktopUpdate(snapshot) || updateBusy(snapshot)}
         actionIntent="primary"
         actionLabel={t('dashboard.settings.desktop.update.install')}
         busy={pending || snapshot?.phase === 'installing'}
