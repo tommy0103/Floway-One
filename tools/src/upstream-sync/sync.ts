@@ -15,8 +15,11 @@ export const PRESERVED_PATHS = [
 ];
 
 export class CommandError extends Error {
+  readonly status: number | null;
+
   constructor(command: string, args: string[], result: { status: number | null; stdout: string; stderr: string; error?: Error }) {
     super(`${command} ${args.join(' ')} exited ${result.status}:\n${result.stderr}\n${result.stdout}`, { cause: result.error });
+    this.status = result.status;
   }
 }
 
@@ -99,7 +102,7 @@ export function prepareSync(options: { checkout: string; directory: string; batc
     }
     const originalConflicts = git(directory, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
     for (const path of preservedPaths) {
-      const exists = spawnSync('git', ['cat-file', '-e', `HEAD:${path}`], { cwd: directory }).status === 0;
+      const exists = git(directory, ['ls-tree', '--name-only', 'HEAD', '--', path]) === path;
       if (exists) git(directory, ['restore', '--source=HEAD', '--staged', '--worktree', '--', path]);
       else git(directory, ['rm', '-f', '--ignore-unmatch', '--', path]);
     }
@@ -111,7 +114,7 @@ export function prepareSync(options: { checkout: string; directory: string; batc
       report.conflict = { sha, paths: conflicts };
       throw new UpstreamConflict(report, failure ?? new Error('Unmerged Git index'));
     }
-    if (failure && originalConflicts.length === 0) throw failure;
+    if (failure && (originalConflicts.length === 0 || !(failure instanceof CommandError) || failure.status !== 1)) throw failure;
     const picked = git(directory, ['diff', '--cached', '--name-only']).length > 0;
     // --quit clears a conflicted/empty pick without discarding its staged tree.
     if (failure) git(directory, ['cherry-pick', '--quit']);

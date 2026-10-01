@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, expect, test } from 'vitest';
 
-import { CHECKPOINT_PATH, command, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, syncBranch, UpstreamConflict } from '../../../src/upstream-sync/sync.ts';
+import { CHECKPOINT_PATH, command, CommandError, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, syncBranch, UpstreamConflict } from '../../../src/upstream-sync/sync.ts';
 
 const directories: string[] = [];
 afterEach(() => {
@@ -209,4 +209,15 @@ test('Floway finds its pending sync PR across every API page and excludes other 
   expect(pending).toEqual([{ url: 'https://github.com/owner/Floway/pull/7', branch: 'codex/upstream-sync-owned', sha: 'a'.repeat(40) }]);
   expect(calls[0]).toContain('--paginate');
   expect(calls[0]).toContain('--slurp');
+});
+
+test('Floway preserves the original command error when an executable cannot start', () => {
+  try {
+    command(tmpdir(), '/floway-test-nonexistent-executable', []);
+    throw new Error('Expected the command to fail');
+  } catch (error) {
+    expect(error).toBeInstanceOf(CommandError);
+    expect((error as CommandError).status).toBeNull();
+    expect((error as CommandError).cause).toMatchObject({ code: 'ENOENT' });
+  }
 });
