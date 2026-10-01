@@ -113,9 +113,9 @@ export const buildUpdatedApplication = async (options: {
       targetTriple,
     ], {
       ...process.env,
-      CARGO_BUILD_JOBS: '1',
+      CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? '1',
       CARGO_INCREMENTAL: '0',
-      CARGO_PROFILE_DEV_CODEGEN_UNITS: '1',
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: process.env.CARGO_PROFILE_DEV_CODEGEN_UNITS ?? '1',
       CARGO_PROFILE_DEV_DEBUG: '0',
       FLOWAY_DESKTOP_EXECUTE_NODE: '1',
       FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,

@@ -73,6 +73,18 @@ jobs:
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep clean bundle verification while reusing compiler results outside
+      # the target directory removed by test:desktop.
+      # https://github.com/mozilla/sccache/blob/v0.18.0/docs/GHA.md
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      # Bound compiler parallelism on hosted runners, including update builds.
+      # https://doc.rust-lang.org/cargo/reference/environment-variables.html
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: '16'
+      CARGO_PROFILE_DEV_DEBUG: '0'
     permissions:
       contents: read
     steps:
@@ -87,6 +99,11 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Set up Rust compiler cache
+        # https://github.com/mozilla-actions/sccache-action/releases/tag/v0.0.11
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
       - name: Install both macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build, install, launch, and inspect the desktop application
