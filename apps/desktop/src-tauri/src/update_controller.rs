@@ -567,7 +567,7 @@ impl DesktopUpdateController {
                     None,
                 )
             })?
-            .pubkey(authority.pubkey)
+            .pubkey(authority.pubkey.clone())
             .timeout(UPDATE_DOWNLOAD_TIMEOUT)
             .build()
             .map_err(|source| {
@@ -616,11 +616,19 @@ impl DesktopUpdateController {
             && staged.version == version
             && staged.signature == update.signature
             && let Some(paths) = &self.paths
-            && let Ok(bytes) = fs::read(paths.staged_artifact(&staged))
-            && verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey).is_ok()
         {
-            self.publish(app, |activity| activity.finish("ready"));
-            return Ok(());
+            match fs::read(paths.staged_artifact(&staged)) {
+                Ok(bytes) => {
+                    match verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey) {
+                        Ok(()) => {
+                            self.publish(app, |activity| activity.finish("ready"));
+                            return Ok(());
+                        }
+                        Err(error) => print_error_chain(&error),
+                    }
+                }
+                Err(error) => print_error_chain(&error),
+            }
         }
         self.publish(app, |activity| {
             activity.phase = "downloading";

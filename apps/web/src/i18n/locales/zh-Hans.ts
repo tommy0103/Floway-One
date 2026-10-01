@@ -300,7 +300,7 @@ const zhHansCN = {
             updated: '已更新到 Floway {{version}}，本机 Gateway 已就绪。',
             actionFailed: '更新操作失败。请打开日志查看详情，然后重试。',
             checkFailed: '无法检查更新。请检查网络连接后重试。',
-            downloadFailed: '无法下载更新。请检查网络连接后重试。',
+            downloadFailed: '无法下载或保存更新。请检查网络连接与可用磁盘空间后重试。',
             signatureFailed: '无法验证更新签名。请重新检查并下载有效的更新包。',
             installFailed: '无法安装更新。请打开日志查看详情，Gateway 就绪后可重试。',
             recoveryFailed: '无法创建恢复点。请先打开日志查看详情，再重试。',

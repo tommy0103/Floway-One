@@ -313,7 +313,7 @@ const en = {
             updated: 'Updated to Floway {{version}}. The local Gateway is ready.',
             actionFailed: 'The update action failed. Open logs for details, then try again.',
             checkFailed: 'Could not check for updates. Check your connection and try again.',
-            downloadFailed: 'The update could not be downloaded. Check your connection and try again.',
+            downloadFailed: 'Could not download or save the update. Check your connection and available disk space, then try again.',
             signatureFailed: 'The update could not be authenticated. Check again to download a valid package.',
             installFailed: 'The update could not be installed. Open logs for details and retry when the Gateway is ready.',
             recoveryFailed: 'Could not create the recovery point. Open logs for details before retrying.',
