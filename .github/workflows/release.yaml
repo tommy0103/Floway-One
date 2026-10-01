@@ -130,6 +130,10 @@ jobs:
       # step, so this build sees them only when they actually exist.
       - name: Build the installer (signed and notarized when credentials exist)
         run: pnpm --filter @floway-dev/desktop exec tauri build --target ${{ matrix.target }}
+      # The update scenarios relaunch the app under the exact packaged Node;
+      # setup-node already put it on PATH.
+      - name: Point the update verification at the exact packaged Node
+        run: echo "FLOWAY_DESKTOP_NODE_EXECUTABLE=$(which node)" >> "$GITHUB_ENV"
       - name: Gate the release on the packaged verification
         run: pnpm --filter @floway-dev/desktop run test:packaged:macos -- --target=${{ matrix.target }} --profile=release --launch=yes
       - name: Upload the architecture artifacts
