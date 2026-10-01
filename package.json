@@ -12,6 +12,7 @@
     "deploy": "pnpm install --frozen-lockfile && jiti scripts/require-wrangler-config.ts && pnpm run build:web && wrangler deploy --message \"$(git rev-parse HEAD)\"",
     "db:migrate": "jiti scripts/require-wrangler-config.ts && wrangler d1 migrations apply DB",
     "db:migrate:remote": "jiti scripts/require-wrangler-config.ts && wrangler d1 migrations apply DB --remote",
+    "tools:sync-upstream": "node --experimental-strip-types tools/src/upstream-sync/cli.ts",
     "tools:backfill-usage-pricing": "pnpm --filter @floway-dev/tools run backfill-usage-pricing",
     "typegen": "pnpm --filter @floway-dev/web exec react-router typegen",
     "verify": "pnpm run typegen && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run test:desktop && pnpm run test:installers && pnpm run check:agents-md && pnpm run check:generated-assets && pnpm run check:verify-parity && pnpm run build:web && pnpm run test:packaged-node",

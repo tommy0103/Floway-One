@@ -1,0 +1,61 @@
+name: Upstream cherry-pick
+
+on:
+  schedule:
+    - cron: '15 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Prepare a batch and report conflicts without pushing a branch or creating a PR
+        type: boolean
+        default: true
+      batch_size:
+        description: Maximum consecutive upstream commits (1–50)
+        type: number
+        default: 10
+
+concurrency:
+  group: upstream-cherry-pick
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: apps/desktop/.node-version
+      - name: Prepare upstream batch and draft PR
+        env:
+          # An optional dedicated token avoids the repository setting that
+          # otherwise prevents GITHUB_TOKEN from creating pull requests.
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          UPSTREAM_SYNC_DISPATCH_VERIFY: ${{ secrets.UPSTREAM_SYNC_TOKEN == '' }}
+          UPSTREAM_SYNC_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          UPSTREAM_SYNC_BATCH_SIZE: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.batch_size) || '10' }}
+          UPSTREAM_SYNC_BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          UPSTREAM_SYNC_REPORT_DIR: ${{ runner.temp }}/upstream-sync-report
+          # https://api.github.com/users/github-actions%5Bbot%5D
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: npm run tools:sync-upstream
+      - name: Save upstream sync report
+        if: always()
+        # https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upstream-sync-report
+          path: ${{ runner.temp }}/upstream-sync-report
+          if-no-files-found: error

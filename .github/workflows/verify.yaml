@@ -73,6 +73,17 @@ jobs:
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep clean bundle verification while reusing compiler results outside
+      # the target directory removed by test:desktop.
+      # https://github.com/mozilla/sccache/blob/v0.18.0/docs/Local.md
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: '2G'
+      SCCACHE_DIRECT: 'false'
+      RUSTC_WRAPPER: sccache
+      # Rust incremental compilation is incompatible with compiler caching.
+      # https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md
+      CARGO_INCREMENTAL: '0'
     permissions:
       contents: read
     steps:
@@ -87,10 +98,30 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Restore Rust compiler cache
+        id: compiler-cache
+        # https://github.com/actions/cache/releases/tag/v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: desktop-sccache-v18-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: desktop-sccache-v18-${{ runner.os }}-${{ runner.arch }}-
+      - name: Set up Rust compiler cache
+        # https://github.com/mozilla-actions/sccache-action/releases/tag/v0.0.11
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
       - name: Install both macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build, install, launch, and inspect the desktop application
         run: pnpm run test:desktop
+      - name: Save Rust compiler cache
+        if: ${{ always() && !cancelled() && steps.compiler-cache.outputs.cache-hit != 'true' }}
+        # https://github.com/actions/cache/releases/tag/v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   packaged-node-windows:
     name: packaged-node-windows
