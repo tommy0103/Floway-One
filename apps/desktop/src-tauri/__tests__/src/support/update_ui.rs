@@ -17,7 +17,7 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
     let window = main_window(app)?;
     require_update_window(app, &window).map_err(io::Error::other)?;
     let labels = match step {
-        "open-settings" | "snapshot" => None,
+        "open-settings" | "snapshot" | "ready" => None,
         "check" => Some(["Check for updates", "检查更新"]),
         "notes" => Some(["View changes", "查看更新内容"]),
         "close" => Some(["Close", "关闭"]),
@@ -31,6 +31,11 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
         const labels = {labels};
         const buttons = () => [...document.querySelectorAll('button')];
         const matches = label => buttons().filter(button => label.includes(button.textContent.trim()));
+        const enabled = button => !button.disabled && button.getAttribute('aria-disabled') !== 'true';
+        const status = () => Promise.race([
+            window.__TAURI_INTERNALS__.invoke('desktop_update_status'),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Floway native update status command did not return')), 5000)),
+        ]);
         const wait = async predicate => {{
             for (let i = 0; i < 100; i++) {{
                 if (predicate()) return;
@@ -46,33 +51,33 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
             }}
             await wait(() => matches(['Check for updates', '检查更新']).length > 0);
             if (labels) {{
-                await wait(() => matches(labels).some(button => !button.disabled));
+                await wait(() => matches(labels).some(enabled));
                 const candidates = matches(labels);
                 const button = step === 'confirm' ? candidates.at(-1) : candidates[0];
-                if (button.disabled) throw new Error('Floway update UI control is disabled');
+                if (!enabled(button)) throw new Error('Floway update UI control is disabled');
                 button.click();
             }}
             if (step === 'confirm') return JSON.stringify({{ step, confirmed: true }});
             await new Promise(resolve => setTimeout(resolve, 500));
-            if (step === 'check') await wait(() => matches(['Check for updates', '检查更新']).some(button => !button.disabled));
-            const state = await Promise.race([
-                window.__TAURI_INTERNALS__.invoke('desktop_update_status'),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Floway native update status command did not return')), 5000)),
-            ]);
+            if (step === 'ready') await wait(() => matches(['Update and restart', '更新并重启']).some(enabled));
+            const state = await status();
             const surface = {{
                 step, revision: state.revision, phase: state.phase, version: state.stagedVersion,
-                readyButtons: matches(['Update and restart', '更新并重启']).filter(button => !button.disabled).length,
+                readyButtons: matches(['Update and restart', '更新并重启']).filter(enabled).length,
                 laterButtons: matches(['Later', '稍后']).length,
                 notesVisible: !!document.querySelector('[role="dialog"]') && document.body.textContent.includes('verification update'),
             }};
             return JSON.stringify(surface);
         }} catch (cause) {{
+            const state = await status().catch(error => ({{ error: String(error) }}));
             return JSON.stringify({{
-                step, error: String(cause), isTauri: !!globalThis.isTauri,
+                step, error: String(cause), phase: state.phase, version: state.version,
+                receivedBytes: state.receivedBytes, totalBytes: state.totalBytes,
+                failure: state.failure, nativeStatusError: state.error, isTauri: !!globalThis.isTauri,
                 hasInvoke: typeof window.__TAURI_INTERNALS__?.invoke === 'function',
                 hasIpc: typeof window.__TAURI_INTERNALS__?.ipc === 'function',
                 bridgeKeys: Object.keys(window.__TAURI_INTERNALS__ ?? {{}}),
-                buttonLabels: buttons().map(button => button.textContent.trim().slice(0, 120)),
+                buttonStates: buttons().map(button => ({{ label: button.textContent.trim().slice(0, 120), enabled: enabled(button) }})),
             }});
         }}"#,
         step = serde_json::to_string(step)?,

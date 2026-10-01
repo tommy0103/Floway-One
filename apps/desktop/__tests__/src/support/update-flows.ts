@@ -418,7 +418,13 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
           target: scenario.updateTarget, version: UPDATE_VERIFICATION_VERSION,
         }),
       });
-      await probe('check', surface => surface.readyButtons === 2 && surface.phase === 'ready' && surface.version === UPDATE_VERIFICATION_VERSION);
+      await probe('check', surface => ['upToDate', 'checking', 'downloading', 'verifying', 'ready'].includes(String(surface.phase)));
+      // The UI gesture only initiates work. Download, signature verification,
+      // and durable staging use the same owning completion bound as the CLI
+      // path; a renderer readiness wait must not bound the whole installation
+      // package download on a slower native runner.
+      await waitForCaptured(first, ['FLOWAY_DESKTOP_UPDATE ', '"phase":"staged"', `"version":"${UPDATE_VERIFICATION_VERSION}"`], 120_000);
+      await probe('ready', surface => surface.readyButtons === 2 && surface.phase === 'ready' && surface.version === UPDATE_VERIFICATION_VERSION);
       await assertUpdateState(applicationHome, { lastHealthyVersion: ORIGINAL_RELEASE_VERSION, pending: null, staged: UPDATE_VERIFICATION_VERSION });
       // Keep pixel evidence outside the disposable application data root.
       await writeFile('/private/tmp/floway-update-packaged-ready.png', await readFile(resolve(applicationHome, 'update-ui.png')));
