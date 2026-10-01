@@ -1589,23 +1589,6 @@ fn verify_update_ui_command(app: &AppHandle, step: &str) -> Result<(), Box<dyn E
     }
 }
 
-#[tauri::command(async)]
-fn report_desktop_update_surface(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    surface: Value,
-) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    {
-        update_ui::report(app, window, surface)
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, window, surface);
-        Err("update UI verification requires a debug build".to_owned())
-    }
-}
-
 // Verifier-only transport for the external-link gate (#45): navigates the live
 // webview to the `floway-action://verify-external-open` action so the request
 // walks `handle_navigation` — the segment a Dashboard link click takes — and
@@ -2136,7 +2119,6 @@ fn try_run() -> Result<(), Box<dyn Error>> {
             open_external,
             quit_app,
             report_desktop_recovery_surface,
-            report_desktop_update_surface,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
