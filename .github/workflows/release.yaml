@@ -173,7 +173,6 @@ jobs:
         run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir="$GITHUB_WORKSPACE/release-artifacts"
       - name: Prepare shared release notes
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}

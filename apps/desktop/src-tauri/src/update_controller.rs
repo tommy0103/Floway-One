@@ -126,6 +126,7 @@ pub struct DesktopUpdateController {
     installing: Mutex<bool>,
     activity: Mutex<crate::UpdateActivity>,
     scheduler_started: std::sync::atomic::AtomicBool,
+    idle: std::sync::Condvar,
     dismissed_version: Mutex<Option<String>>,
     paths: Option<UpdatePaths>,
     state: Mutex<DesktopUpdateState>,
@@ -208,6 +209,7 @@ impl DesktopUpdateController {
             installing: Mutex::new(false),
             activity: Mutex::new(crate::UpdateActivity::default()),
             scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            idle: std::sync::Condvar::new(),
             dismissed_version: Mutex::new(dismissed_version),
             paths,
             state: Mutex::new(state),
@@ -323,6 +325,9 @@ impl DesktopUpdateController {
             let mut activity = self.activity.lock().unwrap_or_else(|p| p.into_inner());
             mutate(&mut activity);
             activity.revision += 1;
+            if !activity.is_busy() {
+                self.idle.notify_all();
+            }
         }
         if let Err(error) = app.emit_to("main", "floway-desktop-update", self.status_snapshot()) {
             print_error_chain(&error);
@@ -475,11 +480,18 @@ impl DesktopUpdateController {
             // https://github.com/LodyAI/Lody/blob/194c1aaf92a07848be2b5162ddf733d3d5674998/apps/electron/src/main/services/app-updater-service.ts#L30-L208
             thread::spawn(move || {
                 loop {
-                    let delay = controller
+                    let mut activity = controller
                         .activity
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .poll_delay_seconds();
+                        .unwrap_or_else(|p| p.into_inner());
+                    while activity.is_busy() {
+                        activity = controller
+                            .idle
+                            .wait(activity)
+                            .unwrap_or_else(|p| p.into_inner());
+                    }
+                    let delay = activity.poll_delay_seconds();
+                    drop(activity);
                     thread::sleep(Duration::from_secs(delay));
                     let callback_app = app.clone();
                     controller.spawn_background_check(&app, move || {
@@ -621,6 +633,26 @@ impl DesktopUpdateController {
                 Ok(bytes) => {
                     match verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey) {
                         Ok(()) => {
+                            self.mutate_state(|state| {
+                                if state.failure.as_ref().is_some_and(|failure| {
+                                    matches!(
+                                        failure.phase,
+                                        UpdateFailurePhase::Check
+                                            | UpdateFailurePhase::Download
+                                            | UpdateFailurePhase::Signature
+                                    )
+                                }) {
+                                    state.failure = None;
+                                }
+                            })
+                            .map_err(|source| {
+                                UpdatePhaseError::new(
+                                    UpdateFailurePhase::Check,
+                                    "Floway could not record its cached update check",
+                                    source,
+                                    Some(version.clone()),
+                                )
+                            })?;
                             self.publish(app, |activity| activity.finish("ready"));
                             return Ok(());
                         }

@@ -397,7 +397,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       staged: UPDATE_VERIFICATION_VERSION,
     });
     console.log('Floway background update check staged the signed 0.2.0 artifact while the gateway kept serving');
-    let second: CapturedChild;
+    let second: ReturnType<typeof launchForUpdate>;
     if (scenario.verifyUpdateUi) {
       await sendDesktopControl(scenario.context.executable, applicationHome, 'verify-update-ui?step=open-settings');
       const probe = async (step: string, expected: (surface: Record<string, unknown>) => boolean) => {

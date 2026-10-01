@@ -65,6 +65,9 @@ impl UpdateActivity {
             0
         };
     }
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
     pub fn poll_delay_seconds(&self) -> u64 {
         30 * 60 * 2_u64.pow(self.consecutive_failures.min(2))
     }

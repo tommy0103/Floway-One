@@ -100,9 +100,10 @@ const main = async (): Promise<void> => {
   const tag = option('tag');
   const repo = option('repo');
   const dir = option('dir');
+  const notesFile = option('notes-file');
   const known = ['version', 'tag', 'repo', 'dir', 'notes-file'];
   if (!version || !tag || !repo || !dir || arguments_.some(argument => !known.some(name => argument.startsWith(`--${name}=`)))) {
-    throw new Error('Usage: release-manifest.ts --version=X.Y.Z --tag=vX.Y.Z --repo=owner/repo --dir=<artifacts>');
+    throw new Error('Usage: release-manifest.ts --version=X.Y.Z --tag=vX.Y.Z --repo=owner/repo --dir=<artifacts> [--notes-file=<Markdown>]');
   }
   const artifacts = findReleaseArtifacts(version, await readdir(dir));
   await writeFile(join(dir, 'floway-update.json'), await buildUpdateManifest({
@@ -111,7 +112,7 @@ const main = async (): Promise<void> => {
     version,
     dir,
     artifacts,
-    notes: option('notes-file') ? await readReleaseNotes(option('notes-file')!) : `Floway ${tag}`,
+    notes: notesFile !== undefined ? await readReleaseNotes(notesFile) : `Floway ${tag}`,
     pubDate: new Date().toISOString(),
   }));
   await writeFile(join(dir, 'sha256sums.txt'), await buildSha256Sums(dir, artifacts));
