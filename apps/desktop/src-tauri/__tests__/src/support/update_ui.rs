@@ -172,7 +172,7 @@ fn observe_script(window: &tauri::WebviewWindow, script: String) -> Result<Strin
                 let world: *mut AnyObject = unsafe { msg_send![world_class, pageWorld] };
                 let completion_sender = sender.clone();
                 let completion: RcBlock<dyn Fn(*mut AnyObject, *mut AnyObject)> =
-                    RcBlock::new(move |result, error| {
+                    RcBlock::new(move |result: *mut AnyObject, error: *mut AnyObject| {
                         let result = if error.is_null() {
                             object_text(result)
                         } else {
