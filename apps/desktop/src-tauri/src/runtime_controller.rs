@@ -803,16 +803,19 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                     restart_enabled: true,
                 },
             )?;
-            // Grant only event subscriptions, only to the runtime's verified
-            // origin. Loopback ports are ephemeral; no wildcard host grant.
+            // Grant Dashboard commands and event subscriptions only to the
+            // runtime's verified origin. Loopback ports are ephemeral; no
+            // wildcard host grant. Bundled recovery commands remain local.
             // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/ipc/capability_builder.rs
             app.add_capability(
-                tauri::ipc::CapabilityBuilder::new(format!("dashboard-events-{generation}"))
+                tauri::ipc::CapabilityBuilder::new(format!("dashboard-{generation}"))
                     .local(false)
                     .window("main")
                     .remote(format!("{owned_origin}/*"))
                     .permission("core:event:allow-listen")
-                    .permission("core:event:allow-unlisten"),
+                    .permission("core:event:allow-unlisten")
+                    .permission("allow-desktop-updates")
+                    .permission("allow-desktop-navigation"),
             )?;
             if let Some(window) = app.get_webview_window("main") {
                 window
