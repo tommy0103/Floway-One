@@ -2,7 +2,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
 
 import { ReleaseNotesDialog } from './release-notes';
-import { checkDesktopUpdate, dismissDesktopUpdate, installDesktopUpdate, subscribeDesktopUpdate, updateBusy, type DesktopUpdateSnapshot } from '../../api/desktop-update';
+import { checkDesktopUpdate, dismissDesktopUpdate, installDesktopUpdate, subscribeDesktopUpdate, installableDesktopUpdate, updateBusy, type DesktopUpdateSnapshot } from '../../api/desktop-update';
 import { useTranslation } from '../../i18n/translation';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useOutcomeToasts } from '../ui/outcome-toast';
@@ -73,7 +73,7 @@ export function DesktopUpdateProvider({ children, enabled }: PropsWithChildren<{
   }, [run, snapshot?.stagedVersion]);
   const viewNotes = useCallback(() => {
     if (!snapshot) return;
-    const preferStaged = !!snapshot.stagedVersion && !updateBusy(snapshot);
+    const preferStaged = installableDesktopUpdate(snapshot) && !updateBusy(snapshot);
     const version = preferStaged ? snapshot.stagedVersion : snapshot.version;
     if (!version) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -81,7 +81,7 @@ export function DesktopUpdateProvider({ children, enabled }: PropsWithChildren<{
     setNotesOpen(true);
   }, [snapshot]);
   const install = useCallback(() => {
-    if (!snapshot?.stagedVersion || updateBusy(snapshot) || actionInFlight.current) return;
+    if (!snapshot || !installableDesktopUpdate(snapshot) || updateBusy(snapshot) || actionInFlight.current) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setConfirmOpen(true);
   }, [snapshot]);
@@ -100,7 +100,7 @@ export function DesktopUpdateProvider({ children, enabled }: PropsWithChildren<{
         error={error ? t('dashboard.settings.desktop.update.actionFailed') : null}
         message={t('dashboard.settings.desktop.update.interruption')}
         onConfirm={() => {
-          if (!snapshot?.stagedVersion || updateBusy(snapshot)) return;
+          if (!snapshot || !installableDesktopUpdate(snapshot) || updateBusy(snapshot)) return;
           run(async () => { await installDesktopUpdate(); setConfirmOpen(false); });
         }}
         onExited={restoreFocus}

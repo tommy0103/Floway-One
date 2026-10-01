@@ -1,5 +1,5 @@
 import { useDesktopUpdate } from './provider';
-import { updateBusy } from '../../api/desktop-update';
+import { installableDesktopUpdate, updateBusy } from '../../api/desktop-update';
 import { fluentComponents } from '../../fluent';
 import { useTranslation, type TranslationKeyWithoutValues } from '../../i18n/translation';
 import { formatBytes } from '../../lib/format-number';
@@ -35,7 +35,7 @@ export function DesktopUpdateSettings() {
   if (!update) return null;
   const { snapshot, pending } = update;
   const busy = pending || !snapshot || updateBusy(snapshot);
-  const ready = !!snapshot?.stagedVersion;
+  const ready = !!snapshot && installableDesktopUpdate(snapshot);
   const downloading = snapshot?.phase === 'downloading';
   const progress = snapshot?.totalBytes ? Math.min(1, snapshot.receivedBytes / snapshot.totalBytes) : undefined;
   const phase = snapshot && ready && !updateBusy(snapshot) ? 'ready' : snapshot?.phase;

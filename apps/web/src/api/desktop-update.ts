@@ -27,6 +27,9 @@ export const parseDesktopUpdateSnapshot = (payload: unknown): DesktopUpdateSnaps
 export const updateBusy = (snapshot: DesktopUpdateSnapshot): boolean =>
   ['checking', 'downloading', 'verifying', 'installing'].includes(snapshot.phase);
 
+export const installableDesktopUpdate = (snapshot: DesktopUpdateSnapshot): boolean =>
+  !!snapshot.stagedVersion && snapshot.phase !== 'disabled' && !(snapshot.failure?.phase === 'signature' && snapshot.failure.version === snapshot.stagedVersion);
+
 export const desktopUpdateStatus = async (): Promise<DesktopUpdateSnapshot> =>
   parseDesktopUpdateSnapshot(await invoke('desktop_update_status'));
 export const checkDesktopUpdate = async (): Promise<DesktopUpdateSnapshot> =>

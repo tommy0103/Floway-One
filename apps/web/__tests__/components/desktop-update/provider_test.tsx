@@ -129,3 +129,12 @@ test('browser and server dashboards never subscribe or offer local installation'
   expect(native.listen).not.toHaveBeenCalled();
   expect(screen.queryByText('Application updates')).toBeNull();
 });
+
+test('a signature-rejected staged package retains its metadata without offering installation', async () => {
+  setup({ ...ready(), phase: 'error', failure: { phase: 'signature', chain: ['staged bytes were modified'], version: '0.2.0' } });
+  render();
+  await screen.findByText('The update could not be authenticated. Check again to download a valid package.');
+  expect(screen.queryByText('Floway 0.2.0 is ready')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Update and restart' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Check for updates' }).hasAttribute('disabled')).toBe(false);
+});

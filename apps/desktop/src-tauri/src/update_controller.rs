@@ -657,7 +657,14 @@ impl DesktopUpdateController {
                             self.publish(app, |activity| activity.finish("ready"));
                             return Ok(());
                         }
-                        Err(error) => print_error_chain(&error),
+                        Err(error) => {
+                            print_error_chain(&error);
+                            self.record_failure(
+                                UpdateFailurePhase::Signature,
+                                vec![crate::error_chain_text(&error)],
+                                Some(staged.version.clone()),
+                            );
+                        }
                     }
                 }
                 Err(error) => print_error_chain(&error),

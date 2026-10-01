@@ -1,5 +1,5 @@
 import { useDesktopUpdate } from './provider';
-import { updateBusy } from '../../api/desktop-update';
+import { installableDesktopUpdate, updateBusy } from '../../api/desktop-update';
 import { fluentComponents } from '../../fluent';
 import { useTranslation } from '../../i18n/translation';
 import { ActionRow } from '../ui/action-row';
@@ -12,7 +12,7 @@ export function DesktopUpdateBanner() {
   const { t } = useTranslation();
   const snapshot = update?.snapshot;
   const version = snapshot?.stagedVersion;
-  if (!update || !snapshot || !version || version === snapshot.dismissedVersion || updateBusy(snapshot)) return null;
+  if (!update || !snapshot || !version || version === snapshot.dismissedVersion || !installableDesktopUpdate(snapshot) || updateBusy(snapshot)) return null;
   return <OutcomeMessageBar
     action={<ActionRow>
       <Button appearance="primary" disabled={update.pending} onClick={update.install}>{t('dashboard.settings.desktop.update.install')}</Button>
