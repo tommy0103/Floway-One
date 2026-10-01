@@ -30,6 +30,16 @@ export const updateBusy = (snapshot: DesktopUpdateSnapshot): boolean =>
 export const installableDesktopUpdate = (snapshot: DesktopUpdateSnapshot): boolean =>
   !!snapshot.stagedVersion && snapshot.phase !== 'disabled' && !(snapshot.failure?.phase === 'signature' && snapshot.failure.version === snapshot.stagedVersion);
 
+// Keep cached release details available while a recheck has no new metadata.
+// Once a download starts, its version and notes describe the incoming package.
+export const desktopUpdateDetails = (snapshot: DesktopUpdateSnapshot): { version: string | null; notes: string | null } => {
+  const preferStaged = installableDesktopUpdate(snapshot) && (!updateBusy(snapshot) || !snapshot.version);
+  return {
+    version: preferStaged ? snapshot.stagedVersion : snapshot.version,
+    notes: preferStaged ? snapshot.stagedNotes : snapshot.notes,
+  };
+};
+
 export const desktopUpdateStatus = async (): Promise<DesktopUpdateSnapshot> =>
   parseDesktopUpdateSnapshot(await invoke('desktop_update_status'));
 export const checkDesktopUpdate = async (): Promise<DesktopUpdateSnapshot> =>

@@ -157,3 +157,18 @@ test('an open restart confirmation follows native installation permission change
   fireEvent.click(confirm);
   await waitFor(() => expect(native.invoke).toHaveBeenCalledWith('desktop_install_update'));
 });
+
+test('cached release details survive rechecks and follow a newer download when its metadata arrives', async () => {
+  setup({ ...ready(), phase: 'error', version: null, notes: null, failure: { phase: 'check', chain: ['offline'], version: null } });
+  render();
+  await screen.findByText('Update version: 0.2.0');
+  emit({ ...ready(3), phase: 'checking', version: null, notes: null });
+  fireEvent.click(screen.getByRole('button', { name: 'View changes' }));
+  expect(await screen.findByRole('heading', { name: 'New version' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  emit({ ...ready(4), phase: 'downloading', version: '0.3.0', notes: '# Upcoming changes' });
+  expect(screen.getByText('Update version: 0.3.0')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'View changes' }));
+  expect(await screen.findByRole('heading', { name: 'Upcoming changes' })).toBeTruthy();
+});

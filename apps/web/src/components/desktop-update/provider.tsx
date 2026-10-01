@@ -2,7 +2,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
 
 import { ReleaseNotesDialog } from './release-notes';
-import { checkDesktopUpdate, dismissDesktopUpdate, installDesktopUpdate, subscribeDesktopUpdate, installableDesktopUpdate, updateBusy, type DesktopUpdateSnapshot } from '../../api/desktop-update';
+import { checkDesktopUpdate, desktopUpdateDetails, dismissDesktopUpdate, installDesktopUpdate, subscribeDesktopUpdate, installableDesktopUpdate, updateBusy, type DesktopUpdateSnapshot } from '../../api/desktop-update';
 import { useTranslation } from '../../i18n/translation';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useOutcomeToasts } from '../ui/outcome-toast';
@@ -73,11 +73,10 @@ export function DesktopUpdateProvider({ children, enabled }: PropsWithChildren<{
   }, [run, snapshot?.stagedVersion]);
   const viewNotes = useCallback(() => {
     if (!snapshot) return;
-    const preferStaged = installableDesktopUpdate(snapshot) && !updateBusy(snapshot);
-    const version = preferStaged ? snapshot.stagedVersion : snapshot.version;
-    if (!version) return;
+    const details = desktopUpdateDetails(snapshot);
+    if (!details.version) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setNotes({ version, body: preferStaged ? snapshot.stagedNotes : snapshot.notes });
+    setNotes({ version: details.version, body: details.notes });
     setNotesOpen(true);
   }, [snapshot]);
   const install = useCallback(() => {

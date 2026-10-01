@@ -1,5 +1,5 @@
 import { useDesktopUpdate } from './provider';
-import { installableDesktopUpdate, updateBusy } from '../../api/desktop-update';
+import { desktopUpdateDetails, installableDesktopUpdate, updateBusy } from '../../api/desktop-update';
 import { fluentComponents } from '../../fluent';
 import { useTranslation, type TranslationKeyWithoutValues } from '../../i18n/translation';
 import { formatBytes } from '../../lib/format-number';
@@ -38,6 +38,7 @@ export function DesktopUpdateSettings() {
   const ready = !!snapshot && installableDesktopUpdate(snapshot);
   const downloading = snapshot?.phase === 'downloading';
   const progress = snapshot?.totalBytes ? Math.min(1, snapshot.receivedBytes / snapshot.totalBytes) : undefined;
+  const details = snapshot ? desktopUpdateDetails(snapshot) : null;
   const phase = snapshot && ready && !updateBusy(snapshot) ? 'ready' : snapshot?.phase;
 
   return <div className={SECTION_STACK_CLASS}>
@@ -46,7 +47,7 @@ export function DesktopUpdateSettings() {
       {((!snapshot && !update.error) || snapshot?.phase === 'checking') && <Spinner label={t('dashboard.settings.desktop.update.checking')} size="tiny" />}
       {phase && phase !== 'checking' && <Text>{t(phaseKeys[phase])}</Text>}
     </div>
-    {snapshot?.version && <Text>{t('dashboard.settings.desktop.update.targetVersion', { version: ready && !updateBusy(snapshot) ? snapshot.stagedVersion! : snapshot.version })}</Text>}
+    {details?.version && <Text>{t('dashboard.settings.desktop.update.targetVersion', { version: details.version })}</Text>}
     {(downloading || snapshot?.phase === 'verifying') && <>
       <ProgressBar aria-label={t(downloading ? 'dashboard.settings.desktop.update.downloading' : 'dashboard.settings.desktop.update.verifying')} value={downloading ? progress : undefined} />
       {downloading && <Text size={200} className="text-fui-fg2">
@@ -65,7 +66,7 @@ export function DesktopUpdateSettings() {
       <Button disabled={pending || (snapshot ? updateBusy(snapshot) || snapshot.phase === 'disabled' : !update.error)} onClick={update.check}>
         {t('dashboard.settings.desktop.update.check')}
       </Button>
-      {(!!snapshot?.version || ready) && <Button disabled={pending} onClick={update.viewNotes}>{t('dashboard.settings.desktop.update.viewNotes')}</Button>}
+      {details?.version && <Button disabled={pending} onClick={update.viewNotes}>{t('dashboard.settings.desktop.update.viewNotes')}</Button>}
     </ActionRow>
   </div>;
 }
