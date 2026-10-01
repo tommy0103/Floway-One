@@ -51,8 +51,11 @@ export interface SyncReport {
 }
 
 export class UpstreamConflict extends Error {
-  constructor(public readonly report: SyncReport, cause: Error) {
+  readonly report: SyncReport;
+
+  constructor(report: SyncReport, cause: Error) {
     super(`Floway upstream conflict at ${report.conflict!.sha}: ${report.conflict!.paths.join(', ')}`, { cause });
+    this.report = report;
   }
 }
 
@@ -104,6 +107,7 @@ export function prepareSync(options: { checkout: string; directory: string; batc
     if (conflicts.length > 0) {
       report.status = 'conflict';
       report.through = report.from;
+      report.remaining = pending.length;
       report.conflict = { sha, paths: conflicts };
       throw new UpstreamConflict(report, failure ?? new Error('Unmerged Git index'));
     }
@@ -153,12 +157,14 @@ export function syncBranch(report: SyncReport): string {
 export function publishSync(options: {
   checkout: string; directory: string; repository: string; baseBranch: string; report: SyncReport; bodyFile: string;
   gh?: (args: string[]) => string;
+  destination?: string;
+  dispatchVerify?: boolean;
 }): string {
   const { checkout, directory, repository, baseBranch, report, bodyFile } = options;
   if (report.status !== 'prepared') throw new Error('Only a complete upstream batch can be published');
   const gh = options.gh ?? (args => command(checkout, 'gh', args));
   const branch = syncBranch(report);
-  const destination = `https://github.com/${repository}.git`;
+  const destination = options.destination ?? `https://github.com/${repository}.git`;
   const existing = git(directory, ['ls-remote', destination, `refs/heads/${branch}`]).split(/\s+/)[0];
   if (existing) {
     git(directory, ['fetch', destination, `refs/heads/${branch}`]);
@@ -172,6 +178,13 @@ export function publishSync(options: {
   // Explicit dispatch also works with GITHUB_TOKEN; relying on its push/PR
   // events would leave Verify absent or waiting for human workflow approval.
   // https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
-  gh(['workflow', 'run', 'verify.yaml', '--repo', repository, '--ref', branch]);
+  if (options.dispatchVerify !== false) gh(['workflow', 'run', 'verify.yaml', '--repo', repository, '--ref', branch]);
   return url;
+}
+
+export function resumeVerification(options: { repository: string; branch: string; sha: string; gh: (args: string[]) => string; dispatchOnly: boolean }): void {
+  const { repository, branch, sha, gh, dispatchOnly } = options;
+  const runs = JSON.parse(gh(['api', `repos/${repository}/actions/workflows/verify.yaml/runs`, '--method', 'GET', '-f', `head_sha=${sha}`, ...(dispatchOnly ? ['-f', 'event=workflow_dispatch'] : []), '-f', 'per_page=100'])) as { workflow_runs: { status: string; conclusion: string | null }[] };
+  const verifiedOrRunning = runs.workflow_runs.some(run => ['queued', 'in_progress', 'completed'].includes(run.status) && run.conclusion !== 'action_required');
+  if (!verifiedOrRunning) gh(['workflow', 'run', 'verify.yaml', '--repo', repository, '--ref', branch]);
 }

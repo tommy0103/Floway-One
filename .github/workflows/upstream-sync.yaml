@@ -41,6 +41,7 @@ jobs:
           # An optional dedicated token avoids the repository setting that
           # otherwise prevents GITHUB_TOKEN from creating pull requests.
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          UPSTREAM_SYNC_DISPATCH_VERIFY: ${{ secrets.UPSTREAM_SYNC_TOKEN == '' }}
           UPSTREAM_SYNC_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           UPSTREAM_SYNC_BATCH_SIZE: ${{ inputs.batch_size || '10' }}
           UPSTREAM_SYNC_BASE_BRANCH: ${{ github.event.repository.default_branch }}
