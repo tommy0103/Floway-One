@@ -16,12 +16,8 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
     }
     let window = main_window(app)?;
     require_update_window(app, &window).map_err(io::Error::other)?;
-    if step == "open-settings" {
-        window.eval("window.location.assign('/dashboard/settings')")?;
-        return Ok(());
-    }
     let labels = match step {
-        "snapshot" => None,
+        "open-settings" | "snapshot" => None,
         "check" => Some(["Check for updates", "检查更新"]),
         "notes" => Some(["View changes", "查看更新内容"]),
         "close" => Some(["Close", "关闭"]),
@@ -43,6 +39,11 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
             throw new Error('Floway update UI did not reach ' + step);
         }};
         try {{
+            if (step === 'open-settings') {{
+                const settings = () => document.querySelector('a[href="/dashboard/settings"]');
+                await wait(() => settings());
+                settings().click();
+            }}
             await wait(() => matches(['Check for updates', '检查更新']).length > 0);
             if (labels) {{
                 await wait(() => matches(labels).some(button => !button.disabled));

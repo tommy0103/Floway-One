@@ -398,7 +398,9 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
     });
     let second: ReturnType<typeof launchForUpdate>;
     if (scenario.verifyUpdateUi) {
-      await sendDesktopControl(scenario.context.executable, applicationHome, 'verify-update-ui?step=open-settings');
+      // Health and updater completion precede the browser's one-time owner
+      // login. Keep its bootstrap document live until that exchange completes.
+      await waitForCaptured(first, ['FLOWAY_DASHBOARD_BOOTSTRAP {"phase":"completed"}'], 120_000);
       const probe = async (step: string, expected: (surface: Record<string, unknown>) => boolean) => {
         await sendDesktopControl(scenario.context.executable, applicationHome, `verify-update-ui?step=${step}`);
         const marker = `"step":"${step}"`;
@@ -408,7 +410,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
         const surface = JSON.parse(line.slice('FLOWAY_DESKTOP_UPDATE_UI '.length)) as Record<string, unknown>;
         if (surface.error || !expected(surface)) throw new Error(`Floway update UI ${step} failed: ${JSON.stringify(surface)}`);
       };
-      await probe('snapshot', surface => surface.readyButtons === 0 && surface.phase === 'upToDate');
+      await probe('open-settings', surface => surface.readyButtons === 0 && surface.phase === 'upToDate');
       scenario.server.serve({
         artifact: artifact.bytes,
         manifest: updateManifest({
