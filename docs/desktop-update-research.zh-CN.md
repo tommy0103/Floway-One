@@ -91,7 +91,7 @@ Tauri 更新插件支持检查、下载、安装的分离，更新签名不可�
 | 层 | 已有行为 | 为本次功能需要补齐的部分 |
 | --- | --- | --- |
 | 更新引擎 | `tauri-plugin-updater = 2.12.0`，公钥由应用配置固定，stable 指向本仓库 `floway-update.json`；preview 有独立地址 | 保留同一引擎与受信任地址、公钥；preview 发布没有形成闭环时不增加可误选的产品入口 |
-| 检测与下载 | packaged app 的 Gateway ready 后发起检查，发现更新立即下载、验签、暂存；dev shell 不暂存 | 手动检查入口、常驻应用运行时的检查调度、单次操作并发约束，以及可供 UI 订阅的运行状态 |
+| 检测与下载 | packaged app 的 Gateway ready 后发起检查，发现更新立即下载、验签、暂存；dev shell 不暂存 | 手动检查入口、原生周期检查、单次操作并发约束，以及可供 UI 订阅的运行状态 |
 | 状态 | 持久化 staged、pending health、failure、last healthy version；staged 内已有 notes | UI 快照缺少 checking、下载字节、校验阶段、最近检查时间、发布说明；目前只有 stagedVersion 等概要 |
 | 主入口 | 托盘存在“安装 Floway {version} 并重启”；没有暂存包时禁用，失败时有上一版本下载入口 | 用户在 Dashboard 内可以发现更新、看详情和主动重启；设置中一直有手动检查入口 |
 | 原生桥 | `desktop_runtime_status` 可返回概要；现有 `floway-desktop-status` 驱动启动/恢复界面 | 没有专用检查、安装 command；更新日志事件目前写 stderr，下载结束只刷新托盘，不会给 Dashboard 持续推送下载状态 |
@@ -175,7 +175,7 @@ UI 先注册更新事件监听，再请求完整 snapshot，并以单调 revisio
 
 将 checking/downloading/verifying/ready/error 向受信任的 main Webview 发事件。流式字节进度可合并发送，阶段和最终状态必须可靠发送；组件关闭只取消监听，不停止 native 下载。进程重启时从 staged/pending/failure 重建快照，下载中断需要重试，不能伪造断点续传。已有恢复页面使用“监听后读取 + revision”可供模式参考，但不能直接沿用只描述 Gateway 状态的 payload。[现有监听模式](https://github.com/tommy0103/Floway-One/blob/640293759439ffda530e41ef101ade60a5828cde/apps/web/src/routes/desktop-status.tsx#L143-L199)、[当前瞬时状态缺口](https://github.com/tommy0103/Floway-One/blob/640293759439ffda530e41ef101ade60a5828cde/apps/desktop/src-tauri/src/update_controller.rs#L384-L500)。
 
-检测调度由原生宿主管理。MVP 保留当前 runtime ready 自动检查并增加用户手动检查；若要让长期不重启的应用也收到新发布，增加原生周期检查与重试退避，时间策略明确作为产品默认值审查。Lody Electron 分支是 30 分钟，Floway 没有证据必须照搬这个频率。消息中“推送更新”可通过更新源轮询发现签名 Release 实现，不需要新建推送服务器。关窗到托盘时仍检测，睡眠恢复避免积压任务同时执行。
+检测调度由原生宿主管理。建议 MVP 保留当前 runtime ready 自动检查，增加用户手动检查和每 30 分钟一次的原生检查，并采用失败重试退避。30 分钟参考 Lody Electron 分支，是这里提出的产品默认值，不是 Tauri 或 Fluent 的要求；实现评审可以调整这个周期。消息中“推送更新”可通过更新源轮询发现签名 Release 实现，不需要新建推送服务器。关窗到托盘时仍检测，睡眠恢复避免积压任务同时执行。
 
 仅 `desktopIntegration` 且原生 Tauri 上下文挂载更新操作，HTTP Node/server Dashboard 不展示本机安装动作。能力判断复用 `loadDesktopRuntimeStatus` 和现有 `isTauri()`，并在宿主 command 边界落实窗口/上下文限制；不能仅靠隐藏按钮。typed i18n 保持 `en`/`zh-Hans` 同构，UI 只暴露受控本地化错误摘要，原始错误链继续保留日志与恢复信息。[当前桌面识别](https://github.com/tommy0103/Floway-One/blob/640293759439ffda530e41ef101ade60a5828cde/apps/web/src/api/desktop-runtime.ts)、[语言资源](https://github.com/tommy0103/Floway-One/tree/640293759439ffda530e41ef101ade60a5828cde/apps/web/src/i18n/locales)。
 
@@ -184,7 +184,7 @@ UI 先注册更新事件监听，再请求完整 snapshot，并以单调 revisio
 建议按三个步骤实施：
 
 1. **原生状态桥 + 设置页纵向闭环**：补单次检查任务、snapshot/revision、进度与操作 command；设置页手动检查能发现包，ready 后沿用原生受控安装。保留已有恢复页面和托盘。
-2. **提醒 + 变更说明**：Dashboard 全局 info MessageBar、按版本的稍后策略、Dialog 详情、已更新反馈；发布正文同时进入 manifest 与 Release。需要常驻检测时同一步落地原生周期调度。
+2. **提醒 + 变更说明**：Dashboard 全局 info MessageBar、按版本的稍后策略、Dialog 详情、已更新反馈；发布正文同时进入 manifest 与 Release。同一步落地原生周期检查，让长期运行的应用也能发现新发布。
 3. **真实发版闭环**：在通过当前 release 门禁的前提下发布完整双架构签名更新资源，从旧版 packaged app 验证检测、下载、重启、Gateway 恢复；保留实际发布证据。MVP 以当前 macOS 双架构为范围，Windows/Linux 安装语义在各自发行渠道就绪后独立验收。
 
 | 验收层 | 必须观察的属性 |
@@ -200,4 +200,4 @@ UI 先注册更新事件监听，再请求完整 snapshot，并以单调 revisio
 
 本次完成源码、一手 API/设计指南及发布记录调查；只新增本文件，没有修改应用、发布流水线、签名策略或 `CHANGELOG.md`。没有观察 Lody 的真实渲染，也没有把设计表当作已验收 UI。
 
-实施前需要在设计评审落实两个产品选择：周期检查默认频率，以及首个正式发布采用的 Apple 签名策略。其他 MVP 默认建议已经明确：stable、自动下载、用户控制重启、设置常驻入口、ready 持续消息、原生状态为真值、复用恢复点。实际 UI 实施后需要在生产构建中打开并检查全部关键状态，不能仅据组件源码声明交付。
+建议的检查默认频率为 30 分钟，属于待实施评审的提议；首个正式发布的 Apple 签名策略仍需按实际发行政策确认。其他 MVP 默认建议已经明确：stable、自动下载、用户控制重启、设置常驻入口、ready 持续消息、原生状态为真值、复用恢复点。实际 UI 实施后需要在生产构建中打开并检查全部关键状态，不能仅据组件源码声明交付。
