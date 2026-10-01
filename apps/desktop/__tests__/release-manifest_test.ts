@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,7 @@ import { expect, test } from 'vitest';
 import {
   buildSha256Sums,
   buildUpdateManifest,
+  readReleaseNotes,
   findReleaseArtifacts,
 } from '../release-manifest.ts';
 
@@ -85,4 +86,22 @@ test('an empty updater signature fails the manifest', () => withArtifacts(async 
     notes: '',
     pubDate: '2026-09-28T00:00:00.000Z',
   })).rejects.toThrow(/empty/);
+}));
+
+test('release notes are shared verbatim with the updater and reject missing or empty bodies', () => withArtifacts(async dir => {
+  const notesFile = join(dir, 'notes.md');
+  const notes = '# Floway changes\n\n- 更新功能\n';
+  await writeFile(notesFile, notes);
+  const body = await readReleaseNotes(notesFile);
+  const manifest = JSON.parse(await buildUpdateManifest({
+    repo: 'example/floway', tag: 'v0.1.0', version: '0.1.0', dir,
+    artifacts: findReleaseArtifacts('0.1.0', await readdir(dir)),
+    notes: body, pubDate: '2026-10-02T00:00:00.000Z',
+  })) as { notes: string };
+  expect(manifest.notes).toBe(notes);
+  await writeFile(notesFile, '  ');
+  await expect(readReleaseNotes(notesFile)).rejects.toThrow('empty');
+  await writeFile(notesFile, 'x'.repeat(65_537));
+  await expect(readReleaseNotes(notesFile)).rejects.toThrow('65536');
+  await expect(readReleaseNotes(join(dir, 'missing.md'))).rejects.toThrow();
 }));

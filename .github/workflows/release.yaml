@@ -167,19 +167,20 @@ jobs:
           pattern: floway-macos-*
           path: release-artifacts
           merge-multiple: true
-      - name: Assemble the updater manifest and digest evidence
+      - name: Assemble artifact digest evidence
         env:
           TAG: ${{ github.ref_name }}
-        run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir=release-artifacts
-      - name: Publish the GitHub Release
+        run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir="$GITHUB_WORKSPACE/release-artifacts"
+      - name: Prepare shared release notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
+          test -s "docs/releases/${TAG#v}.md"
           {
-            echo "Floway $TAG"
+            cat "docs/releases/${TAG#v}.md"
             echo
             echo "- Source commit: ${{ github.sha }}"
             if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_API_KEY_CONTENT" ]; then
@@ -194,6 +195,15 @@ jobs:
             cat release-artifacts/sha256sums.txt
             echo '```'
           } > release-notes.md
+      - name: Bind the same notes to the updater manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir="$GITHUB_WORKSPACE/release-artifacts" --notes-file="$GITHUB_WORKSPACE/release-notes.md"
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
           gh release create "$TAG" \
             --title "Floway $TAG" \
             --notes-file release-notes.md \

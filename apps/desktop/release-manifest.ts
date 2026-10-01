@@ -85,6 +85,13 @@ export const buildSha256Sums = async (
   return `${lines.join('\n')}\n`;
 };
 
+export const readReleaseNotes = async (path: string): Promise<string> => {
+  const notes = await readFile(path, 'utf8');
+  if (!notes.trim()) throw new Error(`Release notes are empty: ${path}`);
+  if ([...notes].length > 65_536) throw new Error(`Release notes exceed 65536 characters: ${path}`);
+  return notes;
+};
+
 const main = async (): Promise<void> => {
   const arguments_ = process.argv.slice(2).filter(argument => argument !== '--');
   const option = (name: string): string | undefined =>
@@ -93,7 +100,7 @@ const main = async (): Promise<void> => {
   const tag = option('tag');
   const repo = option('repo');
   const dir = option('dir');
-  const known = ['version', 'tag', 'repo', 'dir'];
+  const known = ['version', 'tag', 'repo', 'dir', 'notes-file'];
   if (!version || !tag || !repo || !dir || arguments_.some(argument => !known.some(name => argument.startsWith(`--${name}=`)))) {
     throw new Error('Usage: release-manifest.ts --version=X.Y.Z --tag=vX.Y.Z --repo=owner/repo --dir=<artifacts>');
   }
@@ -104,7 +111,7 @@ const main = async (): Promise<void> => {
     version,
     dir,
     artifacts,
-    notes: `Floway ${tag}`,
+    notes: option('notes-file') ? await readReleaseNotes(option('notes-file')!) : `Floway ${tag}`,
     pubDate: new Date().toISOString(),
   }));
   await writeFile(join(dir, 'sha256sums.txt'), await buildSha256Sums(dir, artifacts));

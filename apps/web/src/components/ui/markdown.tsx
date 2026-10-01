@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Components, UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { SectionHeader } from './section-header';
 import { fluentComponents } from '../../fluent';
 
 const { makeStyles } = fluentComponents;
@@ -76,4 +77,23 @@ export function InlineMarkdown({ children }: { children: string }) {
       {children}
     </ReactMarkdown>
   );
+}
+
+// Block notes keep semantic headings/lists and share the existing safe dialect.
+// Images are omitted, as in playground Markdown, avoiding automatic remote loads.
+export function BlockMarkdown({ children }: { children: string }) {
+  return <div className="grid min-w-0 gap-3 break-words [&_pre]:overflow-auto [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4">
+    <ReactMarkdown
+      components={{
+        a: MarkdownLink,
+        h1: ({ children }) => <SectionHeader level={2} title={children} />,
+        h2: ({ children }) => <SectionHeader level={3} title={children} />,
+        h3: ({ children }) => <SectionHeader level={4} title={children} />,
+        img: () => null,
+      }}
+      remarkPlugins={markdownRemarkPlugins}
+      skipHtml
+      urlTransform={markdownUrlTransform}
+    >{children}</ReactMarkdown>
+  </div>;
 }

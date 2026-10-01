@@ -612,6 +612,16 @@ impl DesktopUpdateController {
             return Ok(());
         };
         let version = update.version.clone();
+        if let Some(staged) = self.state().staged
+            && staged.version == version
+            && staged.signature == update.signature
+            && let Some(paths) = &self.paths
+            && let Ok(bytes) = fs::read(paths.staged_artifact(&staged))
+            && verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey).is_ok()
+        {
+            self.publish(app, |activity| activity.finish("ready"));
+            return Ok(());
+        }
         self.publish(app, |activity| {
             activity.phase = "downloading";
             activity.version = Some(version.clone());
@@ -712,15 +722,27 @@ impl DesktopUpdateController {
             )
         })?;
         self.remove_staged_artifacts(Some(&artifact_file));
-        self.mutate_state(|state| state.record_staged(staged))
-            .map_err(|source| {
-                UpdatePhaseError::new(
-                    UpdateFailurePhase::Download,
-                    "Floway could not record its staged application update",
-                    source,
-                    Some(version.clone()),
+        self.mutate_state(|state| {
+            state.record_staged(staged);
+            if state.failure.as_ref().is_some_and(|failure| {
+                matches!(
+                    failure.phase,
+                    UpdateFailurePhase::Check
+                        | UpdateFailurePhase::Download
+                        | UpdateFailurePhase::Signature
                 )
-            })?;
+            }) {
+                state.failure = None;
+            }
+        })
+        .map_err(|source| {
+            UpdatePhaseError::new(
+                UpdateFailurePhase::Download,
+                "Floway could not record its staged application update",
+                source,
+                Some(version.clone()),
+            )
+        })?;
         emit_update_diagnostic(&json!({
             "phase": "staged",
             "version": version,

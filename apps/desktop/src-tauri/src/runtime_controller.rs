@@ -801,6 +801,17 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                     restart_enabled: true,
                 },
             )?;
+            // Grant only event subscriptions, only to the runtime's verified
+            // origin. Loopback ports are ephemeral; no wildcard host grant.
+            // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/ipc/capability_builder.rs
+            app.add_capability(
+                tauri::ipc::CapabilityBuilder::new(format!("dashboard-events-{generation}"))
+                    .local(false)
+                    .window("main")
+                    .remote(format!("{owned_origin}/*"))
+                    .permission("core:event:allow-listen")
+                    .permission("core:event:allow-unlisten"),
+            )?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .navigate(dashboard_url)
@@ -1280,18 +1291,15 @@ fn run_install_sequence(app: &AppHandle) {
         RuntimePhase::Ready | RuntimePhase::Starting
     );
     if runtime_active
-        && controller
+        && let Err(source) = controller
             .supervisor
             .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
-            .is_err()
     {
-        let error = io::Error::other(
-            "Floway could not stop its packaged runtime before installing an update",
-        );
+        let error = io::Error::other(source);
         print_error_chain(&error);
         controller
             .update
-            .fail_install_sequence(app, vec![error.to_string()]);
+            .fail_install_sequence(app, vec![error_chain_text(&error)]);
         fail_current_attempt(
             app,
             controller.current_generation(),

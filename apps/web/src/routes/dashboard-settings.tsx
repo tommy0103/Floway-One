@@ -12,6 +12,7 @@ import { requireDashboardSession } from './guards';
 import { changeOwnPassword } from '../api/auth';
 import { loadDesktopRuntimeStatus } from '../api/desktop-runtime';
 import { loadRuntimeInfo } from '../api/runtime-info';
+import { DesktopUpdateSettings } from '../components/desktop-update/settings';
 import { DashboardPageHeader } from '../components/ui/dashboard-page-header';
 import { Dropdown, Input } from '../components/ui/fluent-form-controls';
 import { PANEL_STACK_CLASS, STATUS_DETAILS_CLASS } from '../components/ui/layout';
@@ -181,11 +182,10 @@ export default function DashboardSettings({ loaderData }: Route.ComponentProps) 
           <dt className="text-fui-fg2">{t('dashboard.settings.desktop.version')}</dt>
           <dd className="m-0 font-mono">{loaderData.desktop.compatibility.releaseVersion}</dd>
         </dl>
-        {isTauri() && (
-          <div>
-            <OpenLogsButton />
-          </div>
-        )}
+        {isTauri() && capabilities.desktopIntegration && <>
+          <DesktopUpdateSettings />
+          <div><OpenLogsButton /></div>
+        </>}
       </Panel>}
 
       {/* The personal owner has no password (bootstrap-issued sessions only),
