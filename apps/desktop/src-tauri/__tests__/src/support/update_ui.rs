@@ -55,7 +55,10 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
             if (step === 'confirm') return JSON.stringify({{ step, confirmed: true }});
             await new Promise(resolve => setTimeout(resolve, 500));
             if (step === 'check') await wait(() => matches(['Check for updates', '检查更新']).some(button => !button.disabled));
-            const state = await window.__TAURI_INTERNALS__.invoke('desktop_update_status');
+            const state = await Promise.race([
+                window.__TAURI_INTERNALS__.invoke('desktop_update_status'),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Floway native update status command did not return')), 5000)),
+            ]);
             const surface = {{
                 step, revision: state.revision, phase: state.phase, version: state.stagedVersion,
                 readyButtons: matches(['Update and restart', '更新并重启']).filter(button => !button.disabled).length,
@@ -66,6 +69,8 @@ pub(super) fn drive(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
         }} catch (cause) {{
             return JSON.stringify({{
                 step, error: String(cause), isTauri: !!globalThis.isTauri,
+                hasInvoke: typeof window.__TAURI_INTERNALS__?.invoke === 'function',
+                hasIpc: typeof window.__TAURI_INTERNALS__?.ipc === 'function',
                 bridgeKeys: Object.keys(window.__TAURI_INTERNALS__ ?? {{}}),
                 buttonLabels: buttons().map(button => button.textContent.trim().slice(0, 120)),
             }});
