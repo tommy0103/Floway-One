@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { BRANCH_PREFIX, command, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, UpstreamConflict } from './sync.ts';
+import { command, pendingSyncPulls, prepareSync, publishSync, renderReport, resumeVerification, UpstreamConflict } from './sync.ts';
 
 const checkout = process.cwd();
 const dryRun = process.argv.includes('--dry-run') || process.env.UPSTREAM_SYNC_DRY_RUN === 'true';
