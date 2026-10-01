@@ -251,7 +251,9 @@ impl DesktopTray {
                 TRAY_UPDATE_ID => {
                     let controller = app.state::<Arc<DesktopController>>();
                     if controller.update.staged_version().is_some() {
-                        install_update_from_tray(app);
+                        if let Err(error) = install_update_from_tray(app) {
+                            print_error_chain(&error);
+                        }
                     } else {
                         open_previous_version_download(app);
                     }
@@ -1283,9 +1285,6 @@ fn install_staged_update_requested() -> bool {
 // request can be served while the application bundle is being replaced.
 fn run_install_sequence(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
-    if !controller.update.begin_install_sequence(app) {
-        return;
-    }
     let runtime_active = matches!(
         controller.phase(),
         RuntimePhase::Ready | RuntimePhase::Starting
@@ -1341,14 +1340,19 @@ fn run_install_sequence(app: &AppHandle) {
     }
 }
 
-fn install_update_from_tray(app: &AppHandle) {
+fn install_update_from_tray(app: &AppHandle) -> Result<(), io::Error> {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.update.staged_version().is_none() {
-        return;
+    // Reserve the task before acknowledging any entrypoint. A background
+    // check cannot take the slot between a successful command and its worker.
+    if !controller.update.begin_install_sequence(app) {
+        return Err(io::Error::other(
+            "Floway cannot install while update work is active or no update is staged",
+        ));
     }
     controller.persist_lifecycle("Floway desktop operator started its staged update installation");
     let app = app.clone();
     thread::spawn(move || run_install_sequence(&app));
+    Ok(())
 }
 
 fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
@@ -2073,16 +2077,10 @@ fn desktop_check_for_updates(
 #[tauri::command]
 fn desktop_install_update(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
     require_update_window(&app, &window)?;
-    if app
-        .state::<Arc<DesktopController>>()
-        .update
-        .staged_version()
-        .is_none()
-    {
-        return Err("Floway has no staged update to install".to_owned());
-    }
-    install_update_from_tray(&app);
-    Ok(())
+    install_update_from_tray(&app).map_err(|error| {
+        print_error_chain(&error);
+        error_chain_text(&error)
+    })
 }
 
 #[tauri::command]
@@ -2279,8 +2277,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 // An explicit operator request installs the staged update
                 // before any runtime starts, so no LLM request can be in
                 // flight while the application bundle is replaced.
-                let install_app = app_handle.clone();
-                thread::spawn(move || run_install_sequence(&install_app));
+                install_update_from_tray(&app_handle)?;
             } else if initial_status_load_gate.arm() {
                 start_runtime(&app_handle);
             } else {
