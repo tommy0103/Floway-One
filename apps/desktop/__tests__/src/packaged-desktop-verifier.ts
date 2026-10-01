@@ -341,6 +341,7 @@ if (launchSupported) {
 
     await assertPortAndStorageFailureSurfaces(nativeWindowProbe, context, isolatedRoot, productionEntry);
     await assertPackagedUpdateFlows(nativeWindowProbe, {
+      verifyUpdateUi: buildProfile === 'debug',
       context, desktopRoot, installedApp, isolatedRoot,
       keyringRelativePath: relative(packaged.appRoot, packaged.loadedKeyringNative!),
       migrationNames: packaged.migrationNames, nodeExecutable: process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE,

@@ -39,6 +39,7 @@ pub enum ShellCommand {
     // driven through the live shell's webview so `handle_navigation` — the
     // segment a Dashboard link click takes — decides what happens to it.
     VerifyExternalOpen(String),
+    VerifyUpdateUi(String),
 }
 
 impl ShellCommand {
@@ -52,6 +53,7 @@ impl ShellCommand {
             Self::RestartGateway => "restart-gateway",
             Self::SetAutostart(_) => "set-autostart",
             Self::VerifyExternalOpen(_) => "verify-external-open",
+            Self::VerifyUpdateUi(_) => "verify-update-ui",
         }
     }
 
@@ -67,6 +69,7 @@ impl ShellCommand {
             ("verify-external-open", Some(url), None) => {
                 Some(Self::VerifyExternalOpen(url.to_owned()))
             }
+            ("verify-update-ui", Some(step), None) => Some(Self::VerifyUpdateUi(step.to_owned())),
             _ => None,
         }
     }
@@ -74,6 +77,9 @@ impl ShellCommand {
     fn from_control_name(name: &str) -> Option<Self> {
         if let Some(url) = name.strip_prefix("verify-external-open?url=") {
             return Some(Self::VerifyExternalOpen(url.to_owned()));
+        }
+        if let Some(step) = name.strip_prefix("verify-update-ui?step=") {
+            return Some(Self::VerifyUpdateUi(step.to_owned()));
         }
         match name {
             "activate" => Some(Self::Activate),
@@ -99,7 +105,7 @@ fn encode_command(command: ShellCommand) -> Vec<u8> {
             ShellCommand::SetAutostart(enabled) => {
                 fields.insert("enabled".to_owned(), json!(enabled));
             }
-            ShellCommand::VerifyExternalOpen(url) => {
+            ShellCommand::VerifyExternalOpen(url) | ShellCommand::VerifyUpdateUi(url) => {
                 fields.insert("url".to_owned(), json!(url));
             }
             _ => {}

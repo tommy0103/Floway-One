@@ -17,6 +17,7 @@ import {
   captureApp,
   desktopAppArguments,
   PERSONAL_DASHBOARD_PORT,
+  sendDesktopControl,
   TERMINATION_SIGNAL,
   terminateProcessGroup,
   type CapturedChild,
@@ -43,6 +44,7 @@ const ORIGINAL_RELEASE_VERSION = '0.1.0';
 
 export interface UpdateScenarioContext {
   readonly context: InstalledAppVerificationContext;
+  readonly verifyUpdateUi: boolean;
   readonly desktopRoot: string;
   readonly installedApp: string;
   readonly isolatedRoot: string;
@@ -395,14 +397,36 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       staged: UPDATE_VERIFICATION_VERSION,
     });
     console.log('Floway background update check staged the signed 0.2.0 artifact while the gateway kept serving');
-    await terminateProcessGroup(first.child);
-    await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-
-    const second = launchForUpdate(scenario, {
-      applicationHome,
-      args: ['--install-staged-update'],
-    });
-    cleanup.defer('update-success second process group', async () => await terminateProcessGroup(second.child));
+    let second: CapturedChild;
+    if (scenario.verifyUpdateUi) {
+      await sendDesktopControl(scenario.context.executable, applicationHome, 'verify-update-ui?step=open-settings');
+      const probe = async (step: string, expected: (surface: Record<string, unknown>) => boolean) => {
+        await sendDesktopControl(scenario.context.executable, applicationHome, `verify-update-ui?step=${step}`);
+        const marker = `"step":"${step}"`;
+        const output = await waitForCaptured(first, ['FLOWAY_DESKTOP_UPDATE_UI ', marker], 30_000);
+        const line = output.split('\n').findLast(line => line.startsWith('FLOWAY_DESKTOP_UPDATE_UI ') && line.includes(marker));
+        if (!line) throw new Error(`Floway update UI emitted no ${step} evidence`);
+        const surface = JSON.parse(line.slice('FLOWAY_DESKTOP_UPDATE_UI '.length)) as Record<string, unknown>;
+        if (surface.error || !expected(surface)) throw new Error(`Floway update UI ${step} failed: ${JSON.stringify(surface)}`);
+      };
+      await probe('snapshot', surface => surface.readyButtons === 2 && surface.version === UPDATE_VERIFICATION_VERSION);
+      // Keep pixel evidence outside the disposable application data root.
+      await writeFile('/private/tmp/floway-update-packaged-ready.png', await readFile(resolve(applicationHome, 'update-ui.png')));
+      await probe('check', surface => surface.readyButtons === 2 && surface.phase === 'ready');
+      await probe('later', surface => surface.readyButtons === 1 && surface.laterButtons === 0);
+      await probe('notes', surface => surface.notesVisible === true);
+      await writeFile('/private/tmp/floway-update-packaged-notes.png', await readFile(resolve(applicationHome, 'update-ui.png')));
+      await probe('close', surface => surface.notesVisible === false);
+      await probe('install', surface => surface.readyButtons === 2);
+      await sendDesktopControl(scenario.context.executable, applicationHome, 'verify-update-ui?step=confirm');
+      second = first;
+      console.log('Floway packaged settings controls checked the native update, persisted Later, displayed release notes, and explicitly started installation');
+    } else {
+      await terminateProcessGroup(first.child);
+      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+      second = launchForUpdate(scenario, { applicationHome, args: ['--install-staged-update'] });
+      cleanup.defer('update-success second process group', async () => await terminateProcessGroup(second.child));
+    }
     const captured = await waitForCaptured(second, [
       '"phase":"recovery-point"',
       `"previousVersion":"${ORIGINAL_RELEASE_VERSION}"`,
