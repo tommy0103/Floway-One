@@ -2,8 +2,8 @@ import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { architectureForTargetTriple, readDesktopReleaseVersion } from './src/release-contract.ts';
 import type { MacosReleaseArchitecture } from './release-manifest.ts';
+import { architectureForTargetTriple, readDesktopReleaseVersion } from './src/release-contract.ts';
 
 export const collectReleaseArtifacts = async (
   { bundleRoot, destination, version, architecture, updaterRequired }: {
