@@ -42,6 +42,8 @@ test('Floway fixture signer uses its temporary key when publisher credentials ar
     expect(signature).toBe((await readFile(`${artifact}.sig`, 'utf8')).trim());
     const publicPacket = Buffer.from(Buffer.from(key.pubkey, 'base64').toString('utf8').split('\n')[1]!, 'base64');
     const signaturePacket = Buffer.from(Buffer.from(signature, 'base64').toString('utf8').split('\n')[1]!, 'base64');
+    expect(publicPacket).toHaveLength(42);
+    expect(signaturePacket).toHaveLength(74);
     expect(signaturePacket.subarray(2, 10)).toEqual(publicPacket.subarray(2, 10));
   } finally {
     if (privateKey === undefined) delete process.env.TAURI_SIGNING_PRIVATE_KEY;
