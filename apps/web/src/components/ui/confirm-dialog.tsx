@@ -37,6 +37,7 @@ const useStyles = makeStyles({
 });
 
 export function ConfirmDialog({
+  actionDisabled = false,
   actionIntent = 'danger',
   actionLabel,
   busy = false,
@@ -51,6 +52,7 @@ export function ConfirmDialog({
   open,
   title,
 }: {
+  actionDisabled?: boolean;
   actionIntent?: 'danger' | 'primary';
   actionLabel: string;
   busy?: boolean;
@@ -87,7 +89,7 @@ export function ConfirmDialog({
         <Button
           appearance="primary"
           className={mergeClasses('!whitespace-nowrap', actionIntent === 'danger' && styles.danger)}
-          disabledFocusable={busy}
+          disabledFocusable={busy || actionDisabled}
           onClick={onConfirm}
         >
           {actionLabel}

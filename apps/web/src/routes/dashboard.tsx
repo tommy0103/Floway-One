@@ -13,6 +13,8 @@ import type { Route } from './+types/dashboard';
 import { requireDashboardSession } from './guards';
 import type { AuthUser } from '../api/auth';
 import { loadRuntimeInfo, type DashboardRuntimeCapabilities } from '../api/runtime-info';
+import { DesktopUpdateBanner } from '../components/desktop-update/banner';
+import { DesktopUpdateProvider } from '../components/desktop-update/provider';
 import { FlowayLogo } from '../components/logo';
 import { usePageFrames } from '../components/page-frames';
 import { Sidebar } from '../components/sidebar/nav';
@@ -99,50 +101,53 @@ function DashboardShell({ capabilities, personal, user }: { capabilities: Dashbo
 
   return (
     <OutcomeToastProvider>
-      <a
-        className="fixed left-3 top-3 z-[100000] -translate-y-20 rounded-md bg-fui-bg1 px-3 py-2 text-fui-fg1 shadow-lg focus:translate-y-0"
-        href="#dashboard-main"
-      >
-        {t('dashboard.nav.skip')}
-      </a>
-      <div className="grid grid-cols-[clamp(240px,18vw,290px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] h-[100dvh] min-h-0 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[58px_minmax(0,1fr)]">
-        <div className="min-h-0 max-[900px]:hidden">
-          <Sidebar capabilities={capabilities} personal={personal} user={user} />
+      <DesktopUpdateProvider enabled={capabilities.desktopIntegration}>
+        <a
+          className="fixed left-3 top-3 z-[100000] -translate-y-20 rounded-md bg-fui-bg1 px-3 py-2 text-fui-fg1 shadow-lg focus:translate-y-0"
+          href="#dashboard-main"
+        >
+          {t('dashboard.nav.skip')}
+        </a>
+        <div className="grid grid-cols-[clamp(240px,18vw,290px)_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] h-[100dvh] min-h-0 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[58px_minmax(0,1fr)]">
+          <div className="min-h-0 max-[900px]:hidden">
+            <Sidebar capabilities={capabilities} personal={personal} user={user} />
+          </div>
+          <header className="hidden max-[900px]:flex items-center gap-3 border-b border-b-solid border-fui-divider px-4">
+            <Button
+              appearance="subtle"
+              aria-label={t('dashboard.nav.open')}
+              icon={<NavigationRegular />}
+              onClick={() => setNavigationOpen(true)}
+            />
+            <FlowayLogo />
+          </header>
+          <div className="grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] min-h-0">
+            <div><DesktopUpdateBanner /></div>
+            {frames.map(frame => <div
+              aria-hidden={frame.leaving || undefined}
+              className={`col-start-1 row-start-2 min-h-0 ${frame.leaving ? 'floway-page-leaving' : frame.id > 0 ? 'floway-page-entering' : ''}`}
+              id={frame.leaving ? undefined : 'dashboard-main'}
+              role={frame.leaving ? undefined : 'main'}
+              inert={frame.leaving}
+              key={frame.id}
+              onAnimationEnd={frame.onAnimationEnd}
+              ref={frame.id === 0 && !frame.leaving ? firstFrameRef : undefined}
+              tabIndex={frame.leaving ? undefined : -1}
+            >{frame.node}</div>)}
+          </div>
         </div>
-        <header className="hidden max-[900px]:flex items-center gap-3 border-b border-b-solid border-fui-divider px-4">
-          <Button
-            appearance="subtle"
-            aria-label={t('dashboard.nav.open')}
-            icon={<NavigationRegular />}
-            onClick={() => setNavigationOpen(true)}
-          />
-          <FlowayLogo />
-        </header>
-        <div className="grid grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] min-h-0">
-          {frames.map(frame => <div
-            aria-hidden={frame.leaving || undefined}
-            className={`col-start-1 row-start-1 min-h-0 ${frame.leaving ? 'floway-page-leaving' : frame.id > 0 ? 'floway-page-entering' : ''}`}
-            id={frame.leaving ? undefined : 'dashboard-main'}
-            role={frame.leaving ? undefined : 'main'}
-            inert={frame.leaving}
-            key={frame.id}
-            onAnimationEnd={frame.onAnimationEnd}
-            ref={frame.id === 0 && !frame.leaving ? firstFrameRef : undefined}
-            tabIndex={frame.leaving ? undefined : -1}
-          >{frame.node}</div>)}
-        </div>
-      </div>
-      <OverlayDrawer
-        aria-label={t('dashboard.nav.label')}
-        backdrop={{ className: 'floway-drawer-light-dismiss' }}
-        onOpenChange={(_, data) => setNavigationOpen(data.open)}
-        open={navigationOpen}
-        position="start"
-      >
-        <DrawerBody className="!p-0">
-          <Sidebar capabilities={capabilities} onNavigate={() => setNavigationOpen(false)} personal={personal} user={user} />
-        </DrawerBody>
-      </OverlayDrawer>
+        <OverlayDrawer
+          aria-label={t('dashboard.nav.label')}
+          backdrop={{ className: 'floway-drawer-light-dismiss' }}
+          onOpenChange={(_, data) => setNavigationOpen(data.open)}
+          open={navigationOpen}
+          position="start"
+        >
+          <DrawerBody className="!p-0">
+            <Sidebar capabilities={capabilities} onNavigate={() => setNavigationOpen(false)} personal={personal} user={user} />
+          </DrawerBody>
+        </OverlayDrawer>
+      </DesktopUpdateProvider>
     </OutcomeToastProvider>
   );
 }

@@ -13,7 +13,7 @@ use crate::failure_chain::bounded_failure_chain;
 pub const UPDATE_STATE_FILE_NAME: &str = "update-state.json";
 const UPDATE_STATE_SCHEMA_VERSION: u64 = 1;
 
-const UPDATE_NOTES_MAXIMUM_CHARS: usize = 2000;
+const UPDATE_NOTES_MAXIMUM_CHARS: usize = 65_536;
 
 fn is_exact_version(value: &str) -> bool {
     let segments = value.split('.').collect::<Vec<_>>();
@@ -330,7 +330,26 @@ impl DesktopUpdateState {
 
     // A failed update phase never touches the staged artifact, the pending
     // install, or the recovery point: recovery information survives failures.
-    pub fn record_failure(&mut self, failure: UpdateFailure) {
+    pub fn record_failure(&mut self, mut failure: UpdateFailure) {
+        // A failed retry cannot make a package already rejected by signature
+        // verification installable again. Keep that diagnosis until a verified
+        // replacement is staged, with the retry's original chain appended.
+        if let Some(previous) = &self.failure
+            && previous.phase == UpdateFailurePhase::Signature
+            && self
+                .staged
+                .as_ref()
+                .is_some_and(|staged| previous.version.as_ref() == Some(&staged.version))
+        {
+            failure.chain = previous
+                .chain
+                .iter()
+                .chain(&failure.chain)
+                .cloned()
+                .collect();
+            failure.phase = previous.phase;
+            failure.version = previous.version.clone();
+        }
         self.failure = Some(UpdateFailure {
             chain: bounded_failure_chain(&failure.chain),
             ..failure

@@ -254,3 +254,25 @@ fn state_files_persist_with_owner_only_permissions() {
 
     fs::remove_dir_all(&root).expect("fixture directory must be removable");
 }
+
+#[test]
+fn failed_retries_keep_a_staged_signature_rejection_until_verified_replacement() {
+    let mut state = DesktopUpdateState::default();
+    state.record_staged(staged("0.2.0"));
+    state.record_failure(failure(UpdateFailurePhase::Signature));
+    let mut retry = failure(UpdateFailurePhase::Download);
+    retry.chain = vec!["retry download was offline".to_owned()];
+    state.record_failure(retry);
+    let recorded = state
+        .failure
+        .expect("the rejected staged package must remain diagnosed");
+    assert_eq!(recorded.phase, UpdateFailurePhase::Signature);
+    assert_eq!(recorded.version.as_deref(), Some("0.2.0"));
+    assert!(
+        recorded
+            .chain
+            .iter()
+            .any(|cause| cause == "retry download was offline")
+    );
+    assert!(state.staged.is_some());
+}

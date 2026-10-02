@@ -1,0 +1,16 @@
+# Remote custom commands require an explicit application manifest.
+# https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/mod.rs#L1818-L1826
+[[permission]]
+identifier = "allow-desktop-updates"
+description = "Allows the trusted Dashboard to check, install, and dismiss desktop updates."
+commands.allow = ["desktop_update_status", "desktop_check_for_updates", "desktop_install_update", "desktop_dismiss_update"]
+
+[[permission]]
+identifier = "allow-desktop-navigation"
+description = "Preserves desktop external-link and quit actions."
+commands.allow = ["open_external", "quit_app"]
+
+[[permission]]
+identifier = "allow-desktop-recovery"
+description = "Allows the bundled recovery surface to read and report runtime state."
+commands.allow = ["desktop_runtime_status", "report_desktop_recovery_surface"]

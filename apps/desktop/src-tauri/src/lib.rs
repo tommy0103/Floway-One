@@ -9,6 +9,7 @@ mod navigation;
 mod runtime_status;
 #[cfg(feature = "desktop")]
 mod sidecar_log;
+mod update_activity;
 mod update_channel;
 mod update_signature;
 mod update_state;
@@ -66,6 +67,7 @@ pub use navigation::{
 };
 #[cfg(feature = "desktop")]
 pub use runtime_status::InitialStatusLoadGate;
+pub use update_activity::UpdateActivity;
 pub use update_channel::{
     UPDATE_CHANNEL_FILE_NAME, UPDATE_DIRECTORY_NAME, UPDATE_RECOVERY_POINT_FILE_NAME,
     UpdateChannel, UpdaterAuthority, load_update_channel, parse_update_channel,

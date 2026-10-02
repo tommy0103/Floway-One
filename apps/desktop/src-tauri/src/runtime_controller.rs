@@ -251,7 +251,9 @@ impl DesktopTray {
                 TRAY_UPDATE_ID => {
                     let controller = app.state::<Arc<DesktopController>>();
                     if controller.update.staged_version().is_some() {
-                        install_update_from_tray(app);
+                        if let Err(error) = install_update_from_tray(app) {
+                            print_error_chain(&error);
+                        }
                     } else {
                         open_previous_version_download(app);
                     }
@@ -801,6 +803,20 @@ fn mark_runtime_ready(app: &AppHandle, generation: u64, origin: &str, bootstrap_
                     restart_enabled: true,
                 },
             )?;
+            // Grant Dashboard commands and event subscriptions only to the
+            // runtime's verified origin. Loopback ports are ephemeral; no
+            // wildcard host grant. Bundled recovery commands remain local.
+            // https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/ipc/capability_builder.rs
+            app.add_capability(
+                tauri::ipc::CapabilityBuilder::new(format!("dashboard-{generation}"))
+                    .local(false)
+                    .window("main")
+                    .remote(format!("{owned_origin}/*"))
+                    .permission("core:event:allow-listen")
+                    .permission("core:event:allow-unlisten")
+                    .permission("allow-desktop-updates")
+                    .permission("allow-desktop-navigation"),
+            )?;
             if let Some(window) = app.get_webview_window("main") {
                 window
                     .navigate(dashboard_url)
@@ -1227,7 +1243,7 @@ fn emit_update_surface_snapshot(controller: &DesktopController) {
     }
 }
 
-fn refresh_update_tray(app: &AppHandle) {
+pub(crate) fn refresh_update_tray(app: &AppHandle) {
     let controller = app.state::<Arc<DesktopController>>().inner().clone();
     let (staged, update_failed) = controller.update.tray_state();
     if let Err(error) = controller.tray.set_update(staged.as_deref(), update_failed) {
@@ -1277,15 +1293,15 @@ fn run_install_sequence(app: &AppHandle) {
         RuntimePhase::Ready | RuntimePhase::Starting
     );
     if runtime_active
-        && controller
+        && let Err(source) = controller
             .supervisor
             .stop_gracefully(GRACEFUL_STOP_SIGNAL_TIMEOUT)
-            .is_err()
     {
-        let error = io::Error::other(
-            "Floway could not stop its packaged runtime before installing an update",
-        );
+        let error = io::Error::other(source);
         print_error_chain(&error);
+        controller
+            .update
+            .fail_install_sequence(app, vec![error_chain_text(&error)]);
         fail_current_attempt(
             app,
             controller.current_generation(),
@@ -1298,6 +1314,9 @@ fn run_install_sequence(app: &AppHandle) {
         Ok(bundle) => bundle,
         Err(error) => {
             print_error_chain(error.as_ref());
+            controller
+                .update
+                .fail_install_sequence(app, vec![error_chain_text(error.as_ref())]);
             return;
         }
     };
@@ -1324,14 +1343,19 @@ fn run_install_sequence(app: &AppHandle) {
     }
 }
 
-fn install_update_from_tray(app: &AppHandle) {
+fn install_update_from_tray(app: &AppHandle) -> Result<(), io::Error> {
     let controller = app.state::<Arc<DesktopController>>();
-    if controller.update.staged_version().is_none() {
-        return;
+    // Reserve the task before acknowledging any entrypoint. A background
+    // check cannot take the slot between a successful command and its worker.
+    if !controller.update.begin_install_sequence(app) {
+        return Err(io::Error::other(
+            "Floway cannot install while update work is active or no update is staged",
+        ));
     }
     controller.persist_lifecycle("Floway desktop operator started its staged update installation");
     let app = app.clone();
     thread::spawn(move || run_install_sequence(&app));
+    Ok(())
 }
 
 fn copy_gateway_address(app: &AppHandle) -> Result<(), Box<dyn Error>> {
@@ -1546,6 +1570,25 @@ fn dispatch_shell_command(app: &AppHandle, command: ShellCommand) -> Result<Valu
         ShellCommand::VerifyExternalOpen(url) => {
             verify_external_open_command(app, url).map(|()| json!({ "ok": true }))
         }
+        ShellCommand::VerifyUpdateUi(step) => {
+            verify_update_ui_command(app, &step).map(|()| json!({ "ok": true }))
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[path = "../__tests__/src/support/update_ui.rs"]
+mod update_ui;
+
+fn verify_update_ui_command(app: &AppHandle, step: &str) -> Result<(), Box<dyn Error>> {
+    #[cfg(debug_assertions)]
+    {
+        update_ui::drive(app, step)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, step);
+        Err("update UI verification requires a debug build".into())
     }
 }
 
@@ -1969,6 +2012,79 @@ fn report_desktop_recovery_surface(
     Ok(())
 }
 
+fn require_update_window(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let controller = app.state::<Arc<DesktopController>>();
+    let policy = controller
+        .dashboard_policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner());
+    let url = window.url().map_err(|error| error.to_string())?;
+    if window.label() != "main"
+        || !policy.as_ref().is_some_and(|policy| {
+            matches!(
+                policy.decide(&url, false),
+                super::navigation::DashboardNavigationDecision::AllowInWebview
+            )
+        })
+    {
+        return Err("Floway updates require the trusted desktop Dashboard".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_update_status(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    require_update_window(&app, &window)?;
+    Ok(app
+        .state::<Arc<DesktopController>>()
+        .update
+        .status_snapshot())
+}
+
+#[tauri::command]
+fn desktop_check_for_updates(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    require_update_window(&app, &window)?;
+    let callback_app = app.clone();
+    app.state::<Arc<DesktopController>>()
+        .update
+        .spawn_background_check(&app, move || refresh_update_tray(&callback_app));
+    Ok(app
+        .state::<Arc<DesktopController>>()
+        .update
+        .status_snapshot())
+}
+
+#[tauri::command]
+fn desktop_install_update(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    require_update_window(&app, &window)?;
+    install_update_from_tray(&app).map_err(|error| {
+        print_error_chain(&error);
+        error_chain_text(&error)
+    })
+}
+
+#[tauri::command]
+fn desktop_dismiss_update(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    version: String,
+) -> Result<(), String> {
+    require_update_window(&app, &window)?;
+    app.state::<Arc<DesktopController>>()
+        .update
+        .dismiss(&app, &version)
+        .map_err(|error| {
+            print_error_chain(&error);
+            error_chain_text(&error)
+        })
+}
+
 #[tauri::command]
 fn desktop_runtime_status(app: AppHandle) -> serde_json::Value {
     let controller = app.state::<Arc<DesktopController>>();
@@ -1999,6 +2115,10 @@ fn try_run() -> Result<(), Box<dyn Error>> {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             desktop_runtime_status,
+            desktop_update_status,
+            desktop_check_for_updates,
+            desktop_install_update,
+            desktop_dismiss_update,
             open_external,
             quit_app,
             report_desktop_recovery_surface,
@@ -2142,8 +2262,7 @@ fn try_run() -> Result<(), Box<dyn Error>> {
                 // An explicit operator request installs the staged update
                 // before any runtime starts, so no LLM request can be in
                 // flight while the application bundle is replaced.
-                let install_app = app_handle.clone();
-                thread::spawn(move || run_install_sequence(&install_app));
+                install_update_from_tray(&app_handle)?;
             } else if initial_status_load_gate.arm() {
                 start_runtime(&app_handle);
             } else {

@@ -11,7 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Manager};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::bundle_contract::{RuntimeBundle, resolve_runtime_bundle};
@@ -124,6 +125,10 @@ pub struct DesktopUpdateController {
     app_root: Option<PathBuf>,
     data_root: Option<PathBuf>,
     installing: Mutex<bool>,
+    activity: Mutex<crate::UpdateActivity>,
+    scheduler_started: std::sync::atomic::AtomicBool,
+    idle: std::sync::Condvar,
+    dismissed_version: Mutex<Option<String>>,
     paths: Option<UpdatePaths>,
     state: Mutex<DesktopUpdateState>,
 }
@@ -182,10 +187,31 @@ impl DesktopUpdateController {
         let state = paths
             .as_ref()
             .map_or_else(DesktopUpdateState::default, load_or_quarantine_state);
+        let dismissed_version = paths.as_ref().and_then(|paths| {
+            let file = paths.directory.join("dismissed-version.json");
+            match fs::read(&file) {
+                Ok(bytes) => match serde_json::from_slice::<String>(&bytes) {
+                    Ok(version) => Some(version),
+                    Err(error) => {
+                        print_error_chain(&error);
+                        None
+                    }
+                },
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    print_error_chain(&error);
+                    None
+                }
+            }
+        });
         Arc::new(Self {
             app_root: packaged_app_root(),
             data_root,
             installing: Mutex::new(false),
+            activity: Mutex::new(crate::UpdateActivity::default()),
+            scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            idle: std::sync::Condvar::new(),
+            dismissed_version: Mutex::new(dismissed_version),
             paths,
             state: Mutex::new(state),
         })
@@ -209,10 +235,12 @@ impl DesktopUpdateController {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let result = mutate(&mut state);
+        let mut next = state.clone();
+        let result = mutate(&mut next);
         if let Some(paths) = &self.paths {
-            state.save(&paths.state_file).map_err(io::Error::other)?;
+            next.save(&paths.state_file).map_err(io::Error::other)?;
         }
+        *state = next;
         Ok(result)
     }
 
@@ -252,6 +280,7 @@ impl DesktopUpdateController {
     }
 
     pub fn status_snapshot(&self) -> Value {
+        let activity = self.activity.lock().unwrap_or_else(|p| p.into_inner());
         let state = self.state();
         let previous_version = state
             .pending
@@ -264,6 +293,16 @@ impl DesktopUpdateController {
                     .and_then(|_| state.last_healthy_version.clone())
             });
         json!({
+            "revision": activity.revision,
+            "phase": if self.app_root.is_none() || self.paths.is_none() { "disabled" } else { activity.phase },
+            "currentVersion": env!("CARGO_PKG_VERSION"),
+            "version": activity.version.as_ref().or_else(|| state.staged.as_ref().map(|s| &s.version)),
+            "notes": activity.notes.as_ref().or_else(|| state.staged.as_ref().and_then(|s| s.notes.as_ref())),
+            "receivedBytes": activity.received,
+            "totalBytes": activity.total,
+            "checkedAt": activity.checked_at,
+            "updatedVersion": activity.updated_version,
+            "dismissedVersion": *self.dismissed_version.lock().unwrap_or_else(|p| p.into_inner()),
             "channel": self.channel().as_str(),
             "failure": state.failure.as_ref().map(|failure| json!({
                 "chain": failure.chain,
@@ -278,7 +317,63 @@ impl DesktopUpdateController {
                 .as_ref()
                 .is_some_and(|paths| paths.recovery_point.is_file()),
             "stagedVersion": state.staged.as_ref().map(|staged| staged.version.clone()),
+            "stagedNotes": state.staged.as_ref().and_then(|staged| staged.notes.clone()),
         })
+    }
+
+    fn publish(&self, app: &AppHandle, mutate: impl FnOnce(&mut crate::UpdateActivity)) {
+        {
+            let mut activity = self.activity.lock().unwrap_or_else(|p| p.into_inner());
+            mutate(&mut activity);
+            activity.revision += 1;
+            if !activity.is_busy() {
+                self.idle.notify_all();
+            }
+        }
+        if let Err(error) = app.emit_to("main", "floway-desktop-update", self.status_snapshot()) {
+            print_error_chain(&error);
+        }
+    }
+
+    pub fn dismiss(&self, app: &AppHandle, version: &str) -> Result<(), io::Error> {
+        if self.staged_version().as_deref() != Some(version) {
+            return Err(io::Error::other(
+                "Floway update version changed before dismissal",
+            ));
+        }
+        let paths = self
+            .paths
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Floway update storage is unavailable"))?;
+        let mut dismissed = self
+            .dismissed_version
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        fs::create_dir_all(&paths.directory)?;
+        let temporary = paths.directory.join(".dismissed-version.tmp");
+        fs::write(&temporary, serde_json::to_vec(version)?)?;
+        fs::rename(temporary, paths.directory.join("dismissed-version.json"))?;
+        *dismissed = Some(version.to_owned());
+        drop(dismissed);
+        self.publish(app, |_| {});
+        Ok(())
+    }
+
+    pub fn begin_install_sequence(&self, app: &AppHandle) -> bool {
+        let claimed = self
+            .activity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .begin_install(self.staged_version().is_some());
+        if claimed {
+            self.publish(app, |_| {});
+        }
+        claimed
+    }
+
+    pub fn fail_install_sequence(&self, app: &AppHandle, chain: Vec<String>) {
+        self.record_failure(UpdateFailurePhase::Install, chain, self.staged_version());
+        self.publish(app, |activity| activity.finish("error"));
     }
 
     pub fn staged_version(&self) -> Option<String> {
@@ -349,6 +444,9 @@ impl DesktopUpdateController {
         match outcome {
             MarkHealthyOutcome::MarkedHealthy => {
                 self.remove_staged_artifacts(None);
+                self.publish(app, |activity| {
+                    activity.updated_version = Some(env!("CARGO_PKG_VERSION").to_owned())
+                });
                 emit_update_diagnostic(&json!({
                     "phase": "healthy",
                     "version": env!("CARGO_PKG_VERSION"),
@@ -369,6 +467,40 @@ impl DesktopUpdateController {
             MarkHealthyOutcome::NoPendingUpdate => {}
         }
         self.spawn_background_check(app, on_state_changed);
+        if !self
+            .scheduler_started
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+            && self.app_root.is_some()
+            && self.paths.is_some()
+        {
+            let controller = Arc::clone(self);
+            let app = app.clone();
+            // Native scheduling continues while the window is hidden. Delays
+            // start after completion, avoiding a burst after sleep/resume.
+            // The 30-minute product default follows Lody's polling interval:
+            // https://github.com/LodyAI/Lody/blob/194c1aaf92a07848be2b5162ddf733d3d5674998/apps/electron/src/main/services/app-updater-service.ts#L30-L208
+            thread::spawn(move || {
+                loop {
+                    let mut activity = controller
+                        .activity
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    while activity.is_busy() {
+                        activity = controller
+                            .idle
+                            .wait(activity)
+                            .unwrap_or_else(|p| p.into_inner());
+                    }
+                    let delay = activity.poll_delay_seconds();
+                    drop(activity);
+                    thread::sleep(Duration::from_secs(delay));
+                    let callback_app = app.clone();
+                    controller.spawn_background_check(&app, move || {
+                        super::runtime_controller::refresh_update_tray(&callback_app)
+                    });
+                }
+            });
+        }
     }
 
     pub fn after_runtime_failure(&self, report: &FailureReport) {
@@ -386,31 +518,35 @@ impl DesktopUpdateController {
         self: &Arc<Self>,
         app: &AppHandle,
         on_state_changed: impl Fn() + Send + 'static,
-    ) {
+    ) -> bool {
         // Update staging only exists for the packaged application; development
         // runs of the shell leave every file they run from untouched.
         if self.app_root.is_none() || self.paths.is_none() {
-            return;
+            return false;
         }
-        if *self
-            .installing
+        if !self
+            .activity
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|p| p.into_inner())
+            .begin_check(unix_time())
         {
-            return;
+            return false;
         }
+        self.publish(app, |_| {});
         let controller = Arc::clone(self);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             controller.check_and_stage(&app).await;
             on_state_changed();
         });
+        true
     }
 
     async fn check_and_stage(&self, app: &AppHandle) {
         if let Err(error) = self.check_and_stage_inner(app).await {
             let (phase, chain, version) = error.report();
             self.record_failure(phase, chain, version);
+            self.publish(app, |activity| activity.finish("error"));
         }
     }
 
@@ -426,6 +562,7 @@ impl DesktopUpdateController {
         })?
         else {
             // This build carries no updater authority, so it never checks.
+            self.publish(app, |activity| activity.finish("disabled"));
             return Ok(());
         };
         emit_update_diagnostic(&json!({
@@ -443,7 +580,7 @@ impl DesktopUpdateController {
                     None,
                 )
             })?
-            .pubkey(authority.pubkey)
+            .pubkey(authority.pubkey.clone())
             .timeout(UPDATE_DOWNLOAD_TIMEOUT)
             .build()
             .map_err(|source| {
@@ -467,11 +604,95 @@ impl DesktopUpdateController {
                 "channel": channel.as_str(),
                 "phase": "no-update",
             }));
+            self.mutate_state(|state| {
+                if state
+                    .failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.phase == UpdateFailurePhase::Check)
+                {
+                    state.failure = None;
+                }
+            })
+            .map_err(|source| {
+                UpdatePhaseError::new(
+                    UpdateFailurePhase::Check,
+                    "Floway could not record its update check",
+                    source,
+                    None,
+                )
+            })?;
+            self.publish(app, |activity| activity.finish("upToDate"));
             return Ok(());
         };
         let version = update.version.clone();
+        if let Some(staged) = self.state().staged
+            && staged.version == version
+            && staged.signature == update.signature
+            && let Some(paths) = &self.paths
+        {
+            match fs::read(paths.staged_artifact(&staged)) {
+                Ok(bytes) => {
+                    match verify_staged_artifact(&bytes, &staged.signature, &authority.pubkey) {
+                        Ok(()) => {
+                            self.mutate_state(|state| {
+                                if state.failure.as_ref().is_some_and(|failure| {
+                                    matches!(
+                                        failure.phase,
+                                        UpdateFailurePhase::Check
+                                            | UpdateFailurePhase::Download
+                                            | UpdateFailurePhase::Signature
+                                    )
+                                }) {
+                                    state.failure = None;
+                                }
+                            })
+                            .map_err(|source| {
+                                UpdatePhaseError::new(
+                                    UpdateFailurePhase::Check,
+                                    "Floway could not record its cached update check",
+                                    source,
+                                    Some(version.clone()),
+                                )
+                            })?;
+                            self.publish(app, |activity| activity.finish("ready"));
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            print_error_chain(&error);
+                            self.record_failure(
+                                UpdateFailurePhase::Signature,
+                                vec![crate::error_chain_text(&error)],
+                                Some(staged.version.clone()),
+                            );
+                        }
+                    }
+                }
+                Err(error) => print_error_chain(&error),
+            }
+        }
+        self.publish(app, |activity| {
+            activity.phase = "downloading";
+            activity.version = Some(version.clone());
+            activity.notes = update
+                .body
+                .clone()
+                .map(|notes| notes.chars().take(65_536).collect());
+        });
+        let mut last_progress = Instant::now();
         let bytes = update
-            .download(|_received, _total| {}, || {})
+            .download(
+                |received, total| {
+                    self.activity
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .download(received as u64, total);
+                    if last_progress.elapsed() >= Duration::from_millis(250) {
+                        self.publish(app, |_| {});
+                        last_progress = Instant::now();
+                    }
+                },
+                || self.publish(app, |activity| activity.phase = "verifying"),
+            )
             .await
             .map_err(|source| {
                 let phase = match &source {
@@ -496,7 +717,9 @@ impl DesktopUpdateController {
         {
             return Ok(());
         }
-        self.stage_artifact(&update, bytes)
+        self.stage_artifact(&update, bytes)?;
+        self.publish(app, |activity| activity.finish("ready"));
+        Ok(())
     }
 
     fn stage_artifact(
@@ -505,12 +728,15 @@ impl DesktopUpdateController {
         bytes: Vec<u8>,
     ) -> Result<(), UpdatePhaseError> {
         let version = update.version.clone();
-        let artifact_file = format!("staged-{version}.bin");
+        let artifact_file = format!("staged-{version}-{:x}.bin", Sha256::digest(&bytes));
         let staged = StagedUpdate {
             artifact_bytes: bytes.len() as u64,
             artifact_file: artifact_file.clone(),
             download_url: update.download_url.to_string(),
-            notes: update.body.clone(),
+            notes: update
+                .body
+                .clone()
+                .map(|notes| notes.chars().take(65_536).collect()),
             signature: update.signature.clone(),
             staged_at: unix_time(),
             version: version.clone(),
@@ -543,16 +769,30 @@ impl DesktopUpdateController {
                 Some(version.clone()),
             )
         })?;
-        self.remove_staged_artifacts(Some(&artifact_file));
-        self.mutate_state(|state| state.record_staged(staged))
-            .map_err(|source| {
-                UpdatePhaseError::new(
-                    UpdateFailurePhase::Download,
-                    "Floway could not record its staged application update",
-                    source,
-                    Some(version.clone()),
+        self.mutate_state(|state| {
+            state.record_staged(staged);
+            if state.failure.as_ref().is_some_and(|failure| {
+                matches!(
+                    failure.phase,
+                    UpdateFailurePhase::Check
+                        | UpdateFailurePhase::Download
+                        | UpdateFailurePhase::Signature
                 )
-            })?;
+            }) {
+                state.failure = None;
+            }
+        })
+        .map_err(|source| {
+            UpdatePhaseError::new(
+                UpdateFailurePhase::Download,
+                "Floway could not record its staged application update",
+                source,
+                Some(version.clone()),
+            )
+        })?;
+        // Garbage collection follows the durable state commit. A failed save
+        // must leave the previously authenticated artifact available.
+        self.remove_staged_artifacts(Some(&artifact_file));
         emit_update_diagnostic(&json!({
             "phase": "staged",
             "version": version,
@@ -590,13 +830,19 @@ impl DesktopUpdateController {
         bundle: &RuntimeBundle,
     ) -> Result<(), UpdatePhaseError> {
         let Some(staged) = self.claim_install() else {
-            return Ok(());
+            return Err(UpdatePhaseError::new(
+                UpdateFailurePhase::Install,
+                "Floway cannot install without an unclaimed staged update",
+                io::Error::other("the staged update is absent or already installing"),
+                None,
+            ));
         };
         let result = self.install_staged_update_inner(app, bundle, &staged);
         self.release_install();
         if let Err(error) = &result {
             let (phase, chain, version) = error.report();
             self.record_failure(phase, chain, version);
+            self.publish(app, |activity| activity.finish("error"));
         }
         result
     }

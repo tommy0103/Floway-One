@@ -33,7 +33,6 @@ mod platform {
 
     const MAXIMUM_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
     const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
-    const SNAPSHOT_SCALE: f64 = 2.0;
 
     fn describe_failure(error: *mut AnyObject) -> String {
         let description: *mut AnyObject = unsafe { msg_send![error, localizedDescription] };
@@ -98,7 +97,11 @@ mod platform {
         Ok(unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) }.to_vec())
     }
 
-    fn start_snapshot(webview: *mut c_void, sender: mpsc::SyncSender<Result<Vec<u8>, String>>) {
+    fn start_snapshot(
+        webview: *mut c_void,
+        sender: mpsc::SyncSender<Result<Vec<u8>, String>>,
+        scale: f64,
+    ) {
         let fail = |message: &str| {
             let _ = sender.send(Err(message.to_owned()));
         };
@@ -114,7 +117,7 @@ mod platform {
             return fail("Floway packaged browser snapshot configuration is unavailable");
         }
         let bounds: CGRect = unsafe { msg_send![webview, bounds] };
-        let width = (bounds.size.width * SNAPSHOT_SCALE).round();
+        let width = (bounds.size.width * scale).round();
         if !width.is_finite() || width <= 0.0 {
             let () = unsafe { msg_send![configuration, release] };
             return fail("Floway packaged browser snapshot found an empty rendering extent");
@@ -141,12 +144,12 @@ mod platform {
         let () = unsafe { msg_send![configuration, release] };
     }
 
-    pub(super) fn capture(window: &WebviewWindow) -> Result<RenderedSnapshot, std::io::Error> {
+    fn capture_png(window: &WebviewWindow, scale: f64) -> Result<Vec<u8>, std::io::Error> {
         let (sender, receiver) = mpsc::sync_channel(1);
         window
-            .with_webview(move |webview| start_snapshot(webview.inner(), sender))
+            .with_webview(move |webview| start_snapshot(webview.inner(), sender, scale))
             .map_err(std::io::Error::other)?;
-        let png = receiver
+        receiver
             .recv_timeout(OBSERVATION_TIMEOUT)
             .map_err(|error| {
                 std::io::Error::new(
@@ -154,11 +157,29 @@ mod platform {
                     format!("Floway packaged browser snapshot observation timed out: {error}"),
                 )
             })?
-            .map_err(std::io::Error::other)?;
+            .map_err(std::io::Error::other)
+    }
+
+    pub(super) fn capture(window: &WebviewWindow) -> Result<RenderedSnapshot, std::io::Error> {
+        let mut png = capture_png(window, 2.0)?;
+        if png.len() > MAXIMUM_SNAPSHOT_BYTES {
+            // Keep the complete viewport and the existing support byte bound.
+            // Retina/high-entropy rendering can exceed it at the preferred
+            // width; request the same rendered content at its logical width.
+            // https://developer.apple.com/documentation/webkit/wksnapshotconfiguration/snapshotwidth
+            eprintln!(
+                "Floway packaged browser snapshot was {} bytes at double logical width; retrying at logical width",
+                png.len()
+            );
+            png = capture_png(window, 1.0)?;
+        }
         if png.len() > MAXIMUM_SNAPSHOT_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Floway packaged browser snapshot exceeded its byte bound",
+                format!(
+                    "Floway packaged browser snapshot exceeded its byte bound: {} bytes at logical width, maximum {MAXIMUM_SNAPSHOT_BYTES}",
+                    png.len()
+                ),
             ));
         }
         let sha256 = Sha256::digest(&png)

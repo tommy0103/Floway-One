@@ -28,7 +28,7 @@ tag 触发发布时缺 `TAURI_SIGNING_PRIVATE_KEY` 会明确失败；明确要�
 
 ## 发版步骤
 
-1. 确认 `main` 上 verify 全绿。
+1. 确认 `main` 上 verify 全绿，并审定 `docs/releases/X.Y.Z.md` 中该版本的发布正文。流水线会将这份正文与安装指引、摘要证据一并用于 GitHub Release 和应用内更新说明；缺失或空白正文会阻止发布。
 2. 推送标签：`git tag vX.Y.Z <commit> && git push floway-one vX.Y.Z`。
 3. release workflow 对每个架构：构建 →（有凭据时签名公证）→ 以 release 模式跑打包验证（安装、启动、bootstrap、provider 连接、建 key、streaming、WebSocket、重启、更新、卸载）→ 架构失败会阻塞整个发布。
 4. 汇总 job 生成 `floway-update.json`（双平台 updater 清单）和 `sha256sums.txt`（摘要证据），创建含源 commit 的 GitHub Release。
