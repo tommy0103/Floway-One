@@ -24,6 +24,7 @@ import {
   waitForProcessStopped,
 } from './process-lifecycle.ts';
 import {
+  BASE_VERIFICATION_VERSION,
   generateUpdateSigningKey,
   packageApplicationArchive,
   readUpdateState,
@@ -40,7 +41,6 @@ import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 import type { DesktopTargetTriple } from '../../../src/release-contract.ts';
 
 const execFileAsync = promisify(execFile);
-const ORIGINAL_RELEASE_VERSION = '0.1.0';
 
 export interface UpdateScenarioContext {
   readonly context: InstalledAppVerificationContext;
@@ -88,18 +88,18 @@ export const buildUpdatedApplication = async (options: {
   try {
     for (const path of jsonAuthorities) {
       const manifest = JSON.parse(originals.get(path)!) as { version?: unknown };
-      if (manifest.version !== ORIGINAL_RELEASE_VERSION) {
-        throw new Error(`Release authority ${path} is not at ${ORIGINAL_RELEASE_VERSION}`);
+      if (manifest.version !== BASE_VERIFICATION_VERSION) {
+        throw new Error(`Release authority ${path} is not at ${BASE_VERIFICATION_VERSION}`);
       }
       manifest.version = UPDATE_VERIFICATION_VERSION;
       await writeFile(path, `${JSON.stringify(manifest, undefined, 2)}\n`);
     }
     const cargoSource = originals.get(cargoManifest)!;
-    if (!cargoSource.includes(`version = "${ORIGINAL_RELEASE_VERSION}"`)) {
-      throw new Error(`Cargo release authority is not at ${ORIGINAL_RELEASE_VERSION}`);
+    if (!cargoSource.includes(`version = "${BASE_VERIFICATION_VERSION}"`)) {
+      throw new Error(`Cargo release authority is not at ${BASE_VERIFICATION_VERSION}`);
     }
     await writeFile(cargoManifest, cargoSource.replace(
-      `version = "${ORIGINAL_RELEASE_VERSION}"`,
+      `version = "${BASE_VERIFICATION_VERSION}"`,
       `version = "${UPDATE_VERIFICATION_VERSION}"`,
     ));
     await runPnpm(repositoryRoot, [
@@ -377,7 +377,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
         artifactUrl: scenario.server.artifactUrl,
         signature: artifact.signature,
         target: scenario.updateTarget,
-        version: scenario.verifyUpdateUi ? ORIGINAL_RELEASE_VERSION : UPDATE_VERIFICATION_VERSION,
+        version: scenario.verifyUpdateUi ? BASE_VERIFICATION_VERSION : UPDATE_VERIFICATION_VERSION,
       }),
     });
 
@@ -392,7 +392,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
     ], 120_000);
     await waitForLoopbackHealth(origin, first.output);
     await assertUpdateState(applicationHome, {
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: scenario.verifyUpdateUi ? null : UPDATE_VERIFICATION_VERSION,
     });
@@ -425,7 +425,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       // package download on a slower native runner.
       await waitForCaptured(first, ['FLOWAY_DESKTOP_UPDATE ', '"phase":"staged"', `"version":"${UPDATE_VERIFICATION_VERSION}"`], 120_000);
       await probe('ready', surface => surface.readyButtons === 2 && surface.phase === 'ready' && surface.version === UPDATE_VERIFICATION_VERSION);
-      await assertUpdateState(applicationHome, { lastHealthyVersion: ORIGINAL_RELEASE_VERSION, pending: null, staged: UPDATE_VERIFICATION_VERSION });
+      await assertUpdateState(applicationHome, { lastHealthyVersion: BASE_VERIFICATION_VERSION, pending: null, staged: UPDATE_VERIFICATION_VERSION });
       // Keep pixel evidence outside the disposable application data root.
       await writeFile('/private/tmp/floway-update-packaged-ready.png', await readFile(resolve(applicationHome, 'update-ui.png')));
       await probe('later', surface => surface.readyButtons === 1 && surface.laterButtons === 0);
@@ -444,7 +444,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
     }
     const captured = await waitForCaptured(second, [
       '"phase":"recovery-point"',
-      `"previousVersion":"${ORIGINAL_RELEASE_VERSION}"`,
+      `"previousVersion":"${BASE_VERIFICATION_VERSION}"`,
       '"phase":"installed"',
       '"phase":"healthy"',
       `"version":"${UPDATE_VERIFICATION_VERSION}"`,
@@ -466,7 +466,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       throw new Error('Floway recovery point digest diverged from its creation evidence');
     }
     await assertRecoveryPointOpensWithDeviceKey(scenario, credentialIdentity, recoveryPointPath);
-    console.log('Floway installed the signed update behind a device-protected recovery point and marked 0.2.0 healthy after its controlled restart');
+    console.log(`Floway installed the signed update behind a device-protected recovery point and marked ${UPDATE_VERIFICATION_VERSION} healthy after its controlled restart`);
     await terminateProcessGroup(second.child);
   });
 };
@@ -539,7 +539,7 @@ export const assertStagedArtifactTamperRejected = async (
     ], 120_000);
     await assertUpdateState(applicationHome, {
       failurePhase: 'signature',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: UPDATE_VERIFICATION_VERSION,
     });
@@ -625,7 +625,7 @@ export const assertSignatureFailureKeepsRuntimeServing = async (
     await waitForLoopbackHealth(origin, launch.output);
     await assertUpdateState(applicationHome, {
       failurePhase: 'signature',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: null,
     });
@@ -691,7 +691,7 @@ export const assertPostUpdateFailurePresentsRecovery = async (
       `"version":"${UPDATE_VERIFICATION_VERSION}"`,
     ], 120_000);
     await assertUpdateState(applicationHome, {
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: UPDATE_VERIFICATION_VERSION,
     });
@@ -713,8 +713,8 @@ export const assertPostUpdateFailurePresentsRecovery = async (
     ], 240_000);
     await assertUpdateState(applicationHome, {
       failurePhase: 'health',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
-      pending: { previousVersion: ORIGINAL_RELEASE_VERSION, version: UPDATE_VERIFICATION_VERSION },
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
+      pending: { previousVersion: BASE_VERIFICATION_VERSION, version: UPDATE_VERIFICATION_VERSION },
       staged: null,
     });
     const recoveryPointPath = resolve(applicationHome, 'update', 'recovery-point.json');
@@ -729,7 +729,7 @@ export const assertPostUpdateFailurePresentsRecovery = async (
       expectedLocale: options.expectedLocale,
       expectedRenderedFragments: options.expectedFragments,
       failureKind: options.failureKind,
-      previousVersion: ORIGINAL_RELEASE_VERSION,
+      previousVersion: BASE_VERIFICATION_VERSION,
       updateVersion: UPDATE_VERIFICATION_VERSION,
     });
     console.log(`Floway post-update ${options.failureKind} failure kept the recovery point, the full error, and the previous-version download entry without marking ${UPDATE_VERIFICATION_VERSION} healthy`);

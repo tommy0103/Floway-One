@@ -3,8 +3,18 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { basename, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const UPDATE_VERIFICATION_VERSION = '0.2.0';
+import { readDesktopReleaseVersion } from '../../../src/release-contract.ts';
+
+export const nextUpdateVerificationVersion = (current: string): string => {
+  const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(current);
+  if (parts === null) throw new Error(`Floway update verification requires a stable release version: ${current}`);
+  return `${parts[1]}.${BigInt(parts[2]!) + 1n}.0`;
+};
+
+export const BASE_VERIFICATION_VERSION = await readDesktopReleaseVersion(fileURLToPath(new URL('../../../', import.meta.url)));
+export const UPDATE_VERIFICATION_VERSION = nextUpdateVerificationVersion(BASE_VERIFICATION_VERSION);
 
 export interface UpdateSigningKey {
   readonly privateKeyPath: string;
