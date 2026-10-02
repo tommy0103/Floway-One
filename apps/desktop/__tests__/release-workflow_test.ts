@@ -64,3 +64,13 @@ test('Floway signing setup preserves the encoded private key bytes and uses the 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('Floway production artifacts are frozen before fixture builds and uploaded only after packaged verification', () => {
+  const steps = workflow.jobs['build-installer']!.steps;
+  const collect = steps.findIndex(step => step.run?.includes('release:collect'));
+  const gate = steps.findIndex(step => step.run?.includes('test:packaged:macos'));
+  const upload = steps.findIndex(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(collect).toBeGreaterThan(-1);
+  expect(gate).toBeGreaterThan(collect);
+  expect(upload).toBeGreaterThan(gate);
+});

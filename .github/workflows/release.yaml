@@ -187,12 +187,14 @@ jobs:
       # https://v2.tauri.app/plugin/updater/#building
       - name: Build the installer and updater artifacts
         run: pnpm --filter @floway-dev/desktop exec tauri build --target ${{ matrix.target }} --config "$TAURI_BUILD_CONFIG"
+      # Freeze production artifacts before the verifier builds isolated upgrade
+      # fixtures. Only upload this set after every packaged check succeeds.
+      - name: Collect architecture-specific assets without repacking signed bytes
+        run: pnpm --filter @floway-dev/desktop run release:collect -- --target=${{ matrix.target }} --dir="$GITHUB_WORKSPACE/release-artifacts" --updater=${{ steps.signing.outputs.updater_signed }}
       - name: Gate the release on the packaged verification
         run: |
           export FLOWAY_DESKTOP_NODE_EXECUTABLE="$(node -p 'process.execPath')"
           pnpm --filter @floway-dev/desktop run test:packaged:macos -- --target=${{ matrix.target }} --profile=release --launch=yes
-      - name: Collect architecture-specific assets without repacking signed bytes
-        run: pnpm --filter @floway-dev/desktop run release:collect -- --target=${{ matrix.target }} --dir="$GITHUB_WORKSPACE/release-artifacts" --updater=${{ steps.signing.outputs.updater_signed }}
       - name: Upload the architecture artifacts
         uses: actions/upload-artifact@v4
         with:

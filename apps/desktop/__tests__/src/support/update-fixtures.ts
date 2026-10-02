@@ -158,11 +158,13 @@ interface ServedUpdateFixture {
 // between application launches.
 export class UpdateFixtureServer {
   private fixture: ServedUpdateFixture | undefined;
+  private requests = 0;
 
   private constructor(private readonly server: Server) {}
 
   static async start(): Promise<UpdateFixtureServer> {
     const holder = new UpdateFixtureServer(createServer((request, response) => {
+      holder.requests += 1;
       if (request.url === '/manifest.json' && holder.fixture !== undefined) {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify(holder.fixture.manifest));
@@ -181,6 +183,10 @@ export class UpdateFixtureServer {
       holder.server.listen(0, '127.0.0.1', resolveListen);
     });
     return holder;
+  }
+
+  get requestCount(): number {
+    return this.requests;
   }
 
   get port(): number {
