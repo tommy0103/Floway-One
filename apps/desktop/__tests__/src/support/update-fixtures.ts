@@ -56,7 +56,13 @@ export const runPnpm = async (
 const runTauriSigner = async (
   repositoryRoot: string,
   args: readonly string[],
-): Promise<string> => await runPnpm(repositoryRoot, ['--filter', '@floway-dev/desktop', 'exec', 'tauri', 'signer', ...args]);
+): Promise<string> => await runPnpm(repositoryRoot, ['--filter', '@floway-dev/desktop', 'exec', 'tauri', 'signer', ...args], {
+  ...process.env,
+  // This signer owns an explicit throwaway key, never the publisher's key.
+  // https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-cli/src/signer/sign.rs
+  TAURI_SIGNING_PRIVATE_KEY: undefined,
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: undefined,
+});
 
 // The packaged verifier generates a throwaway minisign keypair per run; the
 // private key never leaves the verifier's temporary directory.
