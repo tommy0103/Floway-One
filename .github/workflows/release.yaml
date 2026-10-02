@@ -1,39 +1,86 @@
 name: Release
 
-# Publishes the macOS installers for Apple Silicon and Intel from one tag,
-# with the updater manifest and digest evidence attached. When the Apple
-# credentials below exist, the installers are additionally Developer ID signed
-# and notarized; without them the same pipeline publishes unsigned installers
-# whose release notes carry the Gatekeeper instructions. The minisign updater
-# signature is independent of Apple and applies in both shapes.
-#
-# Secrets the signing layer reads (repository settings):
-#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
-#   APPLE_API_ISSUER / APPLE_API_KEY / APPLE_API_KEY_CONTENT
-#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD (optional)
-# A manual run may pass sign=false to exercise the pipeline unsigned; unsigned
-# dispatch artifacts stay workflow artifacts and are never published.
-
+# Tag pushes and explicit manual publication share one exact source and one
+# dual-architecture build. Preview dispatches only upload workflow artifacts.
+# The updater signature is mandatory for publication; Apple signing remains
+# an optional layer, or a requirement when the owner selects sign=true.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      sign:
-        description: 'Sign and notarize the installers'
+      publish:
+        description: 'Publish a stable GitHub Release (otherwise preview only)'
         type: boolean
-        default: true
+        default: false
+      version:
+        description: 'Publication version X.Y.Z, matching checked-in versions'
+        type: string
+        required: false
+      commit:
+        description: 'Full verified main commit SHA required for publication'
+        type: string
+        required: false
+      sign:
+        description: 'Require Apple Developer ID signing and notarization'
+        type: boolean
+        default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  SIGN: ${{ github.event.inputs.sign || 'true' }}
+  RELEASE_PUBLISH: ${{ inputs.publish || false }}
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_COMMIT: ${{ inputs.commit }}
 
 jobs:
+  prepare:
+    name: validate-release-source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      version: ${{ steps.source.outputs.version }}
+      source_commit: ${{ steps.source.outputs.source_commit }}
+      publish: ${{ steps.source.outputs.publish }}
+    steps:
+      - name: Checkout the exact source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
+      - name: Enable exact package-manager version
+        run: corepack enable
+      - name: Set up exact packaged Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Validate source, versions, notes, and publication eligibility
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm --filter @floway-dev/desktop run release:require
+      - name: Require the publication signing key
+        if: steps.source.outputs.publish == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Publishing requires TAURI_SIGNING_PRIVATE_KEY. See docs/release-runbook.zh-CN.md."
+            exit 1
+          fi
+
   build-installer:
     name: build-${{ matrix.name }}
+    needs: [prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -48,10 +95,13 @@ jobs:
     permissions:
       contents: read
     outputs:
-      signed: ${{ steps.signing.outputs.signed }}
+      apple_signed: ${{ steps.signing.outputs.signed }}
+      updater_signed: ${{ steps.signing.outputs.updater_signed }}
     steps:
-      - name: Checkout
+      - name: Checkout the validated source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source_commit }}
       - name: Enable exact package-manager version
         run: corepack enable
       - name: Set up exact packaged Node.js
@@ -63,15 +113,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install the macOS Rust target
         run: rustup target add ${{ matrix.target }}
-      # Signing is a layer the pipeline adds when the Apple credentials exist:
-      # an owner without a Developer account still gets a working, updateable
-      # installer, and adding the secrets later upgrades the same workflow in
-      # place. What never degrades silently is a release that was asked to sign.
-      # The credentials are forwarded through $GITHUB_ENV only when present: an
-      # empty APPLE_SIGNING_IDENTITY still counts as "set" for codesign.
       - name: Resolve the signing mode
         id: signing
         env:
+          PUBLISH: ${{ needs.prepare.outputs.publish }}
+          REQUIRE_APPLE: ${{ inputs.sign || false }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -80,27 +126,37 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_API_KEY_CONTENT" ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
+          umask 077
+          apple_complete=false
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_API_KEY_CONTENT" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ]; then
+            apple_complete=true
           fi
-          if [ "$SIGN" = "true" ] && [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Publishing requires the TAURI_SIGNING_PRIVATE_KEY secret. See docs/release-runbook.zh-CN.md."
+          if [ "$REQUIRE_APPLE" = "true" ] && [ "$apple_complete" != "true" ]; then
+            echo "::error::sign=true requires the complete Apple signing credentials. See docs/release-runbook.zh-CN.md."
             exit 1
           fi
-          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sign || 'false' }}" = "true" ] && [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "::error::A signed dispatch requires the Apple signing secrets. See docs/release-runbook.zh-CN.md."
+          signed=false
+          if [ "$apple_complete" = "true" ] && { [ "$PUBLISH" = "true" ] || [ "$REQUIRE_APPLE" = "true" ]; }; then
+            signed=true
+          fi
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" = "true" ] && [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Publishing requires TAURI_SIGNING_PRIVATE_KEY."
             exit 1
           fi
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/floway-updater.key"
-            echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$RUNNER_TEMP/floway-updater.key" >> "$GITHUB_ENV"
-            if [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
-              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" >> "$GITHUB_ENV"
-            fi
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/floway-updater.key"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+              echo 'TAURI_BUILD_CONFIG={"bundle":{"createUpdaterArtifacts":true}}'
+            } >> "$GITHUB_ENV"
+            echo "updater_signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo 'TAURI_BUILD_CONFIG={"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_ENV"
+            echo "updater_signed=false" >> "$GITHUB_OUTPUT"
           fi
-          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_API_KEY_CONTENT" ]; then
+          if [ "$signed" = "true" ]; then
             printf '%s' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
             {
               echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
@@ -126,32 +182,34 @@ jobs:
           security list-keychain -d user -s "$keychain_path"
       - name: Build the web dashboard
         run: pnpm run build:web
-      # Signing credentials arrive through $GITHUB_ENV from the signing-mode
-      # step, so this build sees them only when they actually exist.
-      - name: Build the installer (signed and notarized when credentials exist)
-        run: pnpm --filter @floway-dev/desktop exec tauri build --target ${{ matrix.target }}
+      # Updater output is a release-only override; normal debug verification
+      # still builds without the owner's private key.
+      # https://v2.tauri.app/plugin/updater/#building
+      - name: Build the installer and updater artifacts
+        run: pnpm --filter @floway-dev/desktop exec tauri build --target ${{ matrix.target }} --config "$TAURI_BUILD_CONFIG"
       - name: Gate the release on the packaged verification
         run: pnpm --filter @floway-dev/desktop run test:packaged:macos -- --target=${{ matrix.target }} --profile=release --launch=yes
+      - name: Collect architecture-specific assets without repacking signed bytes
+        run: pnpm --filter @floway-dev/desktop run release:collect -- --target=${{ matrix.target }} --dir="$GITHUB_WORKSPACE/release-artifacts" --updater=${{ steps.signing.outputs.updater_signed }}
       - name: Upload the architecture artifacts
         uses: actions/upload-artifact@v4
         with:
           name: floway-macos-${{ matrix.name }}
-          path: |
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+          path: release-artifacts/*
           if-no-files-found: error
 
-  publish:
-    name: publish
-    needs: [build-installer]
-    if: github.event_name == 'push'
+  assemble:
+    name: assemble-release-assets
+    needs: [prepare, build-installer]
+    if: needs.build-installer.outputs.updater_signed == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Checkout
+      - name: Checkout the validated source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source_commit }}
       - name: Enable exact package-manager version
         run: corepack enable
       - name: Set up exact packaged Node.js
@@ -169,20 +227,20 @@ jobs:
           merge-multiple: true
       - name: Assemble artifact digest evidence
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir="$GITHUB_WORKSPACE/release-artifacts"
       - name: Prepare shared release notes
         env:
-          TAG: ${{ github.ref_name }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          APPLE_SIGNED: ${{ needs.build-installer.outputs.apple_signed }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: |
           test -s "docs/releases/${TAG#v}.md"
           {
             cat "docs/releases/${TAG#v}.md"
             echo
-            echo "- Source commit: ${{ github.sha }}"
-            if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_API_KEY_CONTENT" ]; then
+            echo "- Source commit: $SOURCE_COMMIT"
+            if [ "$APPLE_SIGNED" != "true" ]; then
               echo
               echo '> [!IMPORTANT]'
               echo '> This build is not Developer ID signed or notarized. To install: open the DMG, drag Floway to Applications, then right-click the app and choose Open — or run `xattr -dr com.apple.quarantine /Applications/Floway.app` once. Updates remain integrity-protected by the built-in updater signature.'
@@ -196,16 +254,65 @@ jobs:
           } > release-notes.md
       - name: Bind the same notes to the updater manifest
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: pnpm --filter @floway-dev/desktop run release:manifest -- --version="${TAG#v}" --tag="$TAG" --repo=${{ github.repository }} --dir="$GITHUB_WORKSPACE/release-artifacts" --notes-file="$GITHUB_WORKSPACE/release-notes.md"
+      - name: Include the shared notes in the release asset set
+        run: cp release-notes.md release-artifacts/release-notes.md
+      - name: Upload the complete release asset set
+        uses: actions/upload-artifact@v4
+        with:
+          name: floway-release
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [prepare, assemble]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout the validated source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source_commit }}
+          fetch-depth: 0
+      - name: Enable exact package-manager version
+        run: corepack enable
+      - name: Set up exact packaged Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Collect the complete release asset set
+        uses: actions/download-artifact@v4
+        with:
+          name: floway-release
+          path: release-artifacts
+      - name: Recheck publication eligibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm --filter @floway-dev/desktop run release:require
+      # --target binds a new manual tag to the already-verified source. This
+      # job publishes directly, so it does not depend on a GITHUB_TOKEN tag
+      # push triggering another workflow.
+      # https://cli.github.com/manual/gh_release_create
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: |
           gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_COMMIT" \
+            --latest \
             --title "Floway $TAG" \
-            --notes-file release-notes.md \
+            --notes-file release-artifacts/release-notes.md \
             release-artifacts/*.dmg \
             release-artifacts/*.app.tar.gz \
             release-artifacts/*.app.tar.gz.sig \
