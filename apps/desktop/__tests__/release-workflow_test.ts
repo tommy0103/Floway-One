@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { expect, test } from 'vitest';
@@ -36,5 +38,28 @@ test('Floway release shell programs parse without executing signing or publicati
     for (const step of job.steps) {
       if (step.run) await promisify(execFile)('bash', ['-n', '-c', step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'fixture')]);
     }
+  }
+});
+
+
+test('Floway signing setup preserves the encoded private key bytes and uses the supported Tauri variable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'floway-release-signing-'));
+  try {
+    const step = workflow.jobs['build-installer']?.steps.find(candidate => candidate.run?.includes('floway-updater.key'));
+    expect(step?.run).toBeDefined();
+    const key = 'ZmFrZSBzaWduaW5nIGtleQ==';
+    await promisify(execFile)('bash', ['-c', step!.run!], { env: {
+      ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: join(root, 'outputs'), GITHUB_ENV: join(root, 'environment'),
+      PUBLISH: 'false', REQUIRE_APPLE: 'false', APPLE_CERTIFICATE: '', APPLE_API_KEY_CONTENT: '',
+      APPLE_SIGNING_IDENTITY: '', APPLE_API_ISSUER: '', APPLE_API_KEY: '',
+      TAURI_SIGNING_PRIVATE_KEY: key, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '',
+    } });
+    expect(await readFile(join(root, 'floway-updater.key'), 'utf8')).toBe(key);
+    const environment = await readFile(join(root, 'environment'), 'utf8');
+    expect(environment).toContain(`TAURI_SIGNING_PRIVATE_KEY=${join(root, 'floway-updater.key')}\n`);
+    expect(environment).not.toContain('TAURI_SIGNING_PRIVATE_KEY_PATH=');
+    expect(environment).toContain('"createUpdaterArtifacts":true');
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

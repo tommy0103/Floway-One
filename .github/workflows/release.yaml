@@ -145,7 +145,7 @@ jobs:
             exit 1
           fi
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/floway-updater.key"
+            printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/floway-updater.key"
             {
               echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/floway-updater.key"
               echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
