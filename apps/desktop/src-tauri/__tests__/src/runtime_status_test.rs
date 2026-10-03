@@ -398,4 +398,5 @@ fn credential_denial_reaches_the_recovery_surface_with_its_original_chain() {
     assert!(state.mark_startup_failed(generation, &report));
     assert!(state.complete_teardown(generation));
     assert_eq!(state.status().to_wire_value()["kind"], "credential");
+    assert_eq!(state.failure_chain(), report.chain);
 }

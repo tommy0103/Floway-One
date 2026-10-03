@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 
 import { type InstalledAppVerificationContext, writeContractedEntry } from './installed-app.ts';
 import { type CredentialIdentity, personalEntrySource, runCredentialScript } from './personal-runtime.ts';
-import { observePackagedFailureSurface, PERSONAL_DASHBOARD_PORT } from './process-lifecycle.ts';
+import { assertLoopbackPortReleased, observePackagedFailureSurface, PERSONAL_DASHBOARD_PORT } from './process-lifecycle.ts';
 import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 
 export const assertPortAndStorageFailureSurfaces = async (
@@ -17,6 +17,7 @@ export const assertPortAndStorageFailureSurfaces = async (
   cleanup.defer('production runtime entry restoration after packaged faults', async () => {
     await writeContractedEntry(context, productionEntry);
   });
+  await assertCredentialFailureSurfaces(nativeWindowProbe, context, isolatedRoot, productionEntry);
 
   await withFailureSafeCleanup(async portCleanup => {
     const occupied = createServer();
@@ -108,3 +109,45 @@ export const assertMigrationFailureSurface = async (
     persistedLogFragments: expected,
   });
 });
+
+export const assertCredentialFailureSurfaces = async (
+  nativeWindowProbe: string,
+  context: InstalledAppVerificationContext,
+  isolatedRoot: string,
+  productionEntry: string,
+): Promise<void> => await withFailureSafeCleanup(async cleanup => {
+  cleanup.defer('production runtime entry restoration after credential denial', async () => {
+    await writeContractedEntry(context, productionEntry);
+  });
+  await writeContractedEntry(context, `
+import { loadDeviceMasterKey } from './src/device-master-key.js';
+import { reportDesktopStartupFailure } from './src/startup-failure.js';
+try {
+  await loadDeviceMasterKey({ run: operation => operation() }, true, {
+    getSecret() { throw new Error('Keychain denied access without interaction'); },
+    setSecret() { throw new Error('must not replace a denied key'); },
+  });
+} catch (failure) {
+  reportDesktopStartupFailure(failure);
+  throw failure;
+}
+`);
+  for (const locale of ['en', 'zh-Hans'] as const) {
+    const expected = [
+      'Failed to read the Floway device master key from the operating system credential store',
+      'Keychain denied access without interaction',
+    ];
+    await observePackagedFailureSurface({
+      applicationHome: resolve(isolatedRoot, `ShellData-denied-credential-${locale}`),
+      executable: context.executable,
+      expectedFragments: expected,
+      expectedLocale: locale,
+      failureKind: 'credential',
+      nativeWindowProbe,
+      persistedLogFragments: expected,
+      sidecarExecutable: context.node,
+    });
+    await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+  }
+  console.log('Floway credential denial reached the visible English and Chinese recovery surfaces with its original cause');
+}, 'Credential denial verification and entry restoration failed');
