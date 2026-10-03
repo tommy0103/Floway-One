@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { copyFile, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -224,6 +225,24 @@ describe('desktop bundle preparation', () => {
     ))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(assertPackagedRuntime(prepared.runtimeRoot)).resolves.toBeUndefined();
   }, 20_000);
+
+  test.runIf(process.platform === 'darwin')('Floway hashes the signed native bytes and preserves the source Node executable', async () => {
+    const root = await temporaryRoot();
+    await writeFile(resolve(root, '.node-version'), `${process.versions.node}\n`);
+    const sourceHash = createHash('sha256').update(await readFile(process.execPath)).digest('hex');
+    const prepared = await prepareDesktopBundle({
+      canonicalMigrationsRoot: await writeCanonicalMigrations(root), desktopRoot: root,
+      generateRuntime: generateFixtureRuntime, nodeArchitecture: process.arch, nodeExecutable: process.execPath,
+      nodePlatform: process.platform, nodeVersion: process.versions.node, releaseVersion: '0.1.0',
+      targetTriple: targetTripleForHost(process.platform, process.arch), signingIdentity: '-',
+    });
+    const contract = JSON.parse(await readFile(prepared.contractPath, 'utf8')) as { nativeDependencies: { files: Array<{ path: string; sha256: string }> } };
+    const signedFile = contract.nativeDependencies.files[0]!;
+    const signedHash = createHash('sha256').update(await readFile(resolve(prepared.runtimeRoot, 'apps/platform-node/node_modules', signedFile.path))).digest('hex');
+    expect(signedFile.sha256).toBe(signedHash);
+    expect(signedHash).not.toBe(sourceHash);
+    expect(createHash('sha256').update(await readFile(process.execPath)).digest('hex')).toBe(sourceHash);
+  }, 30_000);
 
   test('rejects an assembly omission against canonical migrations before publishing a contract', async () => {
     const root = await temporaryRoot();

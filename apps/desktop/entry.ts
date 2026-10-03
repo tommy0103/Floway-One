@@ -52,4 +52,5 @@ await prepareDesktopBundle({
   releaseVersion,
   targetTriple,
   executeNode,
+  signingIdentity: process.env.APPLE_SIGNING_IDENTITY,
 });

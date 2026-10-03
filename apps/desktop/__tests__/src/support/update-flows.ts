@@ -24,6 +24,7 @@ import {
   waitForProcessStopped,
 } from './process-lifecycle.ts';
 import {
+  BASE_VERIFICATION_VERSION,
   generateUpdateSigningKey,
   packageApplicationArchive,
   readUpdateState,
@@ -40,7 +41,6 @@ import { withFailureSafeCleanup } from '../../../src/failure-chain.ts';
 import type { DesktopTargetTriple } from '../../../src/release-contract.ts';
 
 const execFileAsync = promisify(execFile);
-const ORIGINAL_RELEASE_VERSION = '0.1.0';
 
 export interface UpdateScenarioContext {
   readonly context: InstalledAppVerificationContext;
@@ -68,8 +68,9 @@ export const buildUpdatedApplication = async (options: {
   readonly nodeExecutable: string;
   readonly repositoryRoot: string;
   readonly targetTriple: DesktopTargetTriple;
+  readonly profile: 'debug' | 'release';
 }): Promise<string> => {
-  const { desktopRoot, nodeExecutable, repositoryRoot, targetTriple } = options;
+  const { desktopRoot, nodeExecutable, repositoryRoot, targetTriple, profile } = options;
   const jsonAuthorities = [
     'apps/desktop/package.json',
     'apps/platform-node/package.json',
@@ -84,22 +85,25 @@ export const buildUpdatedApplication = async (options: {
   for (const path of [...jsonAuthorities, cargoManifest, cargoLock]) {
     originals.set(path, await readFile(path, 'utf8'));
   }
-  const updatedApp = resolve(desktopRoot, 'src-tauri/target', targetTriple, 'debug/bundle/macos/Floway.app');
-  try {
+  const updatedApp = resolve(desktopRoot, 'src-tauri/target', targetTriple, profile, 'bundle/macos/Floway.app');
+  await withFailureSafeCleanup(async cleanup => {
+    for (const [path, source] of originals) {
+      cleanup.defer(`release authority ${path} restoration`, async () => await writeFile(path, source));
+    }
     for (const path of jsonAuthorities) {
       const manifest = JSON.parse(originals.get(path)!) as { version?: unknown };
-      if (manifest.version !== ORIGINAL_RELEASE_VERSION) {
-        throw new Error(`Release authority ${path} is not at ${ORIGINAL_RELEASE_VERSION}`);
+      if (manifest.version !== BASE_VERIFICATION_VERSION) {
+        throw new Error(`Release authority ${path} is not at ${BASE_VERIFICATION_VERSION}`);
       }
       manifest.version = UPDATE_VERIFICATION_VERSION;
       await writeFile(path, `${JSON.stringify(manifest, undefined, 2)}\n`);
     }
     const cargoSource = originals.get(cargoManifest)!;
-    if (!cargoSource.includes(`version = "${ORIGINAL_RELEASE_VERSION}"`)) {
-      throw new Error(`Cargo release authority is not at ${ORIGINAL_RELEASE_VERSION}`);
+    if (!cargoSource.includes(`version = "${BASE_VERIFICATION_VERSION}"`)) {
+      throw new Error(`Cargo release authority is not at ${BASE_VERIFICATION_VERSION}`);
     }
     await writeFile(cargoManifest, cargoSource.replace(
-      `version = "${ORIGINAL_RELEASE_VERSION}"`,
+      `version = "${BASE_VERIFICATION_VERSION}"`,
       `version = "${UPDATE_VERIFICATION_VERSION}"`,
     ));
     await runPnpm(repositoryRoot, [
@@ -108,7 +112,7 @@ export const buildUpdatedApplication = async (options: {
       'exec',
       'tauri',
       'build',
-      '--debug',
+      ...(profile === 'debug' ? ['--debug'] : []),
       '--bundles',
       'app',
       '--target',
@@ -121,14 +125,42 @@ export const buildUpdatedApplication = async (options: {
       CARGO_PROFILE_DEV_DEBUG: '0',
       FLOWAY_DESKTOP_EXECUTE_NODE: '1',
       FLOWAY_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
-      TAURI_CONFIG: '{"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}',
+      TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}',
+      APPLE_SIGNING_IDENTITY: undefined,
+      APPLE_API_ISSUER: undefined,
+      APPLE_API_KEY: undefined,
+      APPLE_API_KEY_PATH: undefined,
+      APPLE_ID: undefined,
+      APPLE_PASSWORD: undefined,
+      APPLE_TEAM_ID: undefined,
+      TAURI_SIGNING_PRIVATE_KEY: undefined,
     });
-  } finally {
-    for (const [path, source] of originals) {
-      await writeFile(path, source);
-    }
-  }
+  }, 'Floway updated fixture build failed and version authority restoration also failed');
   return updatedApp;
+};
+
+// Release checks use the same optimized application and feature gates as the
+// shipping bundle. Plain HTTP is enabled only in an isolated fixture build;
+// the original shipping bundle must first prove that it rejects that transport.
+// https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.12.0/plugins/updater/src/config.rs
+const buildReleaseUpdateFixture = async (scenario: UpdateScenarioContext): Promise<string> => {
+  await runPnpm(scenario.repositoryRoot, [
+    '--filter', '@floway-dev/desktop', 'exec', 'tauri', 'build', '--bundles', 'app', '--target', scenario.targetTriple,
+  ], {
+    ...process.env,
+    FLOWAY_DESKTOP_EXECUTE_NODE: '1',
+    FLOWAY_DESKTOP_NODE_EXECUTABLE: scenario.nodeExecutable,
+    TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}',
+    APPLE_SIGNING_IDENTITY: undefined,
+    APPLE_API_ISSUER: undefined,
+    APPLE_API_KEY: undefined,
+    APPLE_API_KEY_PATH: undefined,
+    APPLE_ID: undefined,
+    APPLE_PASSWORD: undefined,
+    APPLE_TEAM_ID: undefined,
+    TAURI_SIGNING_PRIVATE_KEY: undefined,
+  });
+  return resolve(scenario.desktopRoot, 'src-tauri/target', scenario.targetTriple, 'release/bundle/macos/Floway.app');
 };
 
 export const cloneApplication = async (source: string, destination: string): Promise<void> => {
@@ -346,6 +378,39 @@ const recoveryPointShaFromOutput = (output: string): string => {
   return sha;
 };
 
+const assertProductionRejectsInsecureUpdates = async (scenario: UpdateScenarioContext): Promise<void> => {
+  const applicationHome = resolve(scenario.isolatedRoot, 'ShellData-update-transport');
+  const personalRoot = resolve(scenario.isolatedRoot, 'PersonalData-update-transport');
+  const credentialIdentity: CredentialIdentity = {
+    service: `Floway desktop package verification ${randomUUID()}`,
+    account: `device-master-key-${randomUUID()}`,
+  };
+  await withFailureSafeCleanup(async cleanup => {
+    cleanup.defer('update-transport personal data', async () => await rm(personalRoot, { force: true, recursive: true }));
+    cleanup.defer('update-transport shell data', async () => await rm(applicationHome, { force: true, recursive: true }));
+    cleanup.defer('update-transport credential', async () => await runCredentialScript(scenario.context, credentialIdentity, 'delete'));
+    await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+    cleanup.defer('update-transport listener', async () => await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT));
+    await restorePristineApplication(scenario);
+    await writeContractedEntry(scenario.context, personalUpdateEntrySource(personalRoot, credentialIdentity));
+    const requests = scenario.server.requestCount;
+    const launch = launchForUpdate(scenario, { applicationHome });
+    cleanup.defer('update-transport process group', async () => await terminateProcessGroup(launch.child));
+    await waitForCaptured(launch, [
+      'FLOWAY_DESKTOP_UPDATE ', '"phase":"error"', '"updatePhase":"check"',
+      'Floway could not configure its updater endpoints',
+      'The configured updater endpoint must use a secure protocol like `https`.',
+    ]);
+    await waitForLoopbackHealth(`http://127.0.0.1:${PERSONAL_DASHBOARD_PORT}`, launch.output);
+    await assertUpdateState(applicationHome, {
+      failurePhase: 'check', lastHealthyVersion: BASE_VERIFICATION_VERSION, pending: null, staged: null,
+    });
+    if (scenario.server.requestCount !== requests) throw new Error('Floway production updater requested an insecure fixture endpoint');
+    await terminateProcessGroup(launch.child);
+  });
+  console.log('Floway production release rejected plain-HTTP update authority before any fixture request and kept the Gateway serving');
+};
+
 // S1: a signed update stages in the background while the gateway keeps
 // serving, installs at a controlled restart behind a device-protected
 // recovery point, and reports the new version healthy.
@@ -377,7 +442,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
         artifactUrl: scenario.server.artifactUrl,
         signature: artifact.signature,
         target: scenario.updateTarget,
-        version: scenario.verifyUpdateUi ? ORIGINAL_RELEASE_VERSION : UPDATE_VERIFICATION_VERSION,
+        version: scenario.verifyUpdateUi ? BASE_VERIFICATION_VERSION : UPDATE_VERIFICATION_VERSION,
       }),
     });
 
@@ -392,7 +457,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
     ], 120_000);
     await waitForLoopbackHealth(origin, first.output);
     await assertUpdateState(applicationHome, {
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: scenario.verifyUpdateUi ? null : UPDATE_VERIFICATION_VERSION,
     });
@@ -425,7 +490,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       // package download on a slower native runner.
       await waitForCaptured(first, ['FLOWAY_DESKTOP_UPDATE ', '"phase":"staged"', `"version":"${UPDATE_VERIFICATION_VERSION}"`], 120_000);
       await probe('ready', surface => surface.readyButtons === 2 && surface.phase === 'ready' && surface.version === UPDATE_VERIFICATION_VERSION);
-      await assertUpdateState(applicationHome, { lastHealthyVersion: ORIGINAL_RELEASE_VERSION, pending: null, staged: UPDATE_VERIFICATION_VERSION });
+      await assertUpdateState(applicationHome, { lastHealthyVersion: BASE_VERIFICATION_VERSION, pending: null, staged: UPDATE_VERIFICATION_VERSION });
       // Keep pixel evidence outside the disposable application data root.
       await writeFile('/private/tmp/floway-update-packaged-ready.png', await readFile(resolve(applicationHome, 'update-ui.png')));
       await probe('later', surface => surface.readyButtons === 1 && surface.laterButtons === 0);
@@ -444,7 +509,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
     }
     const captured = await waitForCaptured(second, [
       '"phase":"recovery-point"',
-      `"previousVersion":"${ORIGINAL_RELEASE_VERSION}"`,
+      `"previousVersion":"${BASE_VERIFICATION_VERSION}"`,
       '"phase":"installed"',
       '"phase":"healthy"',
       `"version":"${UPDATE_VERIFICATION_VERSION}"`,
@@ -466,7 +531,7 @@ export const assertSignedUpdateInstallsAndReportsHealthy = async (
       throw new Error('Floway recovery point digest diverged from its creation evidence');
     }
     await assertRecoveryPointOpensWithDeviceKey(scenario, credentialIdentity, recoveryPointPath);
-    console.log('Floway installed the signed update behind a device-protected recovery point and marked 0.2.0 healthy after its controlled restart');
+    console.log(`Floway installed the signed update behind a device-protected recovery point and marked ${UPDATE_VERIFICATION_VERSION} healthy after its controlled restart`);
     await terminateProcessGroup(second.child);
   });
 };
@@ -539,7 +604,7 @@ export const assertStagedArtifactTamperRejected = async (
     ], 120_000);
     await assertUpdateState(applicationHome, {
       failurePhase: 'signature',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: UPDATE_VERIFICATION_VERSION,
     });
@@ -625,7 +690,7 @@ export const assertSignatureFailureKeepsRuntimeServing = async (
     await waitForLoopbackHealth(origin, launch.output);
     await assertUpdateState(applicationHome, {
       failurePhase: 'signature',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: null,
     });
@@ -691,7 +756,7 @@ export const assertPostUpdateFailurePresentsRecovery = async (
       `"version":"${UPDATE_VERIFICATION_VERSION}"`,
     ], 120_000);
     await assertUpdateState(applicationHome, {
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
       pending: null,
       staged: UPDATE_VERIFICATION_VERSION,
     });
@@ -713,8 +778,8 @@ export const assertPostUpdateFailurePresentsRecovery = async (
     ], 240_000);
     await assertUpdateState(applicationHome, {
       failurePhase: 'health',
-      lastHealthyVersion: ORIGINAL_RELEASE_VERSION,
-      pending: { previousVersion: ORIGINAL_RELEASE_VERSION, version: UPDATE_VERIFICATION_VERSION },
+      lastHealthyVersion: BASE_VERIFICATION_VERSION,
+      pending: { previousVersion: BASE_VERIFICATION_VERSION, version: UPDATE_VERIFICATION_VERSION },
       staged: null,
     });
     const recoveryPointPath = resolve(applicationHome, 'update', 'recovery-point.json');
@@ -729,7 +794,7 @@ export const assertPostUpdateFailurePresentsRecovery = async (
       expectedLocale: options.expectedLocale,
       expectedRenderedFragments: options.expectedFragments,
       failureKind: options.failureKind,
-      previousVersion: ORIGINAL_RELEASE_VERSION,
+      previousVersion: BASE_VERIFICATION_VERSION,
       updateVersion: UPDATE_VERIFICATION_VERSION,
     });
     console.log(`Floway post-update ${options.failureKind} failure kept the recovery point, the full error, and the previous-version download entry without marking ${UPDATE_VERIFICATION_VERSION} healthy`);
@@ -773,26 +838,37 @@ export const assertPackagedUpdateFlows = async (
     throw new Error('Packaged update verification requires FLOWAY_DESKTOP_NODE_EXECUTABLE');
   }
   const base = { ...scenarioBase, nodeExecutable };
-  const signingDir = resolve(base.isolatedRoot, 'update-signing');
-  const signingKey = await generateUpdateSigningKey(base.repositoryRoot, signingDir);
-  const server = await UpdateFixtureServer.start();
-  const pristineApp = resolve(base.isolatedRoot, 'Floway-pristine.app');
-  await cloneApplication(base.installedApp, pristineApp);
-  const updatedApp = await buildUpdatedApplication({
-    desktopRoot: base.desktopRoot,
-    nodeExecutable,
-    repositoryRoot: base.repositoryRoot,
-    targetTriple: base.targetTriple,
-  });
-  const scenario: UpdateScenarioContext = {
-    ...base,
-    pristineApp,
-    server,
-    signingKey,
-    updatedApp,
-    updateTarget: `darwin-${base.targetTriple.startsWith('aarch64') ? 'aarch64' : 'x86_64'}`,
-  };
-  try {
+  await withFailureSafeCleanup(async cleanup => {
+    const signingDir = resolve(base.isolatedRoot, 'update-signing');
+    cleanup.defer('update signing directory', async () => await rm(signingDir, { force: true, recursive: true }));
+    const signingKey = await generateUpdateSigningKey(base.repositoryRoot, signingDir);
+    const server = await UpdateFixtureServer.start();
+    cleanup.defer('update fixture server', async () => await server.close());
+    const pristineApp = resolve(base.isolatedRoot, 'Floway-pristine.app');
+    cleanup.defer('pristine update fixture', async () => await rm(pristineApp, { force: true, recursive: true }));
+    await cloneApplication(base.installedApp, pristineApp);
+    const profile = base.verifyUpdateUi ? 'debug' : 'release';
+    const bundlePath = resolve(base.desktopRoot, 'src-tauri/target', base.targetTriple, profile, 'bundle/macos/Floway.app');
+    cleanup.defer('updated fixture bundle', async () => await rm(bundlePath, { force: true, recursive: true }));
+    const updatedBundle = await buildUpdatedApplication({
+      desktopRoot: base.desktopRoot, nodeExecutable, repositoryRoot: base.repositoryRoot,
+      targetTriple: base.targetTriple, profile,
+    });
+    const updatedApp = base.verifyUpdateUi ? updatedBundle : resolve(base.isolatedRoot, 'Floway-updated.app');
+    if (!base.verifyUpdateUi) {
+      cleanup.defer('isolated updated application', async () => await rm(updatedApp, { force: true, recursive: true }));
+      await cloneApplication(updatedBundle, updatedApp);
+    }
+    const scenario: UpdateScenarioContext = {
+      ...base, pristineApp, server, signingKey, updatedApp,
+      updateTarget: `darwin-${base.targetTriple.startsWith('aarch64') ? 'aarch64' : 'x86_64'}`,
+    };
+    if (!scenario.verifyUpdateUi) {
+      await assertProductionRejectsInsecureUpdates(scenario);
+      const fixture = await buildReleaseUpdateFixture(scenario);
+      await rm(pristineApp, { force: true, recursive: true });
+      await cloneApplication(fixture, pristineApp);
+    }
     await assertSignedUpdateInstallsAndReportsHealthy(scenario);
     await assertStagedArtifactTamperRejected(scenario);
     await assertSignatureFailureKeepsRuntimeServing(scenario, {
@@ -819,10 +895,5 @@ export const assertPackagedUpdateFlows = async (
       label: 'migration-failure',
       tamper: tamperAddInvalidMigration,
     });
-  } finally {
-    await server.close();
-    await rm(updatedApp, { force: true, recursive: true });
-    await rm(signingDir, { force: true, recursive: true });
-    await rm(pristineApp, { force: true, recursive: true });
-  }
+  }, 'Floway packaged update verification failed and fixture cleanup also failed');
 };

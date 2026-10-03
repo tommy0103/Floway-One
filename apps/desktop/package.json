@@ -11,7 +11,9 @@
     "test:desktop": "jiti src/test-desktop.ts",
     "test:packaged:macos": "jiti __tests__/src/packaged-desktop-verifier.ts",
     "test:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release:require": "jiti require-release.ts",
+    "release:collect": "jiti collect-release-artifacts.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

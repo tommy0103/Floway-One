@@ -3,8 +3,18 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { basename, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const UPDATE_VERIFICATION_VERSION = '0.2.0';
+import { readDesktopReleaseVersion } from '../../../src/release-contract.ts';
+
+export const nextUpdateVerificationVersion = (current: string): string => {
+  const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(current);
+  if (parts === null) throw new Error(`Floway update verification requires a stable release version: ${current}`);
+  return `${parts[1]}.${BigInt(parts[2]!) + 1n}.0`;
+};
+
+export const BASE_VERIFICATION_VERSION = await readDesktopReleaseVersion(fileURLToPath(new URL('../../../', import.meta.url)));
+export const UPDATE_VERIFICATION_VERSION = nextUpdateVerificationVersion(BASE_VERIFICATION_VERSION);
 
 export interface UpdateSigningKey {
   readonly privateKeyPath: string;
@@ -46,7 +56,13 @@ export const runPnpm = async (
 const runTauriSigner = async (
   repositoryRoot: string,
   args: readonly string[],
-): Promise<string> => await runPnpm(repositoryRoot, ['--filter', '@floway-dev/desktop', 'exec', 'tauri', 'signer', ...args]);
+): Promise<string> => await runPnpm(repositoryRoot, ['--filter', '@floway-dev/desktop', 'exec', 'tauri', 'signer', ...args], {
+  ...process.env,
+  // This signer owns an explicit throwaway key, never the publisher's key.
+  // https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-cli/src/signer/sign.rs
+  TAURI_SIGNING_PRIVATE_KEY: undefined,
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: undefined,
+});
 
 // The packaged verifier generates a throwaway minisign keypair per run; the
 // private key never leaves the verifier's temporary directory.
@@ -148,11 +164,13 @@ interface ServedUpdateFixture {
 // between application launches.
 export class UpdateFixtureServer {
   private fixture: ServedUpdateFixture | undefined;
+  private requests = 0;
 
   private constructor(private readonly server: Server) {}
 
   static async start(): Promise<UpdateFixtureServer> {
     const holder = new UpdateFixtureServer(createServer((request, response) => {
+      holder.requests += 1;
       if (request.url === '/manifest.json' && holder.fixture !== undefined) {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify(holder.fixture.manifest));
@@ -171,6 +189,10 @@ export class UpdateFixtureServer {
       holder.server.listen(0, '127.0.0.1', resolveListen);
     });
     return holder;
+  }
+
+  get requestCount(): number {
+    return this.requests;
   }
 
   get port(): number {

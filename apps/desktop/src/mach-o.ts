@@ -17,6 +17,8 @@ export type MachOArchitecture = 'arm64' | 'x64';
 const MACH_O_64_MAGIC = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
 const FAT_CIGAM = 0xbebafeca;
+const FAT_MAGIC_64 = 0xcafebabf;
+const FAT_CIGAM_64 = 0xbfbafeca;
 const FAT_ARCH_BYTES = 20;
 const CPU_ARCH_ABI64 = 0x01000000;
 const CPU_TYPE_X86 = 7;
@@ -31,6 +33,23 @@ const architectureForCpuType = (cpuType: number): MachOArchitecture => {
   if (cpuType === CPU_TYPE_ARM64) return 'arm64';
   if (cpuType === CPU_TYPE_X86_64) return 'x64';
   throw new Error(`the Mach-O CPU type 0x${cpuType.toString(16)} is unsupported`);
+};
+
+// Identify code by its header, including extensionless tools and dylibs in
+// resources. Apple notarization checks every Mach-O image, not only .node files.
+// https://developer.apple.com/documentation/security/resolving-common-notarization-issues
+export const isMachOFile = async (path: string): Promise<boolean> => {
+  const file = await open(path, 'r');
+  try {
+    const header = Buffer.alloc(4);
+    const { bytesRead } = await file.read(header, 0, header.byteLength, 0);
+    if (bytesRead !== header.byteLength) return false;
+    const magic = header.readUInt32BE(0);
+    return header.readUInt32LE(0) === MACH_O_64_MAGIC || magic === MACH_O_64_MAGIC
+      || [FAT_MAGIC, FAT_CIGAM, FAT_MAGIC_64, FAT_CIGAM_64].includes(magic);
+  } finally {
+    await file.close();
+  }
 };
 
 export const readMachOArchitectures = async (path: string): Promise<readonly MachOArchitecture[]> => {

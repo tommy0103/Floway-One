@@ -22,6 +22,9 @@
     "resources": {
       "bundle-inputs/runtime/": "runtime/",
       "bundle-inputs/desktop-bundle-contract.json": "desktop-bundle-contract.json"
+    },
+    "macOS": {
+      "entitlements": "Entitlements.plist"
     }
   },
   "plugins": {
