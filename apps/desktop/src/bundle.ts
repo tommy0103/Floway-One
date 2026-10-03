@@ -6,6 +6,7 @@ import { exchangeDirectoriesAtomically, type AtomicDirectoryExchange } from './a
 import { settleWithCleanup } from './failure-chain.ts';
 import { visitFileTree } from './filesystem-tree.ts';
 import { assertSingleMachOArchitecture, thinMachOToArchitecture, type MachOArchitecture } from './mach-o.ts';
+import { signPackagedMachOResources } from './macos-signing.ts';
 import { compilePackagedRuntime, probePackagedRuntime } from './packaged-runtime.ts';
 import {
   architectureForTargetTriple,
@@ -25,6 +26,7 @@ export interface PrepareDesktopBundleOptions {
   readonly releaseVersion: string;
   readonly targetTriple: string;
   readonly executeNode?: boolean;
+  readonly signingIdentity?: string;
   readonly exchangeDirectories?: AtomicDirectoryExchange;
   readonly cleanupStaging?: (path: string) => Promise<void>;
   readonly validateSidecar?: (path: string, targetTriple: string) => Promise<void>;
@@ -294,6 +296,7 @@ export const prepareDesktopBundle = async ({
   releaseVersion,
   targetTriple,
   executeNode = true,
+  signingIdentity,
   exchangeDirectories = exchangeDirectoriesAtomically,
   cleanupStaging = async path => await rm(path, { force: true, recursive: true }),
   validateSidecar,
@@ -328,6 +331,7 @@ export const prepareDesktopBundle = async ({
     await compilePackagedRuntime(stagedRuntimeRoot);
     if (nodePlatform === 'darwin') {
       await makeNativeModulesTargetSpecific(stagedRuntimeRoot, architectureForTargetTriple(targetTriple));
+      if (signingIdentity) await signPackagedMachOResources(stagedRuntimeRoot, signingIdentity);
     }
     await assertPackagedRuntime(stagedRuntimeRoot);
     const canonicalMigrations = await migrationFileContract(canonicalMigrationsRoot);

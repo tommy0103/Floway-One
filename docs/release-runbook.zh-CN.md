@@ -56,6 +56,8 @@ gh workflow run release.yaml --ref main -f publish=false -f sign=false
 
 Apple 凭据完整时，正式发布自动加入签名公证层；正式发布若只配置了部分 Apple 凭据则明确失败，避免意外发布未签名包。`sign=true` 要求全部 Apple 凭据。`publish=false, sign=false` 则保留未做 Developer ID 签名的预览构建。
 
+签名构建会按 Mach-O 文件头识别并签署运行时资源中的原生模块、动态库和无扩展名工具，加入安全时间戳，并在签名完成后生成完整性摘要。Node sidecar 保留 V8 所需的 JIT 权限，原生资源与应用使用同一 Team ID。安装包验收同时检查 DMG 的 Developer ID 签名。
+
 签名预览使用 `publish=false, sign=true`。ARM 与 Intel 都会验证应用的 Developer ID 身份、Team ID、hardened runtime、Gatekeeper 接受状态和公证票据，再执行真实安装与更新验收；全部通过后才上传产物。
 
 ```sh

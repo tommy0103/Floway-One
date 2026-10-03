@@ -241,6 +241,11 @@ jobs:
           grep -F '(runtime)' <<< "$signature"
           spctl --assess --type execute --verbose=4 "$app"
           xcrun stapler validate "$app"
+          dmg="apps/desktop/src-tauri/target/$TARGET/release/bundle/dmg/Floway_${{ needs.prepare.outputs.version }}_${{ matrix.name }}.dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          dmg_signature=$(codesign --display --verbose=4 "$dmg" 2>&1)
+          grep -Fx "Authority=$APPLE_SIGNING_IDENTITY" <<< "$dmg_signature"
+          grep -Fx "TeamIdentifier=$APPLE_TEAM_ID" <<< "$dmg_signature"
       # Freeze production artifacts before the verifier builds isolated upgrade
       # fixtures. Only upload this set after every packaged check succeeds.
       - name: Collect architecture-specific assets without repacking signed bytes
