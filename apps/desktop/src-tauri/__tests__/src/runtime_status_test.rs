@@ -385,3 +385,17 @@ fn startup_failure_category_is_owned_without_message_or_path_inference() {
         Some("opaque loader failure")
     );
 }
+
+#[test]
+fn credential_denial_reaches_the_recovery_surface_with_its_original_chain() {
+    let report = parse_sidecar_failure(
+        r#"FLOWAY_DESKTOP_FAILURE {"kind":"credential","chain":["Floway could not read saved credentials","User interaction is not allowed"]}"#,
+    )
+    .expect("credential failure must parse");
+    assert_eq!(report.kind, FailureKind::Credential);
+    let mut state = RuntimeAttemptState::new();
+    let generation = state.begin().expect("attempt must begin");
+    assert!(state.mark_startup_failed(generation, &report));
+    assert!(state.complete_teardown(generation));
+    assert_eq!(state.status().to_wire_value()["kind"], "credential");
+}

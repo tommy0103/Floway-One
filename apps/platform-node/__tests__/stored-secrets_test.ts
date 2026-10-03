@@ -360,3 +360,20 @@ test('personal startup validates every upstream and web search protected field',
     );
   });
 });
+
+test('personal profile preserves existing ciphertext when credential access is denied', async () => {
+  const context = testContext('upstream:up_startup:config');
+  const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(17));
+  const ciphertext = await codec.seal('{"apiKey":"existing-secret"}', context);
+  const denied = new Error('Keychain denied access without interaction');
+  await withSqliteStoredValues({ configJson: ciphertext }, async db => {
+    const failure = await assertRejects(() => createNodeStoredSecretCodec('personal', db, creationLock, {
+      getSecret: () => { throw denied; },
+      setSecret: () => { throw new Error('must not replace a protected master key'); },
+    }));
+    assertEquals(failure.cause, denied);
+    const row = await db.prepare('SELECT config_json FROM upstreams WHERE id = ?').bind('up_startup')
+      .first<{ config_json: string }>();
+    assertEquals(row?.config_json, ciphertext);
+  });
+});

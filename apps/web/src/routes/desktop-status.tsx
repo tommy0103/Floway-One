@@ -15,6 +15,7 @@ const { Button, ProgressBar, Text } = fluentComponents;
 const failureKeys = {
   asset: 'desktop.status.failures.asset',
   compatibility: 'desktop.status.failures.compatibility',
+  credential: 'desktop.status.failures.credential',
   migration: 'desktop.status.failures.migration',
   'native-dependency': 'desktop.status.failures.nativeDependency',
   port: 'desktop.status.failures.port',

@@ -74,6 +74,7 @@ impl InitialStatusLoadGate {
 pub enum FailureKind {
     Asset,
     Compatibility,
+    Credential,
     Migration,
     NativeDependency,
     Port,
@@ -88,6 +89,7 @@ impl FailureKind {
         match self {
             Self::Asset => "asset",
             Self::Compatibility => "compatibility",
+            Self::Credential => "credential",
             Self::Migration => "migration",
             Self::NativeDependency => "native-dependency",
             Self::Port => "port",
@@ -102,6 +104,7 @@ impl FailureKind {
         Some(match value {
             "asset" => Self::Asset,
             "compatibility" => Self::Compatibility,
+            "credential" => Self::Credential,
             "migration" => Self::Migration,
             "native-dependency" => Self::NativeDependency,
             "port" => Self::Port,

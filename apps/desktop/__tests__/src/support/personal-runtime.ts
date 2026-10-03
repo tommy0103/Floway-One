@@ -57,10 +57,10 @@ export const errorChainIncludes = (error: unknown, fragment: string): boolean =>
 };
 
 const credentialScript = (identity: CredentialIdentity, action: 'delete' | 'require'): string => `
-const { Entry } = await import('@napi-rs/keyring');
-const entry = new Entry(${JSON.stringify(identity.service)}, ${JSON.stringify(identity.account)});
-${action === 'delete' ? 'entry.deleteCredential();' : ''}
-const secret = entry.getSecret();
+const { createOperatingSystemCredential } = await import('./src/device-master-key.js');
+const entry = await createOperatingSystemCredential(${JSON.stringify(identity)});
+${action === 'delete' ? 'await entry.deleteSecret();' : ''}
+const secret = await entry.getSecret();
 if (${action === 'delete' ? 'secret !== null' : 'secret === null'}) {
   throw new Error(${JSON.stringify(action === 'delete'
     ? 'isolated verification credential remains'

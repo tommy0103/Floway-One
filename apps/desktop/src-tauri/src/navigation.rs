@@ -74,6 +74,7 @@ pub fn recovery_surface_diagnostic(surface: &Value) -> Result<Value, io::Error> 
         failure_kind,
         "asset"
             | "compatibility"
+            | "credential"
             | "migration"
             | "native-dependency"
             | "port"
