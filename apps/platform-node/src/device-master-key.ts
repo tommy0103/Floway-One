@@ -7,6 +7,8 @@ import {
   DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY,
   type DeviceMasterKeyCredentialIdentity,
 } from './device-master-key-credential-identity.ts';
+import { requireNoninteractiveMacOSKeychain } from './macos-keychain-policy.ts';
+import { startupFailure } from './startup-failure.ts';
 
 const DEVICE_MASTER_KEY_BYTES = 32;
 type Awaitable<T> = T | Promise<T>;
@@ -53,13 +55,17 @@ export const createOperatingSystemCredential = async (
   platform: NodeJS.Platform = process.platform,
   bindings?: KeyringBindings,
 ): Promise<DeviceMasterKeyCredential> => {
+  const requirePolicy = platform === 'darwin'
+    ? await requireNoninteractiveMacOSKeychain()
+    : () => undefined;
   const resolvedBindings = bindings ?? await loadDefaultKeyringBindings();
   if (platform !== 'linux') {
+    requirePolicy();
     const entry = new resolvedBindings.Entry(identity.service, identity.account);
     return {
-      getSecret: () => entry.getSecret(),
-      setSecret: secret => entry.setSecret(secret),
-      deleteSecret: () => entry.deleteCredential(),
+      getSecret: () => { requirePolicy(); return entry.getSecret(); },
+      setSecret: secret => { requirePolicy(); entry.setSecret(secret); },
+      deleteSecret: () => { requirePolicy(); return entry.deleteCredential(); },
     };
   }
 
@@ -129,7 +135,7 @@ export const loadDeviceMasterKey = async (
     resolvedCredential = credential ?? await createOperatingSystemCredential();
     stored = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw new Error('Failed to read the Floway device master key from the operating system credential store', { cause });
+    throw startupFailure('credential', 'Failed to read the Floway device master key from the operating system credential store', cause);
   }
   if (stored !== null) return validateMasterKey(stored);
   if (!createIfMissing) {
@@ -140,14 +146,14 @@ export const loadDeviceMasterKey = async (
   try {
     await resolvedCredential.setSecret(generated);
   } catch (cause) {
-    throw new Error('Failed to save the Floway device master key in the operating system credential store', { cause });
+    throw startupFailure('credential', 'Failed to save the Floway device master key in the operating system credential store', cause);
   }
 
   let authoritative: ArrayLike<number> | null;
   try {
     authoritative = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw new Error('Failed to read back the Floway device master key from the operating system credential store', { cause });
+    throw startupFailure('credential', 'Failed to read back the Floway device master key from the operating system credential store', cause);
   }
   if (authoritative === null) {
     throw new Error('Floway device master key was not persisted by the operating system credential store');

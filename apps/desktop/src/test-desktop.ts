@@ -86,6 +86,9 @@ await withFailureSafeCleanup(async cleanup => {
   deferDisposableDesktopPaths(cleanup, generatedDesktopOutputs);
   await removeDisposableDesktopPaths(generatedDesktopOutputs);
   await runPnpm(['--filter', '@floway-dev/desktop', 'run', 'test:rust']);
+  await runPnpm(['run', 'test',
+    'apps/platform-node/__tests__/macos-keychain-policy_test.ts',
+    'apps/platform-node/__tests__/device-master-key_test.ts']);
   await removeDisposableDesktopPaths([{
     label: 'no-default-feature Rust target output',
     path: resolve(desktopRoot, 'src-tauri/target'),

@@ -5,6 +5,7 @@ import {
   createOperatingSystemCredential,
   loadDeviceMasterKey,
 } from '../src/device-master-key.ts';
+import { desktopFailureEvent } from '../src/startup-failure.ts';
 import { MemoryDeviceMasterKeyCredential } from './support/memory-device-master-key-credential.ts';
 import { assert, assertEquals, assertRejects } from '@floway-dev/test-utils';
 
@@ -125,7 +126,7 @@ test('explicit operating-system credential identity stays isolated from the prod
   await createOperatingSystemCredential({
     service: 'Floway package test service',
     account: 'package-test-account',
-  }, 'darwin', {
+  }, 'win32', {
     Entry: class {
       constructor(service: string, account: string) { constructed = [service, account]; }
       getSecret = () => null;
@@ -136,4 +137,22 @@ test('explicit operating-system credential identity stays isolated from the prod
     findCredentials: () => [],
   });
   assertEquals(constructed, ['Floway package test service', 'package-test-account']);
+});
+
+test('Floway reports denied credential access without creating or replacing a key', async () => {
+  const denied = Object.assign(new Error('User interaction is not allowed'), { code: -25308 });
+  let writes = 0;
+  let generations = 0;
+  for (const createIfMissing of [true, false]) {
+    const failure = await assertRejects(() => loadDeviceMasterKey(creationLock, createIfMissing, {
+      getSecret: () => { throw denied; },
+      setSecret: () => { writes++; },
+    }, () => { generations++; return new Uint8Array(32); }));
+    const report = desktopFailureEvent(failure);
+    assertEquals(report.kind, 'credential');
+    assertEquals(failure.cause, denied);
+    assert(report.chain.some(entry => entry.includes('User interaction is not allowed')));
+  }
+  assertEquals(writes, 0);
+  assertEquals(generations, 0);
 });

@@ -166,24 +166,26 @@ export const verifyPackagedApplication = async (options: {
   }
 
   let loadedKeyringNative: string | undefined;
+  let loadedPolicyNative: string | undefined;
   if (launchSupported) {
     // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/doc/api/report.md#L434-L438
     const probe = await execFileAsync(nodeExecutable, [
       '--input-type=module',
       '--eval',
-      "const before = new Set(process.report.getReport().sharedObjects); const keyringEntry = import.meta.resolve('@napi-rs/keyring'); const keyring = await import(keyringEntry); if (typeof keyring.Entry !== 'function') throw new Error('Keyring native Entry is unavailable'); const keyringNative = process.report.getReport().sharedObjects.find(path => !before.has(path) && path.endsWith('.node') && path.toLowerCase().includes('keyring')); if (keyringNative === undefined) throw new Error('Keyring import reported no loaded native binding'); await import('@floway-dev/gateway'); await import('./entry.js'); console.log(JSON.stringify({ keyringEntry, keyringNative, marker: 'embedded runtime imports resolved' }));",
+      "const before = new Set(process.report.getReport().sharedObjects); const keyringEntry = import.meta.resolve('@napi-rs/keyring'); const keyring = await import(keyringEntry); if (typeof keyring.Entry !== 'function') throw new Error('Keyring native Entry is unavailable'); const keyringNative = process.report.getReport().sharedObjects.find(path => !before.has(path) && path.endsWith('.node') && path.toLowerCase().includes('keyring')); if (keyringNative === undefined) throw new Error('Keyring import reported no loaded native binding'); await import('@floway-dev/gateway'); await import('./entry.js'); const { createOperatingSystemCredential } = await import('./src/device-master-key.js'); await createOperatingSystemCredential({ service: 'Floway packaged policy verification', account: 'no-secret-read' }); const { default: koffi } = await import('koffi'); const security = koffi.load('/System/Library/Frameworks/Security.framework/Security'); const allowed = [1]; if (security.func('int32_t SecKeychainGetUserInteractionAllowed(_Out_ uint8_t *allowed)')(allowed) !== 0 || allowed[0] !== 0) throw new Error('Packaged Floway still permits Keychain password dialogs'); const policyNative = process.report.getReport().sharedObjects.find(path => path.endsWith('.node') && path.toLowerCase().includes('koffi')); if (policyNative === undefined) throw new Error('Packaged Keychain policy reported no loaded native binding'); console.log(JSON.stringify({ keyringEntry, keyringNative, policyNative, marker: 'embedded runtime imports resolved' }));",
     ], { cwd: platformNodeRoot });
-    const result = JSON.parse(probe.stdout.trim()) as { keyringEntry?: unknown; keyringNative?: unknown; marker?: unknown };
-    if (result.marker !== 'embedded runtime imports resolved' || typeof result.keyringEntry !== 'string' || typeof result.keyringNative !== 'string') {
+    const result = JSON.parse(probe.stdout.trim()) as { keyringEntry?: unknown; keyringNative?: unknown; policyNative?: unknown; marker?: unknown };
+    if (result.marker !== 'embedded runtime imports resolved' || typeof result.keyringEntry !== 'string' || typeof result.keyringNative !== 'string' || typeof result.policyNative !== 'string') {
       throw new Error(`Packaged desktop import probe returned unexpected output: ${JSON.stringify(probe.stdout)}`);
     }
-    for (const path of [fileURLToPath(result.keyringEntry), result.keyringNative]) {
+    for (const path of [fileURLToPath(result.keyringEntry), result.keyringNative, result.policyNative]) {
       const owned = relative(appRoot, path);
       if (isAbsolute(owned) || owned.split(sep)[0] === '..') {
-        throw new Error(`Embedded Node resolved Keyring outside the packaged app: ${path}`);
+        throw new Error(`Embedded Node resolved a native credential dependency outside the packaged app: ${path}`);
       }
     }
     loadedKeyringNative = result.keyringNative;
+    loadedPolicyNative = result.policyNative;
   }
 
   const nativeModules: string[] = [];
@@ -201,6 +203,12 @@ export const verifyPackagedApplication = async (options: {
   }
   if (loadedKeyringNative !== undefined && !nativeModules.includes(loadedKeyringNative)) {
     throw new Error(`Loaded Keyring native binding was not found in the packaged dependency tree: ${loadedKeyringNative}`);
+  }
+  if (!nativeModules.some(path => path.includes('koffi'))) {
+    throw new Error('Packaged desktop app does not contain the macOS Keychain policy native module');
+  }
+  if (loadedPolicyNative !== undefined && !nativeModules.includes(loadedPolicyNative)) {
+    throw new Error(`Loaded Keychain policy binding was not found in the packaged dependency tree: ${loadedPolicyNative}`);
   }
   const contractedNativeModules = nativeDependencies.map(file => resolve(dependenciesRoot, file.path));
   if (JSON.stringify(nativeModules.sort()) !== JSON.stringify(contractedNativeModules.sort())) {

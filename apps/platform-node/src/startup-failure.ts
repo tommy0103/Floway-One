@@ -3,6 +3,7 @@ export const DESKTOP_FAILURE_EVENT_PREFIX = 'FLOWAY_DESKTOP_FAILURE ';
 export type DesktopFailureKind =
   | 'asset'
   | 'compatibility'
+  | 'credential'
   | 'migration'
   | 'native-dependency'
   | 'port'

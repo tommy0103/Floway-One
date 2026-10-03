@@ -50,6 +50,7 @@ const zhHansCN = {
         detailsInStandardError: '日志目录不可用。请查看 Floway 的标准错误输出以获取原始故障信息。',
         failedTitle: 'Floway 无法启动本机 Gateway',
         failures: {
+          credential: 'Floway 无法访问系统凭据存储中的已保存凭据。原有数据已保留。请恢复系统凭据存储的访问权限，然后重新启动 Floway。',
           asset: 'Dashboard 文件缺失，或与当前 Floway 版本不匹配。',
           compatibility: '桌面壳、本机运行时和 Dashboard 并非来自同一个兼容版本。',
           migration: '无法安全升级本机数据库。',
