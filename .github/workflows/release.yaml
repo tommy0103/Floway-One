@@ -120,19 +120,33 @@ jobs:
           REQUIRE_APPLE: ${{ inputs.sign || false }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           umask 077
+          # Tauri supports API key and Apple ID notarization credentials.
+          # https://v2.tauri.app/distribute/sign/macos/#notarization
+          notary_mode=none
+          if [ -n "$APPLE_API_KEY_CONTENT" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ]; then
+            notary_mode=api
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            notary_mode=apple-id
+          fi
           apple_complete=false
-          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_API_KEY_CONTENT" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ]; then
+          if [ -n "$APPLE_CERTIFICATE" ] && [ "$notary_mode" != "none" ]; then
             apple_complete=true
           fi
-          if [ "$REQUIRE_APPLE" = "true" ] && [ "$apple_complete" != "true" ]; then
-            echo "::error::sign=true requires the complete Apple signing credentials. See docs/release-runbook.zh-CN.md."
+          apple_configured=false
+          for value in "$APPLE_CERTIFICATE" "$APPLE_API_KEY_CONTENT" "$APPLE_API_ISSUER" "$APPLE_API_KEY" "$APPLE_ID" "$APPLE_APP_SPECIFIC_PASSWORD"; do
+            if [ -n "$value" ]; then apple_configured=true; fi
+          done
+          if { [ "$REQUIRE_APPLE" = "true" ] || { [ "$PUBLISH" = "true" ] && [ "$apple_configured" = "true" ]; }; } && [ "$apple_complete" != "true" ]; then
+            echo "::error::Apple signing requires APPLE_CERTIFICATE and either APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD or the complete Apple API key credentials. See docs/release-runbook.zh-CN.md."
             exit 1
           fi
           signed=false
@@ -157,13 +171,19 @@ jobs:
             echo "updater_signed=false" >> "$GITHUB_OUTPUT"
           fi
           if [ "$signed" = "true" ]; then
-            printf '%s' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
-            {
-              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
-              echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
-              echo "APPLE_API_KEY=$APPLE_API_KEY"
-              echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"
-            } >> "$GITHUB_ENV"
+            if [ "$notary_mode" = "api" ]; then
+              printf '%s' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+              {
+                echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+                echo "APPLE_API_KEY=$APPLE_API_KEY"
+                echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"
+              } >> "$GITHUB_ENV"
+            else
+              {
+                echo "APPLE_ID=$APPLE_ID"
+                echo "APPLE_PASSWORD=$APPLE_APP_SPECIFIC_PASSWORD"
+              } >> "$GITHUB_ENV"
+            fi
           fi
       - name: Import the Developer ID certificate
         if: steps.signing.outputs.signed == 'true'
@@ -171,15 +191,35 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          set -euo pipefail
+          umask 077
           certificate_path="$RUNNER_TEMP/floway-developer-id.p12"
           keychain_path="$RUNNER_TEMP/floway-signing.keychain-db"
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode --output "$certificate_path"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
           security create-keychain -p "" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
           security unlock-keychain -p "" "$keychain_path"
           security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
           security set-key-partition-list -S apple-tool:,apple: -k "" "$keychain_path"
-          security list-keychain -d user -s "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          # -v restricts discovery to valid identities with an associated private key.
+          # https://v2.tauri.app/distribute/sign/macos/#signing-locally
+          identities=$(security find-identity -v -p codesigning "$keychain_path")
+          identity=$(printf '%s\n' "$identities" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p')
+          identity_count=$(printf '%s\n' "$identity" | awk 'NF { count++ } END { print count+0 }')
+          if [ "$identity_count" != "1" ]; then
+            echo "::error::The p12 must contain exactly one valid Developer ID Application signing identity; found $identity_count."
+            exit 1
+          fi
+          team_id=$(printf '%s\n' "$identity" | sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p')
+          if [ -z "$team_id" ]; then
+            echo "::error::Could not derive the Apple Team ID from the p12 signing identity."
+            exit 1
+          fi
+          {
+            echo "APPLE_SIGNING_IDENTITY=$identity"
+            echo "APPLE_TEAM_ID=$team_id"
+          } >> "$GITHUB_ENV"
       - name: Build the web dashboard
         run: pnpm run build:web
       # Updater output is a release-only override; normal debug verification
@@ -187,6 +227,20 @@ jobs:
       # https://v2.tauri.app/plugin/updater/#building
       - name: Build the installer and updater artifacts
         run: pnpm --filter @floway-dev/desktop exec tauri build --target ${{ matrix.target }} --config "$TAURI_BUILD_CONFIG"
+      - name: Verify Developer ID signing and notarization
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          app="apps/desktop/src-tauri/target/$TARGET/release/bundle/macos/Floway.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          signature=$(codesign --display --verbose=4 "$app" 2>&1)
+          grep -Fx "Authority=$APPLE_SIGNING_IDENTITY" <<< "$signature"
+          grep -Fx "TeamIdentifier=$APPLE_TEAM_ID" <<< "$signature"
+          grep -F '(runtime)' <<< "$signature"
+          spctl --assess --type execute --verbose=4 "$app"
+          xcrun stapler validate "$app"
       # Freeze production artifacts before the verifier builds isolated upgrade
       # fixtures. Only upload this set after every packaged check succeeds.
       - name: Collect architecture-specific assets without repacking signed bytes
@@ -201,6 +255,13 @@ jobs:
           name: floway-macos-${{ matrix.name }}
           path: release-artifacts/*
           if-no-files-found: error
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          set -euo pipefail
+          keychain_path="$RUNNER_TEMP/floway-signing.keychain-db"
+          if [ -e "$keychain_path" ]; then security delete-keychain "$keychain_path"; fi
+          rm -f "$RUNNER_TEMP/floway-developer-id.p12" "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/floway-updater.key"
 
   assemble:
     name: assemble-release-assets

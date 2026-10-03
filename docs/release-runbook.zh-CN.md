@@ -19,10 +19,14 @@
 | --- | --- | --- |
 | `APPLE_CERTIFICATE` | Developer ID Application 证书的 base64 编码 p12 | Keychain Access 导出证书+私钥为 p12，`base64 -i cert.p12 \| pbcopy` |
 | `APPLE_CERTIFICATE_PASSWORD` | p12 导出密码 | 导出时设定 |
-| `APPLE_SIGNING_IDENTITY` | 签名身份全名 | 形如 `Developer ID Application: Name (TEAMID)` |
-| `APPLE_API_ISSUER` | App Store Connect API Issuer UUID | App Store Connect → Users and Access → Integrations |
-| `APPLE_API_KEY` | App Store Connect API Key ID | 同上 |
-| `APPLE_API_KEY_CONTENT` | `.p8` 私钥内容 | 同上，下载后全文 |
+| `APPLE_ID` | 用于公证的 Apple 账号 | 与证书所属团队关联的 Apple 账号 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | Apple 账号的应用专用密码 | Apple 账号管理页面创建；构建时映射为 Tauri 的 `APPLE_PASSWORD` |
+
+无需填写 `APPLE_SIGNING_IDENTITY` 或 `APPLE_TEAM_ID`：流水线导入 p12 后，在专用临时 Keychain 中查找唯一有效的 Developer ID Application 签名身份，并自动提取 Team ID。证书失效、缺少私钥、类型错误或有多个有效身份时明确失败。
+
+也可继续使用 App Store Connect API 公证：用 `APPLE_API_ISSUER`、`APPLE_API_KEY`、`APPLE_API_KEY_CONTENT`（下载的 `.p8` 全文）替代 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD`。两套均完整时优先使用 API Key。两种方式均需要上述 p12 与导出密码；p12 导出密码为空时可省略该 secret。官方说明：https://v2.tauri.app/distribute/sign/macos/#notarization
+
+Apple 证书用于 macOS 签名与公证；Tauri updater 私钥用于校验更新包，继续使用现有密钥，不以 p12 替换。凭据只由维护者直接配置到 GitHub Secrets，不写入仓库、聊天或命令示例。运行结束后删除临时 Keychain 与私钥文件。
 
 标签与手动正式发布缺 `TAURI_SIGNING_PRIVATE_KEY` 都会在构建前明确失败；`sign=true` 缺完整 Apple 凭据也会失败并指出缺项。
 
@@ -50,7 +54,13 @@ gh workflow run release.yaml --ref main -f publish=false -f sign=false
 
 预览可选择工作分支；省略 `commit` 时使用该次 dispatch 的源提交。有 updater 私钥时，也生成双架构签名更新包、清单和共用说明，保存为 `floway-release` artifact；缺少私钥时只保存两个架构的 DMG。预览不会创建标签、GitHub Release 或修改 Latest。
 
-Apple 凭据完整时，正式发布自动加入签名公证层；`sign=true` 要求全部 Apple 凭据。`publish=false, sign=false` 则保留未做 Developer ID 签名的预览构建。
+Apple 凭据完整时，正式发布自动加入签名公证层；正式发布若只配置了部分 Apple 凭据则明确失败，避免意外发布未签名包。`sign=true` 要求全部 Apple 凭据。`publish=false, sign=false` 则保留未做 Developer ID 签名的预览构建。
+
+签名预览使用 `publish=false, sign=true`。ARM 与 Intel 都会验证应用的 Developer ID 身份、Team ID、hardened runtime、Gatekeeper 接受状态和公证票据，再执行真实安装与更新验收；全部通过后才上传产物。
+
+```sh
+gh workflow run release.yaml --repo tommy0103/Floway-One --ref main -f publish=false -f sign=true
+```
 
 ## 排错
 

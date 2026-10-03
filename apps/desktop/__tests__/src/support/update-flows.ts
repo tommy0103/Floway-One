@@ -130,6 +130,9 @@ export const buildUpdatedApplication = async (options: {
       APPLE_API_ISSUER: undefined,
       APPLE_API_KEY: undefined,
       APPLE_API_KEY_PATH: undefined,
+      APPLE_ID: undefined,
+      APPLE_PASSWORD: undefined,
+      APPLE_TEAM_ID: undefined,
       TAURI_SIGNING_PRIVATE_KEY: undefined,
     });
   }, 'Floway updated fixture build failed and version authority restoration also failed');
@@ -152,6 +155,9 @@ const buildReleaseUpdateFixture = async (scenario: UpdateScenarioContext): Promi
     APPLE_API_ISSUER: undefined,
     APPLE_API_KEY: undefined,
     APPLE_API_KEY_PATH: undefined,
+    APPLE_ID: undefined,
+    APPLE_PASSWORD: undefined,
+    APPLE_TEAM_ID: undefined,
     TAURI_SIGNING_PRIVATE_KEY: undefined,
   });
   return resolve(scenario.desktopRoot, 'src-tauri/target', scenario.targetTriple, 'release/bundle/macos/Floway.app');
