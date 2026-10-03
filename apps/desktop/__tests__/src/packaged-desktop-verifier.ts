@@ -133,6 +133,40 @@ if (launchSupported) {
     console.log('Floway production shell retained unrestricted diagnostics in logs, introspected its applied Tauri window/tray state, exposed a CoreGraphics-visible window, and released the sidecar listener before verifier cleanup');
 
     await assertDesktopShellLifecycle(nativeWindowProbe, context, isolatedRoot);
+
+    await writeContractedEntry(context, `
+import { loadDeviceMasterKey } from './src/device-master-key.js';
+import { reportDesktopStartupFailure } from './src/startup-failure.js';
+try {
+  await loadDeviceMasterKey({ run: operation => operation() }, true, {
+    getSecret() { throw new Error('Keychain denied access without interaction'); },
+    setSecret() { throw new Error('must not replace a denied key'); },
+  });
+} catch (failure) {
+  reportDesktopStartupFailure(failure);
+  throw failure;
+}
+`);
+    for (const locale of ['en', 'zh-Hans'] as const) {
+      const expected = [
+        'Failed to read the Floway device master key from the operating system credential store',
+        'Keychain denied access without interaction',
+      ];
+      await observePackagedFailureSurface({
+        applicationHome: resolve(isolatedRoot, `ShellData-denied-credential-${locale}`),
+        executable: context.executable,
+        expectedFragments: expected,
+        expectedLocale: locale,
+        failureKind: 'credential',
+        nativeWindowProbe,
+        persistedLogFragments: expected,
+        sidecarExecutable: context.node,
+      });
+      await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
+    }
+    await writeContractedEntry(context, productionEntry);
+    console.log('Floway credential denial reached the visible English and Chinese recovery surfaces with its original cause');
+
     console.log('Floway production shell kept the Gateway live through window hide, tray restore, repeated-launch delegation, restart, launch-at-login toggles, and graceful quit');
 
     await assertExternalOpenGate(context, isolatedRoot, buildProfile);
