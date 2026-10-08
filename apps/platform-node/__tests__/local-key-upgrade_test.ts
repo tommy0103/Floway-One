@@ -13,7 +13,7 @@ import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
 import { initializePersonalStorage } from '../src/personal-storage.ts';
 import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
 import { PROTECTED_SEARCH_SECRET_COLUMNS_MIGRATION, upstreamConfigSecretContext } from '@floway-dev/gateway';
-import { createAes256GcmStoredSecretCodec, type StoredSecretContext } from '@floway-dev/platform';
+import { createAes256GcmStoredSecretCodec, type SqlDatabase, type StoredSecretContext } from '@floway-dev/platform';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).reverse().forEach(cleanup => cleanup()));
@@ -130,4 +130,32 @@ test('Floway keeps the original database and error chain when snapshot creation 
   }, f.lock, f.credential)).rejects.toMatchObject({ cause });
   expect(f.original.prepare('SELECT config_json FROM upstreams').get()?.config_json).toBe(f.oldConfig);
   expect(f.original.prepare("SELECT name FROM sqlite_master WHERE name='floway_local_key_state'").get()).toBeUndefined();
+});
+
+test('Floway rolls back an interrupted upgrade marker creation so the next launch can retry', async () => {
+  const f = await fixture();
+  const cause = new Error('interrupted after marker table creation');
+  let tableCreated = false;
+  const interrupted: SqlDatabase = {
+    prepare: query => {
+      if (query.startsWith('INSERT INTO floway_local_key_state')) {
+        expect(tableCreated).toBe(true);
+        throw cause;
+      }
+      return f.db.prepare(query);
+    },
+    exec: async query => {
+      await f.db.exec(query);
+      if (query.startsWith('CREATE TABLE IF NOT EXISTS floway_local_key_state')) tableCreated = true;
+    },
+    transaction: operation => f.db.transaction!(operation),
+  };
+  await expect(prepareLocalKeyUpgrade(interrupted, f.paths, f.permissions, f.lock, f.credential))
+    .rejects.toMatchObject({ cause });
+  expect(tableCreated).toBe(true);
+  expect(f.original.prepare("SELECT name FROM sqlite_master WHERE name='floway_local_key_state'").get()).toBeUndefined();
+  expect(f.original.prepare('SELECT config_json FROM upstreams').get()?.config_json).toBe(f.oldConfig);
+  expect(await f.credential.getSecret()).toBeNull();
+  await f.upgrade();
+  expect(f.original.prepare('SELECT phase FROM floway_local_key_state').get()?.phase).toBe('active');
 });

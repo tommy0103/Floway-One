@@ -29,6 +29,11 @@ const writeState = async (db: SqlDatabase, phase: KeyState['phase'], snapshot: s
     .bind(phase, snapshot).run();
 };
 
+const writeStateAtomically = async (db: SqlDatabase, phase: KeyState['phase'], snapshot: string | null): Promise<void> => {
+  if (db.transaction === undefined) throw new Error('Floway credential upgrade requires an atomic local transaction');
+  await db.transaction(async () => await writeState(db, phase, snapshot));
+};
+
 const snapshotLegacyDatabase = async (paths: PersonalRuntimePaths, permissions: PrivateStoragePermissions): Promise<string> => {
   const directory = join(paths.dataDir, 'credential-upgrade');
   permissions.ensureDirectory(directory);
@@ -74,7 +79,7 @@ export const prepareLocalKeyUpgrade = async (
   const status = await inspectProtectedStorage(db);
   if (state === null && key === null && status.inputMode === 'ciphertext' && status.hasProtectedValues) {
     const snapshot = await snapshotLegacyDatabase(paths, permissions);
-    await writeState(db, 'reset-pending', snapshot);
+    await writeStateAtomically(db, 'reset-pending', snapshot);
     state = { phase: 'reset-pending', snapshot };
   }
   if (state?.phase === 'reset-pending') {
@@ -114,7 +119,7 @@ export const prepareLocalKeyUpgrade = async (
   const masterKey = await loadDeviceMasterKey({ run: operation => operation() },
     status.inputMode === 'legacy-plaintext' || !status.hasProtectedValues, credential);
   masterKey.fill(0);
-  await writeState(db, 'active', null);
+  await writeStateAtomically(db, 'active', null);
 }).catch((cause: unknown) => {
   if (cause instanceof DesktopStartupError) throw cause;
   throw startupFailure('credential', 'Floway could not prepare its local encryption key', cause);
