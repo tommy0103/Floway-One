@@ -82,8 +82,8 @@ const packaged = await verifyPackagedApplication({
 // canonicalize the system temp root before the direct executable launch.
 // https://github.com/tauri-apps/tauri/blob/6f6ab1207bb3923c2721fbc67d2fdb1c8deb0c7a/crates/tauri-utils/src/platform/starting_binary.rs#L61-L75
 if (launchSupported) {
-  if (packaged.loadedKeyringNative === undefined) {
-    throw new Error('Native launch verification requires the exact loaded Keyring binding');
+  if (packaged.loadedSharpNative === undefined) {
+    throw new Error('Native launch verification requires the exact loaded Sharp binding');
   }
   const isolatedRoot = await mkdtemp(join(await realpath(tmpdir()), 'floway-desktop-installed-'));
   await withFailureSafeCleanup(async cleanup => {
@@ -94,7 +94,7 @@ if (launchSupported) {
     await rename(packaged.appRoot, installedApp);
     const context = await createInstalledAppVerificationContext(
       installedApp,
-      relative(packaged.appRoot, packaged.loadedKeyringNative!),
+      relative(packaged.appRoot, packaged.loadedSharpNative!),
       packaged.migrationNames,
     );
     const productionEntry = await readFile(context.entry, 'utf8');
@@ -266,12 +266,12 @@ if (launchSupported) {
     console.log('Floway forced parent failure terminated its live packaged sidecar and process group');
 
     await withFailureSafeCleanup(async faultCleanup => {
-      const missingKeyring = `${context.keyringNative}.missing`;
-      await rename(context.keyringNative, missingKeyring);
-      faultCleanup.defer('missing Keyring binding restoration', async () => await rename(missingKeyring, context.keyringNative));
-      const expected = [context.keyringNative, 'No such file'];
+      const missingSharp = `${context.sharpNative}.missing`;
+      await rename(context.sharpNative, missingSharp);
+      faultCleanup.defer('missing Sharp binding restoration', async () => await rename(missingSharp, context.sharpNative));
+      const expected = [context.sharpNative, 'No such file'];
       await observePackagedFailureSurface({
-        applicationHome: resolve(isolatedRoot, 'ShellData-missing-keyring'),
+        applicationHome: resolve(isolatedRoot, 'ShellData-missing-sharp'),
         executable: context.executable,
         expectedFragments: expected,
         failureKind: 'native-dependency',
@@ -285,19 +285,19 @@ if (launchSupported) {
 
     await withFailureSafeCleanup(async faultCleanup => {
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
-      const keyringFile = await open(context.keyringNative, 'r+');
-      faultCleanup.defer('exact loaded Keyring binding file handle', async () => await keyringFile.close());
-      const originalKeyringHeader = Buffer.alloc(8);
-      await keyringFile.read(originalKeyringHeader, 0, originalKeyringHeader.byteLength, 0);
-      faultCleanup.defer('exact loaded Keyring binding restoration', async () => {
-        await keyringFile.write(originalKeyringHeader, 0, originalKeyringHeader.byteLength, 0);
-        await keyringFile.sync();
+      const sharpFile = await open(context.sharpNative, 'r+');
+      faultCleanup.defer('exact loaded Sharp binding file handle', async () => await sharpFile.close());
+      const originalSharpHeader = Buffer.alloc(8);
+      await sharpFile.read(originalSharpHeader, 0, originalSharpHeader.byteLength, 0);
+      faultCleanup.defer('exact loaded Sharp binding restoration', async () => {
+        await sharpFile.write(originalSharpHeader, 0, originalSharpHeader.byteLength, 0);
+        await sharpFile.sync();
       });
-      await keyringFile.write(Buffer.alloc(originalKeyringHeader.byteLength), 0, originalKeyringHeader.byteLength, 0);
-      await keyringFile.sync();
-      const expected = [context.keyringNative, 'native dependency digest is stale'];
+      await sharpFile.write(Buffer.alloc(originalSharpHeader.byteLength), 0, originalSharpHeader.byteLength, 0);
+      await sharpFile.sync();
+      const expected = [context.sharpNative, 'native dependency digest is stale'];
       await observePackagedFailureSurface({
-        applicationHome: resolve(isolatedRoot, 'ShellData-keyring-fault'),
+        applicationHome: resolve(isolatedRoot, 'ShellData-sharp-fault'),
         executable: context.executable,
         expectedFragments: expected,
         failureKind: 'native-dependency',
@@ -309,7 +309,7 @@ if (launchSupported) {
       });
       await assertLoopbackPortReleased(PERSONAL_DASHBOARD_PORT);
     });
-    console.log(`Floway corrupted the exact loaded Keyring binding and verified pre-launch native-dependency integrity recovery: ${context.keyringNative}`);
+    console.log(`Floway corrupted the exact loaded Sharp binding and verified pre-launch native-dependency integrity recovery: ${context.sharpNative}`);
 
     await writeContractedEntry(context, productionEntry);
     await withFailureSafeCleanup(async faultCleanup => {
@@ -343,7 +343,7 @@ if (launchSupported) {
     await assertPackagedUpdateFlows(nativeWindowProbe, {
       verifyUpdateUi: buildProfile === 'debug',
       context, desktopRoot, installedApp, isolatedRoot,
-      keyringRelativePath: relative(packaged.appRoot, packaged.loadedKeyringNative!),
+      sharpRelativePath: relative(packaged.appRoot, packaged.loadedSharpNative!),
       migrationNames: packaged.migrationNames, nodeExecutable: process.env.FLOWAY_DESKTOP_NODE_EXECUTABLE,
       repositoryRoot, targetTriple,
     });
@@ -353,6 +353,6 @@ if (launchSupported) {
 
 console.log(
   launchSupported
-    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, canonical migrations, embedded Node/Keyring/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, secure Dashboard bootstrap/control-plane, native sharp, assets, and window/tray/singleton/owner-lifetime behavior`
+    ? `Packaged Floway desktop app ${targetTriple} verified thin architecture, canonical migrations, embedded Node/Sharp/gateway, locked dependencies, production app launch/fault chains, failure-safe cleanup, secure Dashboard bootstrap/control-plane, native sharp, assets, and window/tray/singleton/owner-lifetime behavior`
     : `Packaged Floway desktop app ${targetTriple} passed static thin architecture, canonical-migration, locked-dependency, native-module, and Dashboard verification; this host cannot execute that target`,
 );

@@ -17,7 +17,7 @@ test('installed app context derives one coherent owned path set', async () => {
       'Contents/MacOS/floway-node',
       'Contents/Resources/desktop-bundle-contract.json',
       'Contents/Resources/runtime/apps/platform-node/entry.js',
-      'Contents/Resources/runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node',
+      'Contents/Resources/runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node',
     ];
     await Promise.all(files.map(async relative => {
       const path = resolve(app, relative);
@@ -31,7 +31,7 @@ test('installed app context derives one coherent owned path set', async () => {
 
     const context = await createInstalledAppVerificationContext(
       app,
-      'Contents/Resources/runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node',
+      'Contents/Resources/runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node',
       ['0001.sql'],
     );
     expect(context.appRoot).toBe(app);
@@ -45,7 +45,7 @@ test('installed app context rejects a mismatched path combination before probing
   try {
     await expect(createInstalledAppVerificationContext(
       resolve(root, 'Floway.app'),
-      '../../outside-keyring.node',
+      '../../outside-sharp.node',
       ['0001.sql'],
     )).rejects.toThrow('escapes its owning application');
   } finally {

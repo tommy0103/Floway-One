@@ -2,7 +2,6 @@ import { test } from 'vitest';
 
 import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
 import {
-  createOperatingSystemCredential,
   loadDeviceMasterKey,
 } from '../src/device-master-key.ts';
 import { desktopFailureEvent } from '../src/startup-failure.ts';
@@ -42,7 +41,7 @@ test('device master key reports missing and malformed credential-store values wi
   await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway device master key is missing from the operating system credential store',
+    'Floway local device master key is missing; existing encrypted data requires migration',
   );
   const error = await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential([1, 2, 3])),
@@ -60,7 +59,7 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw new Error('unexpected write'); },
     }),
     Error,
-    'Failed to read the Floway device master key from the operating system credential store',
+    'Failed to read the Floway device master key from the local key store',
   );
   assert(readError.cause === readFailure);
 
@@ -71,72 +70,9 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw writeFailure; },
     }),
     Error,
-    'Failed to save the Floway device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the local key store',
   );
   assert(writeError.cause === writeFailure);
-});
-
-test('Linux requires Secret Service and preserves its unavailable error as the original cause', async () => {
-  const unavailable = new Error('No D-Bus session bus');
-  const credentialError = await assertRejects(
-    async () => await createOperatingSystemCredential({ service: 'Floway test', account: 'unavailable' }, 'linux', {
-      Entry: class {
-        getSecret = () => null;
-        setSecret = () => undefined;
-        setPassword = () => undefined;
-        deleteCredential = () => false;
-      },
-      findCredentials: () => { throw unavailable; },
-    }),
-    Error,
-    'Linux Secret Service is unavailable for the Floway device master key',
-  );
-  assert(credentialError.cause === unavailable);
-});
-
-test('Linux rejects a successful vendor keyutils fallback mutation when Secret Service readback has no value', async () => {
-  let fallbackPassword: string | null = null;
-  let secretServiceReads = 0;
-  const credential = await createOperatingSystemCredential({ service: 'Floway test', account: 'fallback' }, 'linux', {
-    Entry: class {
-      getSecret = () => null;
-      setSecret = () => undefined;
-      setPassword = (password: string) => { fallbackPassword = password; };
-      deleteCredential = () => false;
-    },
-    findCredentials: () => {
-      secretServiceReads++;
-      return [];
-    },
-  });
-
-  const error = await assertRejects(
-    () => loadDeviceMasterKey(creationLock, true, credential, () => new Uint8Array(32).fill(7)),
-    Error,
-    'Failed to save the Floway device master key in the operating system credential store',
-  );
-  assert(fallbackPassword !== null, 'the vendor fallback mutation must report success before rejection');
-  assertEquals(secretServiceReads, 3);
-  assert(error.cause instanceof Error);
-  assertEquals(error.cause.message, 'Failed to verify the Floway device master key in Linux Secret Service');
-});
-
-test('explicit operating-system credential identity stays isolated from the product default', async () => {
-  let constructed: readonly string[] | undefined;
-  await createOperatingSystemCredential({
-    service: 'Floway package test service',
-    account: 'package-test-account',
-  }, 'win32', {
-    Entry: class {
-      constructor(service: string, account: string) { constructed = [service, account]; }
-      getSecret = () => null;
-      setSecret = () => undefined;
-      setPassword = () => undefined;
-      deleteCredential = () => false;
-    },
-    findCredentials: () => [],
-  });
-  assertEquals(constructed, ['Floway package test service', 'package-test-account']);
 });
 
 test('Floway reports denied credential access without creating or replacing a key', async () => {

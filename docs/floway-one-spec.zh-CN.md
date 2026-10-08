@@ -443,18 +443,18 @@ owner 可以显式跳过 Quick Start 进入运行概览，跳过不视为激活�
 
 ### 12.4 本地凭据
 
-Floway 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与系统凭据存储结合的方案：
+Floway 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与当前用户私有密钥文件结合的方案：
 
 - 数据目录和敏感文件使用仅当前用户可读写的权限。
 - 每台设备生成独立的 256-bit 主密钥。
-- 主密钥保存到 macOS Keychain、Windows Credential Manager 或 Linux Secret Service，不与 SQLite 放在同一目录。
+- 主密钥保存在应用数据目录的 `credentials/device-master-key-v1.key`，POSIX 目录权限为 0700、文件为 0600；Windows 使用仅当前用户可访问的 DACL。正常启动不依赖系统凭据存储，也不要求输入解锁密码。
 - SQLite 中的 Provider OAuth token、Provider API Key 和其他可恢复明文凭据使用主密钥执行带认证的字段级加密。
 - 加密记录携带格式版本、随机 nonce 和认证信息，以支持后续密钥轮换与算法迁移。
-- 系统凭据存储不可用时默认启动失败并给出明确错误；是否为无 Secret Service 的 Linux 环境提供受限 key-file fallback，留到 Linux 发行阶段决定。
+- 本地密钥无法读取、格式错误或升级后丢失时保留数据并启动失败；不得自动替换已有密钥。
 - 日志、崩溃报告和导出文件不得意外包含明文凭据。
 - 不得把主密钥直接写入普通备份。
 
-Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与应用配置位于同一目录。Floway 保存的是可长期使用的订阅凭据，因此只借鉴字段加密方式，不沿用同目录 key-file 作为桌面正式版的正常路径。
+旧版本系统密钥加密的数据升级时，先在私有 `credential-upgrade/` 目录保存包含 WAL 的原数据库快照，再原子重置加密的 Provider 配置、OAuth 状态和搜索凭据，提示用户重新填写。Provider 名称、模型、路由和使用记录等未加密字段保留；旧版整个 Provider 配置均已加密，其中的服务地址等连接设置也需重新填写。升级状态持久化以支持中断后继续；完成升级后不得再次执行凭据重置。快照保留旧密文，不包含旧主密钥。
 
 ### 12.5 WebView
 
@@ -560,7 +560,7 @@ Floway 提供两种明确区分的导出：
 - Windows x64。
 - macOS x64 完整支持。
 - Linux 主流 x64 发行包。
-- 开机启动和系统凭据存储的跨平台适配。
+- 开机启动和本地密钥文件权限的跨平台适配。
 
 ### 15.4 阶段四：体验完善
 
@@ -726,7 +726,7 @@ Floway 应保持以下代码组织原则：
 | 上游 OAuth 或协议变化 | Provider 登录或请求突然失效。 | 保持自动升级、兼容性测试和快速发行能力。 |
 | 订阅服务使用条款变化 | 某些订阅连接方式不可持续。 | 清晰定位为本地控制面，持续审查 Provider 接入方式。 |
 | Node sidecar 和原生依赖打包 | 不同系统或架构启动失败。 | 按平台构建发行物，在干净系统执行安装测试。 |
-| 本地凭据明文落盘 | 订阅 token 或 API Key 泄露。 | 引入系统凭据存储或静态加密，限制文件权限。 |
+| 本地凭据明文落盘 | 订阅 token 或 API Key 泄露。 | 使用静态加密与当前用户私有密钥文件，限制文件权限。 |
 | 端口被其他应用占用 | 客户端持久化 endpoint 失效。 | 明确失败、提供诊断和显式迁移流程。 |
 | 个人版条件散布 | 上游同步困难、行为逐渐分叉。 | 使用 Runtime Profile 和集中策略模块。 |
 | Tauri 壳与 sidecar 版本错配 | UI、数据库和 Gateway 不兼容。 | 作为单一版本整体发布和回滚。 |
@@ -738,7 +738,7 @@ Floway 应保持以下代码组织原则：
 | 议题 | Clash Verge Rev 观察 | Floway 决策 |
 | --- | --- | --- |
 | macOS 架构 | 官方发布分别构建 Apple Silicon 和 Intel 安装包。 | 首个公开版本同时发布 arm64 与 x64 独立安装包。 |
-| 凭据存储 | 对 WebDAV 字段使用 AES-256-GCM，但加密 key 保存在应用目录。 | 使用字段级带认证加密，主密钥由系统凭据存储保护，不在普通配置目录放置主密钥。 |
+| 凭据存储 | 对 WebDAV 字段使用 AES-256-GCM，但加密 key 保存在应用目录。 | 使用字段级带认证加密，主密钥保存在当前用户私有的本地文件中，应用启动无需系统凭据解锁。 |
 | 窗口关闭 | CloseRequested 被拦截并隐藏窗口，core 和壳继续运行。 | 相同行为；窗口关闭不停止 Gateway。 |
 | 壳进程退出 | 正常退出执行 core cleanup；另有系统 service 模式。 | MVP 不安装系统 service；壳正常退出或崩溃时由 owner-lifetime 机制清理 sidecar。 |
 | 自动升级 | GitHub Releases、Tauri updater 签名、平台代码签名，后台下载并延后安装。 | 采用相同主干方案，增加升级前数据库恢复点；MVP 健康失败进入恢复界面，不承诺自动二进制回滚。 |
@@ -750,7 +750,7 @@ Floway 应保持以下代码组织原则：
 ### 22.1 已确定的产品默认值
 
 - macOS 首发同时支持 arm64 与 x64。
-- 凭据采用字段级加密与系统凭据存储结合。
+- 凭据采用字段级加密与当前用户私有密钥文件结合。
 - sidecar 不在 Desktop Shell 崩溃后继续成为孤儿进程。
 - stable channel 使用 GitHub Releases 与 Tauri updater 签名更新。
 - headless CLI 不属于 MVP。

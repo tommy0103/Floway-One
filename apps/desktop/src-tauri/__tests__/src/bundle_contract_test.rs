@@ -26,7 +26,7 @@ fn write_fixture(root: &Path) {
         "runtime/apps/platform-node/entry.js",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0001_initial.sql",
         "runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations/0002_independent.sql",
-        "runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node",
+        "runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node",
         "runtime/apps/web/dist/client/index.html",
         "runtime/apps/web/dist/client/dashboard-routes.json",
         "runtime/apps/web/dist/client/assets/lazy-dashboard.js",
@@ -80,8 +80,8 @@ fn write_fixture(root: &Path) {
         "migrations": { "files": migration_files },
         "nativeDependencies": {
             "files": [{
-                "path": "@napi-rs/keyring/keyring.node",
-                "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node")).unwrap())),
+                "path": "@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node",
+                "sha256": format!("{:x}", Sha256::digest(read(root.join("runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node")).unwrap())),
             }],
         },
         "node": {
@@ -249,7 +249,7 @@ fn modified_independent_migration_fails_with_the_contract_cause() {
 fn corrupted_native_dependency_fails_with_its_exact_integrity_cause() {
     let root = temporary_root();
     write_fixture(&root);
-    let native = root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+    let native = root.join("runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node");
     write(&native, "corrupted signed native dependency")
         .expect("native dependency fixture must be writable");
 
@@ -271,7 +271,7 @@ fn missing_native_dependency_fails_with_the_original_filesystem_error() {
     let root = temporary_root();
     write_fixture(&root);
     let missing =
-        root.join("runtime/apps/platform-node/node_modules/@napi-rs/keyring/keyring.node");
+        root.join("runtime/apps/platform-node/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node");
     remove_file(&missing).expect("native dependency fixture must exist before removal");
 
     let error = resolve_runtime_bundle(&root).expect_err("missing native dependency must fail");

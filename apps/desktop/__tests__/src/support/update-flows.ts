@@ -10,7 +10,7 @@ import {
   writeContractedEntry,
 } from './installed-app.ts';
 import { assertUpdateRecoverySurface } from './native-surface.ts';
-import { type CredentialIdentity, personalUpdateEntrySource, runCredentialScript } from './personal-runtime.ts';
+import { type CredentialIdentity, personalUpdateEntrySource, runCredentialScript, verificationCredentialDirectory } from './personal-runtime.ts';
 import {
   appEnvironmentWithoutPortOverride,
   assertLoopbackPortReleased,
@@ -48,7 +48,7 @@ export interface UpdateScenarioContext {
   readonly desktopRoot: string;
   readonly installedApp: string;
   readonly isolatedRoot: string;
-  readonly keyringRelativePath: string;
+  readonly sharpRelativePath: string;
   readonly migrationNames: readonly string[];
   readonly nodeExecutable: string;
   readonly pristineApp: string;
@@ -276,7 +276,7 @@ const buildScenarioArtifact = async (
     await cloneApplication(scenario.updatedApp, variantApp);
     const variantContext = await createInstalledAppVerificationContext(
       variantApp,
-      scenario.keyringRelativePath,
+      scenario.sharpRelativePath,
       scenario.migrationNames,
     );
     await writeContractedEntry(
@@ -347,11 +347,12 @@ const assertRecoveryPointOpensWithDeviceKey = async (
   recoveryPointPath: string,
 ): Promise<void> => {
   const script = `
-const { Entry } = await import('@napi-rs/keyring');
+const { createLocalDeviceMasterKeyCredential } = await import('./src/local-device-master-key.js');
+const { resolvePersonalRuntimePaths } = await import('./src/personal-runtime.js');
 const { openEncryptedBackupArchive } = await import('@floway-dev/gateway');
 const { readFile } = await import('node:fs/promises');
-const entry = new Entry(${JSON.stringify(credentialIdentity.service)}, ${JSON.stringify(credentialIdentity.account)});
-const secret = entry.getSecret();
+const entry = createLocalDeviceMasterKeyCredential(resolvePersonalRuntimePaths({ dataDir: ${JSON.stringify(verificationCredentialDirectory(credentialIdentity))} }));
+const secret = await entry.getSecret();
 if (secret === null) throw new Error('isolated update credential was not created');
 const password = Buffer.from(secret).toString('hex');
 const archive = JSON.parse(await readFile(${JSON.stringify(recoveryPointPath)}, 'utf8'));

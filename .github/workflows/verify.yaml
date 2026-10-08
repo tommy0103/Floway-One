@@ -142,8 +142,8 @@ jobs:
       - name: Build and test packaged Node runtime
         run: pnpm run build:web && pnpm run test:packaged-node
 
-  packaged-node-linux-secret-service:
-    name: packaged-node-linux-secret-service
+  packaged-node-linux:
+    name: packaged-node-linux
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,13 +158,8 @@ jobs:
         run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Install Secret Service
-        run: sudo apt-get update && sudo apt-get install --yes gnome-keyring
-      - name: Build and test packaged Node runtime with Secret Service
+      - name: Build and test packaged Node runtime
         run: pnpm run build:web && pnpm run test:packaged-node
-        env:
-          FLOWAY_REQUIRE_CREDENTIAL_STORE: '1'
-          FLOWAY_START_TEST_SECRET_SERVICE: '1'
 
   packaged-node-macos:
     name: packaged-node-macos

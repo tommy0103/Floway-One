@@ -123,7 +123,7 @@ export const recoveryCopy = {
     detailsInLogs: 'Detailed diagnostics are available in the logs.',
     detailsInStandardError: 'The log directory is unavailable. Review Floway’s standard error output for the original failure.',
     failures: {
-      credential: 'Floway cannot access its saved credentials in the system credential store. Your existing data has been kept. Restore access to the credential store, then restart Floway.',
+      credential: 'Floway cannot open its local encryption key. Your existing data has been kept. Restore the local key file and its access permissions, then restart Floway.',
       asset: 'Dashboard files are missing or do not match this Floway release.',
       compatibility: 'The desktop shell, local runtime, and Dashboard are not from the same compatible release.',
       migration: 'The local database could not be upgraded safely.',
@@ -142,7 +142,7 @@ export const recoveryCopy = {
     detailsInLogs: '详细诊断信息可在日志中查看。',
     detailsInStandardError: '日志目录不可用。请查看 Floway 的标准错误输出以获取原始故障信息。',
     failures: {
-      credential: 'Floway 无法访问系统凭据存储中的已保存凭据。原有数据已保留。请恢复系统凭据存储的访问权限，然后重新启动 Floway。',
+      credential: 'Floway 无法读取本地加密密钥，原有数据已保留。请恢复本地密钥文件及其访问权限，再重新启动 Floway。',
       asset: 'Dashboard 文件缺失，或与当前 Floway 版本不匹配。',
       compatibility: '桌面壳、本机运行时和 Dashboard 并非来自同一个兼容版本。',
       migration: '无法安全升级本机数据库。',

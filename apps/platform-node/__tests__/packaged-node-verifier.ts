@@ -10,7 +10,6 @@ import { type Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { startIsolatedLinuxSecretService } from './support/packaged-node/linux-secret-service.ts';
 import {
   assertWindowsOwnerOnlyAcl,
   readWindowsRoamingAppData,
@@ -19,7 +18,7 @@ import {
   WINDOWS_ROAMING_APP_DATA_FOLDER_ID,
 } from './support/packaged-node/windows.ts';
 import {
-  createOperatingSystemCredential,
+  createLocalDeviceMasterKeyCredential,
   type DeviceMasterKeyCredential,
   FsFileStore,
   resolvePersonalRuntimePaths,
@@ -36,8 +35,6 @@ const GENERATOR = resolve(ROOT, 'scripts/generate-node-runtime.ts');
 const ADMIN_KEY = 'packaged-layout-test';
 const newBootstrapToken = (): string => randomBytes(32).toString('hex');
 const PERSONAL_SECRET = `packaged-personal-secret-${randomUUID()}`;
-const REQUIRE_CREDENTIAL_STORE = process.env.FLOWAY_REQUIRE_CREDENTIAL_STORE === '1';
-const START_LINUX_SECRET_SERVICE = process.env.FLOWAY_START_TEST_SECRET_SERVICE === '1';
 const TAVILY_STORED_SECRET_COLUMN = WEB_SEARCH_STORED_SECRET_FIELDS.find(field => field.provider === 'tavily')!.column;
 // ERROR_FILE_NOT_FOUND is Win32 error 2; HRESULT_FROM_WIN32 exposes it as
 // 0x80070002 through the failing Known Folder call.
@@ -52,52 +49,9 @@ const fail = (message: string): never => {
 const requireString = (value: unknown, message: string): string =>
   typeof value === 'string' ? value : fail(message);
 
-const errorChain = (error: unknown): string => {
-  const messages: string[] = [];
-  let current = error;
-  while (current instanceof Error) {
-    messages.push(current.message);
-    current = current.cause;
-  }
-  return messages.join('\ncaused by: ');
-};
-
 const readCredential = async (credential: DeviceMasterKeyCredential): Promise<Uint8Array | null> => {
   const stored = await credential.getSecret();
   return stored === null ? null : Uint8Array.from(stored);
-};
-
-const deleteCredential = async (credential: DeviceMasterKeyCredential): Promise<void> => {
-  const deleteSecret = credential.deleteSecret
-    ?? fail('the system credential adapter cannot delete its test entry');
-  await deleteSecret();
-};
-
-const exerciseIsolatedCredentialStore = async (): Promise<boolean> => {
-  const identity = {
-    service: `Floway packaged credential verification ${randomUUID()}`,
-    account: `test-${randomUUID()}`,
-  };
-  let credential: DeviceMasterKeyCredential;
-  try {
-    credential = await createOperatingSystemCredential(identity);
-    const expected = randomBytes(32);
-    await credential.setSecret(expected);
-    const loaded = await readCredential(credential);
-    if (loaded === null || !Buffer.from(loaded).equals(expected)) fail('system credential set/get changed the test secret');
-    await deleteCredential(credential);
-    if (await readCredential(credential) !== null) fail('system credential delete left the test secret readable');
-    return true;
-  } catch (error) {
-    if (process.platform === 'linux' && errorChain(error).includes('Linux Secret Service is unavailable')) {
-      if (REQUIRE_CREDENTIAL_STORE) {
-        fail(`this runner requires a working Linux Secret Service\n${errorChain(error)}`);
-      }
-      console.log(`Linux Secret Service unavailable; successful personal-store smoke is not runnable on this host: ${errorChain(error)}`);
-      return false;
-    }
-    throw error;
-  }
 };
 
 const dockerfile = (await readFile(resolve(ROOT, 'docker/Dockerfile'), 'utf8')).replaceAll('\r\n', '\n');
@@ -177,6 +131,7 @@ const startRuntime = async (
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${profile}-files`),
       FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
       NODE_ENV: 'production',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus',
       PORT: profile === 'personal' ? String(verificationPort) : '0',
       ...extraEnv,
     },
@@ -374,6 +329,7 @@ const assertPersonalStartupFailure = async (
       FLOWAY_FILES_DIR: resolve(runtimeRoot, `${name}-files`),
       FLOWAY_PACKAGED_PERSONAL_PATHS: personalPaths === undefined ? undefined : JSON.stringify(personalPaths),
       NODE_ENV: 'production',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus',
       PORT: String(verificationPort),
       ...extraEnv,
     },
@@ -512,55 +468,29 @@ const assertWindowsKnownFolderHresultFailure = async (): Promise<void> => {
   }
 };
 
-const withUnavailablePackagedKeyring = async (
-  sentinel: string,
-  operation: () => Promise<void>,
-): Promise<void> => {
-  const deviceMasterKeyPath = resolve(packageRoot, 'apps/platform-node/src/device-master-key.ts');
-  const unavailableKeyringPath = resolve(packageRoot, 'apps/platform-node/src/unavailable-keyring-verification.ts');
-  const originalSource = await readFile(deviceMasterKeyPath, 'utf8');
-  const productionImport = "await import('@napi-rs/keyring')";
-  if (!originalSource.includes(productionImport)) fail('packaged device master key has no dynamic native keyring import');
-  try {
-    // Redirect only the temporary deployed source's dynamic import to a
-    // module-load failure. Server mode must never evaluate it; personal mode
-    // must retain the loader failure in its startup cause chain.
-    await writeFile(unavailableKeyringPath, `throw new Error(${JSON.stringify(sentinel)});\n`);
-    await writeFile(deviceMasterKeyPath, originalSource.replace(
-      productionImport,
-      "await import('./unavailable-keyring-verification.ts')",
-    ));
-    await operation();
-  } finally {
-    await writeFile(deviceMasterKeyPath, originalSource);
-    await rm(unavailableKeyringPath, { force: true });
+const installForbiddenCredentialBindings = async (): Promise<void> => {
+  const platformRoot = resolve(packageRoot, 'apps/platform-node');
+  for (const name of ['@napi-rs/keyring', 'koffi']) {
+    const directory = resolve(platformRoot, 'node_modules', name);
+    try {
+      await access(directory);
+      fail(`packaged runtime retained ${name}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await mkdir(directory, { recursive: true });
+    const sentinel = `Forbidden credential binding loaded: ${name}`;
+    await writeFile(resolve(directory, 'package.json'), JSON.stringify({ name, type: 'module', exports: './index.js' }));
+    await writeFile(resolve(directory, 'index.js'), `throw new Error(${JSON.stringify(sentinel)});\n`);
+    // Prove the tripwire is reachable from the exact deployed runtime before
+    // exercising its normal server/personal entries with these bindings blocked.
+    try {
+      await execFileAsync(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(name)})`], { cwd: platformRoot });
+      fail(`credential binding tripwire ${name} did not fire`);
+    } catch (error) {
+      if (!String((error as { stderr?: string }).stderr).includes(sentinel)) throw error;
+    }
   }
-};
-
-const assertUnavailableCredentialStorePersonalStartup = async (): Promise<void> => {
-  const outer = 'Failed to read the Floway device master key from the operating system credential store';
-  const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'unavailable-credential-store') });
-  if (process.platform === 'linux') {
-    await assertPersonalStartupFailure(
-      'unavailable-linux-secret-service',
-      personalPaths,
-      { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/floway-verification/missing-session-bus' },
-      [outer, 'Linux Secret Service is unavailable for the Floway device master key'],
-    );
-    return;
-  }
-
-  const sentinel = process.platform === 'darwin'
-    ? 'macOS Keychain locked sentinel'
-    : 'Windows Credential Manager unavailable sentinel';
-  await withUnavailablePackagedKeyring(sentinel, async () => {
-    await assertPersonalStartupFailure(
-      `unavailable-${process.platform}-credential-store`,
-      personalPaths,
-      {},
-      [outer, sentinel],
-    );
-  });
 };
 
 const storedSecretContext = (value: string): StoredSecretContext => value as StoredSecretContext;
@@ -630,6 +560,46 @@ const seedProtectedUpstream = async (databasePath: string, masterKey: Uint8Array
   } finally {
     database.close();
   }
+};
+
+const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Promise<void> => {
+  const paths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'older-encrypted-installation'), stableUserHome: runtimeRoot });
+  await mkdir(paths.dataDir, { recursive: true });
+  await copyFile(baseDatabasePath, paths.databasePath);
+  const before = new DatabaseSync(paths.databasePath);
+  let originalConfig: string;
+  try {
+    before.exec('DROP TABLE floway_local_key_state');
+    originalConfig = String(before.prepare('SELECT config_json FROM upstreams').get()?.config_json);
+  } finally { before.close(); }
+  const started = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  const session = await authenticate(started.origin, started.bootstrapToken ?? fail('older installation has no bootstrap authority'));
+  const searchResponse = await fetch(`${started.origin}/api/search-config`, { headers: { 'x-floway-session': session } });
+  const search = await searchResponse.json() as { tavily?: { apiKey?: unknown } };
+  if (!searchResponse.ok || search.tavily?.apiKey !== '') fail('older installation did not expose reset search credentials');
+  await stopRuntime(started.child);
+  const key = await readCredential(createLocalDeviceMasterKeyCredential(paths)) ?? fail('older installation created no local key');
+  const codec = createAes256GcmStoredSecretCodec(key);
+  const after = new DatabaseSync(paths.databasePath);
+  try {
+    const upstream = after.prepare('SELECT * FROM upstreams').get()!;
+    if (upstream.id !== 'up_packaged_entry' || upstream.name !== 'Packaged entry validation') fail('older installation lost its provider identity');
+    if (await codec.open(String(upstream.config_json), storedSecretContext('upstream:up_packaged_entry:config')) !== '{}'
+      || upstream.state_json !== null) fail('older installation did not reset protected provider fields');
+    const state = after.prepare('SELECT phase, snapshot FROM floway_local_key_state').get()!;
+    if (state.phase !== 'active') fail('older installation did not finish its credential upgrade');
+    const snapshot = new DatabaseSync(String(state.snapshot), { readOnly: true });
+    try {
+      if (snapshot.prepare('SELECT config_json FROM upstreams').get()?.config_json !== originalConfig) fail('older installation snapshot lost its original ciphertext');
+    } finally { snapshot.close(); }
+  } finally { after.close(); }
+  // Newly entered credentials survive the next normal launch after upgrade.
+  const reconfigured = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  await persistPersonalSecret(reconfigured.origin, reconfigured.bootstrapToken ?? fail('reconfigured installation has no bootstrap authority'));
+  await stopRuntime(reconfigured.child);
+  const restarted = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted older installation has no bootstrap authority'));
+  await stopRuntime(restarted.child);
 };
 
 const tamperEnvelope = (stored: string): string => {
@@ -747,6 +717,7 @@ const assertInvalidPersonalEntries = async (baseDatabasePath: string, masterKey:
     const paths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, `invalid-${entry.name}`) });
     await mkdir(paths.dataDir, { recursive: true });
     await copyFile(baseDatabasePath, paths.databasePath);
+    await createLocalDeviceMasterKeyCredential(paths).setSecret(masterKey);
     const database = new DatabaseSync(paths.databasePath);
     try { entry.mutate(database); } finally { database.close(); }
     await assertPersonalStartupFailure(
@@ -766,19 +737,19 @@ const assertPrivatePersonalStorage = async (
   hardener: InitializedPersonalStorage,
 ): Promise<void> => {
   if (process.platform !== 'win32') {
-    for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
+    for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath), join(paths.dataDir, 'credentials')]) {
       if (((await stat(directory)).mode & 0o777) !== 0o700) fail(`personal directory is not mode 0700: ${directory}`);
     }
-    for (const file of [paths.databasePath, contentPath]) {
+    for (const file of [paths.databasePath, contentPath, join(paths.dataDir, 'credentials/device-master-key-v1.key')]) {
       if (((await stat(file)).mode & 0o777) !== 0o600) fail(`personal file is not mode 0600: ${file}`);
     }
     return;
   }
 
-  for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath)]) {
+  for (const directory of [paths.dataDir, paths.filesDir, paths.logsDir, dirname(contentPath), join(paths.dataDir, 'credentials')]) {
     await assertWindowsOwnerOnlyAcl(directory, 'directory');
   }
-  for (const file of [paths.databasePath, contentPath]) {
+  for (const file of [paths.databasePath, contentPath, join(paths.dataDir, 'credentials/device-master-key-v1.key')]) {
     await assertWindowsOwnerOnlyAcl(file, 'protected-file');
   }
 
@@ -824,137 +795,126 @@ const assertPrivatePersonalStorage = async (
 };
 
 try {
-  const stopIsolatedLinuxSecretService = await startIsolatedLinuxSecretService(runtimeRoot, START_LINUX_SECRET_SERVICE);
-  try {
-    await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
-    if (serverCommand.at(-1) !== 'apps/platform-node/entry.ts') {
-      fail('the packaged server command no longer ends at the production Node entry');
-    }
-    await writeFile(packagedPersonalEntry, `
+  await execFileAsync(process.execPath, ['--experimental-strip-types', GENERATOR, packageRoot], { cwd: ROOT });
+  if (serverCommand.at(-1) !== 'apps/platform-node/entry.ts') {
+    fail('the packaged server command no longer ends at the production Node entry');
+  }
+  await writeFile(packagedPersonalEntry, `
 import { runNodeEntry } from './src/run-node-entry.ts';
 const source = process.env.FLOWAY_PACKAGED_PERSONAL_PATHS;
 if (source === undefined) throw new Error('Missing packaged personal path fixture');
 const paths = JSON.parse(source);
 await runNodeEntry({ resolvePersonalRuntimePaths: () => paths });
 `);
-    await writeFile(packagedDefaultPersonalEntry, `
+  await writeFile(packagedDefaultPersonalEntry, `
 import { runNodeEntry } from './src/run-node-entry.ts';
 await runNodeEntry({
   bootstrapNodePlatform: options => {
-    if (options.profile !== 'personal') throw new Error('Expected the personal runtime profile');
-    throw new Error([
-      'Floway packaged default entry stopped after path resolution',
-      \`data directory: \${options.storage.dataDir}\`,
-      \`credential lock: \${options.storage.credentialLockDatabasePath}\`,
-    ].join('\\n'));
+  if (options.profile !== 'personal') throw new Error('Expected the personal runtime profile');
+  throw new Error([
+    'Floway packaged default entry stopped after path resolution',
+    \`data directory: \${options.storage.dataDir}\`,
+    \`credential lock: \${options.storage.credentialLockDatabasePath}\`,
+  ].join('\\n'));
   },
 });
 `);
-    await writeFile(packagedServerBoundaryEntry, `
+  await writeFile(packagedServerBoundaryEntry, `
 import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { runNodeEntry } from './src/run-node-entry.ts';
 await runNodeEntry({
   resolvePersonalRuntimePaths: () => { throw new Error('server touched personal path resolver'); },
   bootstrapNodePlatform: options => bootstrapNodePlatform(options, {
-    createDeviceMasterKeyCreationLock: () => { throw new Error('server constructed personal device-key lock'); },
+  createDeviceMasterKeyCreationLock: () => { throw new Error('server constructed personal device-key lock'); },
   }),
 });
 `);
 
-    await Promise.all([
-      access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
-      access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/gateway')),
-      access(resolve(packageRoot, 'apps/web/dist/client/index.html')),
-      access(resolve(packageRoot, 'apps/web/dist/client/dashboard-routes.json')),
-    ]);
-    try {
-      await access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/test-utils'));
-      fail('the isolated runtime contains a development-only dependency');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+  await Promise.all([
+    access(resolve(packageRoot, 'apps/platform-node/entry.ts')),
+    access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/gateway')),
+    access(resolve(packageRoot, 'apps/web/dist/client/index.html')),
+    access(resolve(packageRoot, 'apps/web/dist/client/dashboard-routes.json')),
+  ]);
+  try {
+    await access(resolve(packageRoot, 'apps/platform-node/node_modules/@floway-dev/test-utils'));
+    fail('the isolated runtime contains a development-only dependency');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 
-    await withUnavailablePackagedKeyring('server native keyring loader unavailable sentinel', async () => {
-      const server = await startRuntime(
-        resolve(runtimeRoot, 'server.db'),
-        'server',
-        {},
-        undefined,
-        packagedServerBoundaryEntry,
-      );
-      await assertServerSurface(server.origin);
-      await stopRuntime(server.child);
-    });
-
-    await assertWindowsDefaultPersonalEntry();
-    await assertWindowsKnownFolderHresultFailure();
-    await assertPersonalStartupFailure(
-      'missing-personal-bootstrap',
-      resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'missing-personal-bootstrap') }),
-      { FLOWAY_BOOTSTRAP_TOKEN: undefined },
-      ['Personal production startup requires FLOWAY_BOOTSTRAP_TOKEN'],
+  await installForbiddenCredentialBindings();
+  {
+    const server = await startRuntime(
+      resolve(runtimeRoot, 'server.db'),
+      'server',
+      {},
+      undefined,
+      packagedServerBoundaryEntry,
     );
+    await assertServerSurface(server.origin);
+    await stopRuntime(server.child);
+  }
 
-    const systemStoreAvailable = await exerciseIsolatedCredentialStore();
-    if (systemStoreAvailable) {
-      const productionCredential = await createOperatingSystemCredential();
-      const existingMasterKey = await readCredential(productionCredential);
-      try {
-        const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'personal-data') });
-        const personal = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await persistPersonalSecret(personal.origin, personal.bootstrapToken ?? fail('personal runtime has no bootstrap token'));
-        await stopRuntime(personal.child);
-        const storedMasterKey = await readCredential(productionCredential);
-        const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in the system credential store');
-        if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in the system credential store');
-        assertCiphertextAtRest(personalPaths.databasePath);
-        await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
-        await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
-        const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await assertPersistedPersonalSecret(migrated.origin, migrated.bootstrapToken ?? fail('migrated runtime has no bootstrap token'));
-        await stopRuntime(migrated.child);
-        assertCiphertextAtRest(personalPaths.databasePath);
-        await assertRawSecretsAbsent(personalPaths.databasePath, [
-          PERSONAL_SECRET,
-          'packaged-api-key',
-          'packaged-refresh',
-          'packaged-access',
-        ]);
+  await assertWindowsDefaultPersonalEntry();
+  await assertWindowsKnownFolderHresultFailure();
+  await assertPersonalStartupFailure(
+    'missing-personal-bootstrap',
+    resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'missing-personal-bootstrap') }),
+    { FLOWAY_BOOTSTRAP_TOKEN: undefined },
+    ['Personal production startup requires FLOWAY_BOOTSTRAP_TOKEN'],
+  );
 
-        const hardener = initializePersonalStorage(personalPaths);
-        const fileStore = new FsFileStore(personalPaths.filesDir, hardener);
-        const contentPath = join(personalPaths.filesDir, 'packaged', 'body.bin');
-        await fileStore.put('packaged/body.bin', new TextEncoder().encode('private-content'));
-        const restarted = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
-        await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted runtime has no bootstrap token'));
-        await stopRuntime(restarted.child);
-        await assertPrivatePersonalStorage(personalPaths, contentPath, hardener);
-        await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);
+  {
+    const personalPaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'personal-data'), stableUserHome: runtimeRoot });
+    const productionCredential = createLocalDeviceMasterKeyCredential(personalPaths);
+    const personal = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
+    await persistPersonalSecret(personal.origin, personal.bootstrapToken ?? fail('personal runtime has no bootstrap token'));
+    await stopRuntime(personal.child);
+    const storedMasterKey = await readCredential(productionCredential);
+    const validMasterKey = storedMasterKey ?? fail('personal runtime did not persist a device master key in its private local key file');
+    if (validMasterKey.byteLength !== 32) fail('personal runtime did not persist a 256-bit key in its private local key file');
+    assertCiphertextAtRest(personalPaths.databasePath);
+    await seedProtectedUpstream(personalPaths.databasePath, validMasterKey);
+    await rewindProtectedSearchMigration(personalPaths.databasePath, validMasterKey);
+    const migrated = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
+    await assertPersistedPersonalSecret(migrated.origin, migrated.bootstrapToken ?? fail('migrated runtime has no bootstrap token'));
+    await stopRuntime(migrated.child);
+    assertCiphertextAtRest(personalPaths.databasePath);
+    await assertRawSecretsAbsent(personalPaths.databasePath, [
+      PERSONAL_SECRET,
+      'packaged-api-key',
+      'packaged-refresh',
+      'packaged-access',
+    ]);
 
-        const hardeningFailurePaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'hardening-failure') });
-        await mkdir(hardeningFailurePaths.dataDir, { recursive: true });
-        await writeFile(hardeningFailurePaths.filesDir, 'occupied');
-        await assertPersonalStartupFailure(
-          'personal-storage-hardening',
-          hardeningFailurePaths,
-          {},
-          [
-            `Floway could not enforce current-user-only access on directory ${hardeningFailurePaths.filesDir}`,
-            'EEXIST',
-          ],
-        );
-      } finally {
-        if (existingMasterKey === null) await deleteCredential(productionCredential);
-      }
-    }
+    const hardener = initializePersonalStorage(personalPaths);
+    const fileStore = new FsFileStore(personalPaths.filesDir, hardener);
+    const contentPath = join(personalPaths.filesDir, 'packaged', 'body.bin');
+    await fileStore.put('packaged/body.bin', new TextEncoder().encode('private-content'));
+    const restarted = await startRuntime(personalPaths.databasePath, 'personal', {}, personalPaths);
+    await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted runtime has no bootstrap token'));
+    await stopRuntime(restarted.child);
+    await assertPrivatePersonalStorage(personalPaths, contentPath, hardener);
+    await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);
+    await assertLegacyEncryptedInstallUpgrade(personalPaths.databasePath);
 
-    await assertUnavailableCredentialStorePersonalStartup();
-  } finally {
-    await stopIsolatedLinuxSecretService();
+    const hardeningFailurePaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'hardening-failure') });
+    await mkdir(hardeningFailurePaths.dataDir, { recursive: true });
+    await writeFile(hardeningFailurePaths.filesDir, 'occupied');
+    await assertPersonalStartupFailure(
+      'personal-storage-hardening',
+      hardeningFailurePaths,
+      {},
+      [
+        `Floway could not enforce current-user-only access on directory ${hardeningFailurePaths.filesDir}`,
+        'EEXIST',
+      ],
+    );
   }
 } finally {
   await Promise.all([...children].map(stopRuntime));
   await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
-console.log('Packaged Node runtime verified server compatibility, platform credential storage, and personal ciphertext at rest where supported');
+console.log('Packaged Node runtime verified server compatibility, private local keys without system credential bindings, and personal ciphertext at rest');

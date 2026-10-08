@@ -13,7 +13,6 @@ import {
   runNodeEntry,
   type NodeEntryOverrides,
 } from '../src/run-node-entry.ts';
-import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
 import {
   createUpdateRecoveryPoint,
   DESKTOP_DATA_ROOT_ENV,
@@ -105,8 +104,6 @@ const recoveryPointOverrides = (
   credential: InMemoryCredential,
 ): NodeEntryOverrides => ({
   args: ['--profile=personal', CREATE_UPDATE_RECOVERY_POINT_ARGUMENT],
-  createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) =>
-    await createNodeStoredSecretCodec(profile, db, creationLock, credential, options),
   createUpdateRecoveryPoint: async options =>
     await createUpdateRecoveryPoint({ ...options, deviceMasterKeyCredential: credential }),
   installPersonalLogging: () => ({ restore: () => undefined }),
@@ -237,10 +234,13 @@ test('a missing device master key fails the recovery point instead of writing pl
   const masterKey = randomBytes(32);
   const seedingCredential = inMemoryCredential(masterKey);
   await seedPersonalData(paths, masterKey);
-  // Simulate a lost credential store: the database carries sealed values but
-  // the device master key can no longer be read.
+  // A completed local-key upgrade must never reset saved credentials when its
+  // key later disappears, including in the pre-update recovery child.
+  await runRecoveryPointCreation(paths, seedingCredential);
   seedingCredential.deleteSecret();
 
-  await expect(runNodeEntry(recoveryPointOverrides(paths, seedingCredential))).rejects.toThrow(/device master key/);
-  await expect(stat(join(paths.dataDir, 'update', 'recovery-point.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  const archivePath = join(paths.dataDir, 'update', 'recovery-point.json');
+  const originalArchive = await readFile(archivePath, 'utf8');
+  await expect(runNodeEntry(recoveryPointOverrides(paths, seedingCredential))).rejects.toThrow(/local encryption key/);
+  expect(await readFile(archivePath, 'utf8')).toBe(originalArchive);
 });

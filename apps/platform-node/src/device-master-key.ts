@@ -1,13 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
-import type { Credential } from '@napi-rs/keyring';
-
 import type { DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
-import {
-  DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY,
-  type DeviceMasterKeyCredentialIdentity,
-} from './device-master-key-credential-identity.ts';
-import { requireNoninteractiveMacOSKeychain } from './macos-keychain-policy.ts';
+import { createLocalDeviceMasterKeyCredential } from './local-device-master-key.ts';
 import { startupFailure } from './startup-failure.ts';
 
 const DEVICE_MASTER_KEY_BYTES = 32;
@@ -18,102 +12,6 @@ export interface DeviceMasterKeyCredential {
   setSecret(secret: Uint8Array): Awaitable<void>;
   deleteSecret?(): Awaitable<boolean>;
 }
-
-interface KeyringEntry {
-  getSecret(): ArrayLike<number> | null;
-  setSecret(secret: Uint8Array): void;
-  setPassword(password: string): void;
-  deleteCredential(): boolean;
-}
-
-interface KeyringBindings {
-  Entry: new (service: string, account: string) => KeyringEntry;
-  findCredentials(service: string): Credential[];
-}
-
-const loadDefaultKeyringBindings = async (): Promise<KeyringBindings> => {
-  const { Entry, findCredentials } = await import('@napi-rs/keyring');
-  return { Entry, findCredentials };
-};
-
-const encodeLinuxSecret = (secret: Uint8Array): string => Buffer.from(secret).toString('base64');
-
-const decodeLinuxSecret = (stored: string): Uint8Array => {
-  const decoded = Buffer.from(stored, 'base64');
-  if (decoded.toString('base64') !== stored) {
-    throw new Error('Floway device master key in Linux Secret Service is not canonical base64');
-  }
-  return new Uint8Array(decoded);
-};
-
-// The binding maps this service/account entry to macOS Keychain, Windows
-// Credential Manager, and the Linux system keyring backend without writing a
-// key file beside SQLite.
-// https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs
-export const createOperatingSystemCredential = async (
-  identity: DeviceMasterKeyCredentialIdentity = DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY,
-  platform: NodeJS.Platform = process.platform,
-  bindings?: KeyringBindings,
-): Promise<DeviceMasterKeyCredential> => {
-  const requirePolicy = platform === 'darwin'
-    ? await requireNoninteractiveMacOSKeychain()
-    : () => undefined;
-  const resolvedBindings = bindings ?? await loadDefaultKeyringBindings();
-  if (platform !== 'linux') {
-    requirePolicy();
-    const entry = new resolvedBindings.Entry(identity.service, identity.account);
-    return {
-      getSecret: () => { requirePolicy(); return entry.getSecret(); },
-      setSecret: secret => { requirePolicy(); entry.setSecret(secret); },
-      deleteSecret: () => { requirePolicy(); return entry.deleteCredential(); },
-    };
-  }
-
-  // keyring-node v2 falls back to the non-durable kernel keyutils store when
-  // Secret Service construction fails. Its findCredentials implementation,
-  // however, connects to Secret Service directly. Use that direct path as the
-  // authoritative read/probe and verify every mutation through it so the
-  // fallback can never be silently accepted.
-  // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/linux_credential_builder.rs
-  // https://github.com/Brooooooklyn/keyring-node/blob/v2.0.0/src/entry.rs#L527-L553
-  const listFromSecretService = (): Credential[] => {
-    try {
-      return resolvedBindings.findCredentials(identity.service);
-    } catch (cause) {
-      throw new Error('Linux Secret Service is unavailable for the Floway device master key', { cause });
-    }
-  };
-  const readPassword = (): string | null => {
-    const matches = listFromSecretService().filter(credential => credential.account === identity.account);
-    if (matches.length > 1) {
-      throw new Error('Linux Secret Service contains ambiguous Floway device master key entries');
-    }
-    return matches[0]?.password ?? null;
-  };
-
-  listFromSecretService();
-  const entry = new resolvedBindings.Entry(identity.service, identity.account);
-  return {
-    getSecret: () => {
-      const password = readPassword();
-      return password === null ? null : decodeLinuxSecret(password);
-    },
-    setSecret: secret => {
-      const encoded = encodeLinuxSecret(secret);
-      entry.setPassword(encoded);
-      if (readPassword() !== encoded) {
-        throw new Error('Failed to verify the Floway device master key in Linux Secret Service');
-      }
-    },
-    deleteSecret: () => {
-      const deleted = entry.deleteCredential();
-      if (readPassword() !== null) {
-        throw new Error('Failed to delete the Floway device master key from Linux Secret Service');
-      }
-      return deleted;
-    },
-  };
-};
 
 const validateMasterKey = (stored: ArrayLike<number>): Uint8Array => {
   const bytes = Array.from(stored);
@@ -132,31 +30,31 @@ export const loadDeviceMasterKey = async (
   let resolvedCredential: DeviceMasterKeyCredential;
   let stored: ArrayLike<number> | null;
   try {
-    resolvedCredential = credential ?? await createOperatingSystemCredential();
+    resolvedCredential = credential ?? createLocalDeviceMasterKeyCredential();
     stored = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw startupFailure('credential', 'Failed to read the Floway device master key from the operating system credential store', cause);
+    throw startupFailure('credential', 'Failed to read the Floway device master key from the local key store', cause);
   }
   if (stored !== null) return validateMasterKey(stored);
   if (!createIfMissing) {
-    throw new Error('Floway device master key is missing from the operating system credential store');
+    throw new Error('Floway local device master key is missing; existing encrypted data requires migration');
   }
 
   const generated = validateMasterKey(generate(DEVICE_MASTER_KEY_BYTES));
   try {
     await resolvedCredential.setSecret(generated);
   } catch (cause) {
-    throw startupFailure('credential', 'Failed to save the Floway device master key in the operating system credential store', cause);
+    throw startupFailure('credential', 'Failed to save the Floway device master key in the local key store', cause);
   }
 
   let authoritative: ArrayLike<number> | null;
   try {
     authoritative = await resolvedCredential.getSecret();
   } catch (cause) {
-    throw startupFailure('credential', 'Failed to read back the Floway device master key from the operating system credential store', cause);
+    throw startupFailure('credential', 'Failed to read back the Floway device master key from the local key store', cause);
   }
   if (authoritative === null) {
-    throw new Error('Floway device master key was not persisted by the operating system credential store');
+    throw new Error('Floway device master key was not persisted by the local key store');
   }
   return validateMasterKey(authoritative);
 });

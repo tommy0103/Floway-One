@@ -7,7 +7,7 @@ export interface InstalledAppVerificationContext {
   readonly contract: string;
   readonly entry: string;
   readonly executable: string;
-  readonly keyringNative: string;
+  readonly sharpNative: string;
   readonly migrationNames: readonly string[];
   readonly migrations: string;
   readonly node: string;
@@ -16,7 +16,7 @@ export interface InstalledAppVerificationContext {
 
 export const createInstalledAppVerificationContext = async (
   installedApp: string,
-  keyringRelativePath: string,
+  sharpRelativePath: string,
   migrationNames: readonly string[],
 ): Promise<InstalledAppVerificationContext> => {
   const context: InstalledAppVerificationContext = {
@@ -26,7 +26,7 @@ export const createInstalledAppVerificationContext = async (
     contract: resolve(installedApp, 'Contents/Resources/desktop-bundle-contract.json'),
     platformNode: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node'),
     entry: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node/entry.js'),
-    keyringNative: resolve(installedApp, keyringRelativePath),
+    sharpNative: resolve(installedApp, sharpRelativePath),
     migrationNames,
     migrations: resolve(installedApp, 'Contents/Resources/runtime/apps/platform-node/node_modules/@floway-dev/gateway/migrations'),
   };
@@ -34,7 +34,7 @@ export const createInstalledAppVerificationContext = async (
     contract: context.contract,
     entry: context.entry,
     executable: context.executable,
-    keyringNative: context.keyringNative,
+    sharpNative: context.sharpNative,
     migrations: context.migrations,
     node: context.node,
     platformNode: context.platformNode,
@@ -50,7 +50,7 @@ export const createInstalledAppVerificationContext = async (
     access(context.node),
     access(context.contract),
     access(context.entry),
-    access(context.keyringNative),
+    access(context.sharpNative),
     access(context.migrations),
   ]);
   return context;

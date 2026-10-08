@@ -66,12 +66,17 @@ moving the personal endpoint; the selected port is persisted in `runtime.json`,
 and startup warns that configured AI clients must be updated. A port conflict
 or inaccessible application-data directory stops startup rather than selecting
 a fallback. Personal stdout and stderr are retained in size-bounded rotating
-files under the application-data logs directory.
+files under the application-data logs directory. The personal encryption key
+is stored in the current user’s private `credentials/device-master-key-v1.key`
+file. Opening the app does not require a credential-store unlock password.
+Older encrypted installations keep a recovery snapshot and reset encrypted
+provider connection settings and credentials for re-entry; models, routes,
+and usage records are retained.
 
 The desktop executable accepts `--data-dir <absolute-path>` when an operator
 needs its shell logs and support diagnostics beneath a different application
 data root. This changes only Floway-owned desktop data; it does not replace the
-user home directory or operating-system credential store.
+user home directory or the Gateway’s per-user storage paths.
 
 ## Architecture
 
@@ -195,9 +200,9 @@ pnpm run verify
 
 `verify` chains every root verification script named by
 `.github/workflows/verify.yaml`, reproducing that script set on the current
-host. Pull requests additionally run the packaged Node verifier against Linux
-Secret Service, Windows Credential Manager, and macOS Keychain to exercise
-platform-specific credential storage, assembly, and startup paths. Each link is
+host. Pull requests additionally run the packaged Node verifier on Linux,
+Windows, and macOS to exercise private local key files, encrypted storage,
+assembly, and startup with system credential bindings blocked. Each link is
 also a script of its own, in the order the chain runs them: `typegen`, `lint`,
 `typecheck`, `test`,
 `test:desktop`, `test:installers`, `check:agents-md`, `check:generated-assets`,

@@ -124,7 +124,7 @@ import { loadDeviceMasterKey } from './src/device-master-key.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
 try {
   await loadDeviceMasterKey({ run: operation => operation() }, true, {
-    getSecret() { throw new Error('Keychain denied access without interaction'); },
+    getSecret() { throw new Error('Local encryption key file is unreadable'); },
     setSecret() { throw new Error('must not replace a denied key'); },
   });
 } catch (failure) {
@@ -134,8 +134,8 @@ try {
 `);
   for (const locale of ['en', 'zh-Hans'] as const) {
     const expected = [
-      'Failed to read the Floway device master key from the operating system credential store',
-      'Keychain denied access without interaction',
+      'Failed to read the Floway device master key from the local key store',
+      'Local encryption key file is unreadable',
     ];
     await observePackagedFailureSurface({
       applicationHome: resolve(isolatedRoot, `ShellData-denied-credential-${locale}`),

@@ -52,7 +52,7 @@ const en = {
         detailsInStandardError: 'The log directory is unavailable. Review Floway’s standard error output for the original failure.',
         failedTitle: 'Floway could not start the local Gateway',
         failures: {
-          credential: 'Floway cannot access its saved credentials in the system credential store. Your existing data has been kept. Restore access to the credential store, then restart Floway.',
+          credential: 'Floway cannot open its local encryption key. Your existing data has been kept. Restore the local key file and its access permissions, then restart Floway.',
           asset: 'Dashboard files are missing or do not match this Floway release.',
           compatibility: 'The desktop shell, local runtime, and Dashboard are not from the same compatible release.',
           migration: 'The local database could not be upgraded safely.',

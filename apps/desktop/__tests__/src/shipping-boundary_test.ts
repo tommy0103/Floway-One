@@ -168,7 +168,6 @@ test('the legacy product identifier remains only in established bundle, app-data
     if (path === 'apps/desktop/src-tauri/src/desktop_paths.rs') return line.includes('.join(');
     if (path === 'apps/desktop/src-tauri/__tests__/src/desktop_paths_test.rs') return line.includes('PathBuf::from(');
     if (path === 'apps/desktop/src-tauri/src/runtime_controller.rs') return line.includes('.join(');
-    if (path === 'apps/platform-node/src/device-master-key-credential-identity.ts') return line.includes('service:');
     if (path === 'apps/platform-node/src/personal-runtime.ts') {
       return line.includes('Application Support') || line.includes('win32.join');
     }
