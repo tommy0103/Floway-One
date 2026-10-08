@@ -2637,10 +2637,11 @@ test('Floway keeps reset upstreams listable and editable until configuration is 
   await withMockedFetch(request => {
     assertEquals(request.url, 'https://custom.example.com/v1/chat/completions');
     assertEquals(request.headers.get('authorization'), 'Bearer sk-test');
-    return sseResponse([
+    const chunks = [
       { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: { role: 'assistant', content: 'Restored' }, finish_reason: null }] },
       { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n');
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('');
+    return sseResponse(`${chunks}data: [DONE]\n\n`);
   }, async () => {
     const reply = await requestApp('/v1/chat/completions', {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey.key}` },
