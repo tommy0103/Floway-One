@@ -4,6 +4,8 @@ import { blueprintUpstreamRecord, upstreamRecordToFullJson } from '../../../src/
 import { MODEL_LISTING_FAILURE_CODE } from '../../../src/data-plane/models/shared.ts';
 import { MODEL_CATALOG_REVISION } from '../../../src/data-plane/providers/models-cache.ts';
 import { MOCKED_FETCH_EGRESS, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { ALL_PROVIDER_KINDS } from '@floway-dev/provider';
+import { listModelProviders } from '../../../src/data-plane/providers/registry.ts';
 import type { UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
 
@@ -2591,4 +2593,45 @@ test('POST /api/upstreams/claude-code/oauth/refresh recovers as success when a s
   assertEquals(storedState.accounts[0].state, 'active');
   assertEquals(storedState.accounts[0].refreshToken, 'rt_sibling_rotated');
   assertEquals(storedState.accounts[0].accessToken?.token, 'at_sibling_rotated');
+});
+
+
+test('Floway keeps reset upstreams listable and editable until configuration is restored', async () => {
+  const { repo, adminSession, copilotUpstream } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  for (const kind of ALL_PROVIDER_KINDS) {
+    await repo.upstreams.save({ ...copilotUpstream, id: `reset_${kind}`, kind, name: `Reset ${kind}`, config: {}, state: null });
+  }
+  const list = await requestApp('/api/upstreams', authed(adminSession));
+  assertEquals(list.status, 200);
+  const items = await list.json() as JsonObject[];
+  assertEquals(items.length, ALL_PROVIDER_KINDS.length);
+  for (const kind of ALL_PROVIDER_KINDS) {
+    const item = items.find(row => row.kind === kind)!;
+    assertEquals(item.configuration_required, true);
+    assertEquals(item.name, `Reset ${kind}`);
+    const detail = await requestApp(`/api/upstreams/reset_${kind}`, authed(adminSession));
+    assertEquals(detail.status, 200);
+    const draft = await detail.json() as JsonObject;
+    assertEquals(draft.configuration_required, true);
+    assertEquals(draft.config, blueprintUpstreamRecord(kind).config);
+    assertEquals(draft.state, blueprintUpstreamRecord(kind).state);
+    const renamed = await requestApp(`/api/upstreams/reset_${kind}`, { ...authed(adminSession, { name: `Reconfigure ${kind}` }), method: 'PATCH' });
+    assertEquals(renamed.status, 200);
+    assertEquals((await renamed.json() as JsonObject).configuration_required, true);
+  }
+  assertEquals((await listModelProviders(null)).length, 0);
+  const invalid = await requestApp('/api/upstreams/reset_custom', { ...authed(adminSession, { config: { authStyle: 'bearer' } }), method: 'PATCH' });
+  assertEquals(invalid.status, 400);
+  assertEquals((await repo.upstreams.getById('reset_custom'))!.config, {});
+  const restored = await requestApp('/api/upstreams/reset_custom', {
+    ...authed(adminSession, { config: { ...customConfig, modelsFetch: { enabled: false }, models: [{ upstreamModelId: 'restored', endpoints: { openaiChatCompletions: {} } }] } }),
+    method: 'PATCH',
+  });
+  assertEquals(restored.status, 200);
+  assertEquals((await restored.json() as JsonObject).configuration_required, undefined);
+  assertEquals((await listModelProviders(null)).map(provider => provider.upstreamId), ['reset_custom']);
+  const models = await requestApp('/api/models', authed(adminSession));
+  assertEquals(models.status, 200);
+  assertEquals((await models.json() as JsonObject).data.map((model: JsonObject) => model.id), ['restored']);
 });
