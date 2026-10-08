@@ -42,7 +42,10 @@ const snapshotLegacyDatabase = async (paths: PersonalRuntimePaths, permissions: 
     // https://nodejs.org/download/release/v24.19.0/docs/api/sqlite.html#sqlitebackupsourceDb-path-options
     await backup(source, target);
     permissions.hardenFile(target);
-    const file = openSync(target, 'r');
+    // Windows FlushFileBuffers requires write access on the existing handle.
+    // Opening r+ preserves the snapshot bytes while allowing durable flushing.
+    // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers
+    const file = openSync(target, 'r+');
     try { fsyncSync(file); } finally { closeSync(file); }
     if (process.platform !== 'win32') {
       const parent = openSync(dirname(target), 'r');
