@@ -1,4 +1,6 @@
 import { createDeviceMasterKeyCreationLock, type DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
+import type { DeviceMasterKeyCredential } from './device-master-key.ts';
+import { createLocalDeviceMasterKeyCredential } from './local-device-master-key.ts';
 import { EventTargetChannelBroker } from './event-target-channel-broker.ts';
 import { createNodeExternalResourceFetcher } from './external-resource-fetcher.ts';
 import { nodeFetch } from './fetch.ts';
@@ -52,6 +54,7 @@ export interface BootstrapNodePlatformDependencies {
 export interface BootstrappedNodePlatform {
   readonly db: SqlDatabase;
   readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
+  readonly deviceMasterKeyCredential?: DeviceMasterKeyCredential;
   readonly personalStorage?: InitializedPersonalStorage;
 }
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
@@ -86,7 +89,12 @@ export const bootstrapNodePlatform = (
   initDumpStore(new FileDumpStore(db, files));
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
   const deviceMasterKeyCreationLock = profile === 'personal'
-    ? (dependencies.createDeviceMasterKeyCreationLock ?? createDeviceMasterKeyCreationLock)()
+    ? (dependencies.createDeviceMasterKeyCreationLock ?? createDeviceMasterKeyCreationLock)({
+      lockDatabasePath: options.storage.credentialLockDatabasePath,
+    })
     : undefined;
-  return { db, deviceMasterKeyCreationLock, personalStorage };
+  const deviceMasterKeyCredential = options.profile === 'personal'
+    ? createLocalDeviceMasterKeyCredential(options.storage, options.personalStorage)
+    : undefined;
+  return { db, deviceMasterKeyCreationLock, deviceMasterKeyCredential, personalStorage };
 };

@@ -1,6 +1,6 @@
+import { createOperatingSystemCredential } from '../src/migrations/system-device-master-key.ts';
 import { expect, test } from 'vitest';
 
-import { createOperatingSystemCredential } from '../src/device-master-key.ts';
 
 test.skipIf(process.platform !== 'darwin')('Floway disables macOS password dialogs before every credential operation', async () => {
   const { default: koffi } = await import('koffi');

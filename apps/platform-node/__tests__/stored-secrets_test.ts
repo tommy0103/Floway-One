@@ -1,3 +1,4 @@
+import { createOperatingSystemCredential } from '../src/migrations/system-device-master-key.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'vitest';
 
 import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
-import { createOperatingSystemCredential, type DeviceMasterKeyCredential } from '../src/device-master-key.ts';
+import { type DeviceMasterKeyCredential } from '../src/device-master-key.ts';
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import { createNodeStoredSecretCodec } from '../src/stored-secrets.ts';
 import { MemoryDeviceMasterKeyCredential } from './support/memory-device-master-key-credential.ts';
@@ -162,12 +163,12 @@ test('personal profile reports a lost OS-held key for existing upstream or web s
   await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway device master key is missing from the operating system credential store',
+    'Floway local device master key is missing; existing encrypted data requires migration',
   );
   await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false, true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway device master key is missing from the operating system credential store',
+    'Floway local device master key is missing; existing encrypted data requires migration',
   );
 });
 
@@ -189,7 +190,7 @@ test('personal startup rejects a successful Linux keyutils fallback mutation wit
   const error = await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential),
     Error,
-    'Failed to save the Floway device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the local key store',
   );
   assertEquals(fallbackMutationSucceeded, true);
   assertEquals(

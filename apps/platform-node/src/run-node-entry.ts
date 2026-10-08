@@ -123,7 +123,7 @@ export const prepareNodePlatform = async (
   overrides: NodeEntryOverrides,
   personalDatabasePath?: string,
 ): Promise<void> => {
-  const { db, deviceMasterKeyCreationLock, personalStorage } = bootstrapped;
+  const { db, deviceMasterKeyCreationLock, deviceMasterKeyCredential, personalStorage } = bootstrapped;
   const migrate = overrides.applyMigrations ?? applyMigrations;
   const hasExistingMigrationState = profile === 'personal'
     && await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'")
@@ -143,14 +143,14 @@ export const prepareNodePlatform = async (
       'personal',
       db,
       deviceMasterKeyCreationLock,
-      undefined,
+      deviceMasterKeyCredential,
       { validate: false },
     );
     await applyRuntimeMigrations(db, undefined, storedSecrets);
     await validateStoredSecrets(db, storedSecrets);
   } else {
     await applyRuntimeMigrations(db);
-    storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock);
+    storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock, deviceMasterKeyCredential);
   }
   if (personalDatabasePath !== undefined) personalStorage?.hardenSqliteFiles(personalDatabasePath);
   const repo = new SqlRepo(db, { storedSecrets });

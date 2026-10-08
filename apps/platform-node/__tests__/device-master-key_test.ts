@@ -1,8 +1,8 @@
+import { createOperatingSystemCredential } from '../src/migrations/system-device-master-key.ts';
 import { test } from 'vitest';
 
 import type { DeviceMasterKeyCreationLock } from '../src/device-master-key-creation-lock.ts';
 import {
-  createOperatingSystemCredential,
   loadDeviceMasterKey,
 } from '../src/device-master-key.ts';
 import { desktopFailureEvent } from '../src/startup-failure.ts';
@@ -42,7 +42,7 @@ test('device master key reports missing and malformed credential-store values wi
   await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential(null)),
     Error,
-    'Floway device master key is missing from the operating system credential store',
+    'Floway local device master key is missing; existing encrypted data requires migration',
   );
   const error = await assertRejects(
     () => loadDeviceMasterKey(creationLock, false, new MemoryDeviceMasterKeyCredential([1, 2, 3])),
@@ -60,7 +60,7 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw new Error('unexpected write'); },
     }),
     Error,
-    'Failed to read the Floway device master key from the operating system credential store',
+    'Failed to read the Floway device master key from the local key store',
   );
   assert(readError.cause === readFailure);
 
@@ -71,7 +71,7 @@ test('device master key preserves credential-store failures as error causes', as
       setSecret: () => { throw writeFailure; },
     }),
     Error,
-    'Failed to save the Floway device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the local key store',
   );
   assert(writeError.cause === writeFailure);
 });
@@ -113,7 +113,7 @@ test('Linux rejects a successful vendor keyutils fallback mutation when Secret S
   const error = await assertRejects(
     () => loadDeviceMasterKey(creationLock, true, credential, () => new Uint8Array(32).fill(7)),
     Error,
-    'Failed to save the Floway device master key in the operating system credential store',
+    'Failed to save the Floway device master key in the local key store',
   );
   assert(fallbackPassword !== null, 'the vendor fallback mutation must report success before rejection');
   assertEquals(secretServiceReads, 3);

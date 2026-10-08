@@ -27,8 +27,8 @@ export interface UpdateRecoveryPointResult {
 export interface UpdateRecoveryPointOptions {
   // The archive key must come from the same device master key that protects
   // stored secrets, so tests and the packaged verifier pass the credential
-  // their stored-secret codec override uses; production reads the operating
-  // system credential store by default.
+  // their stored-secret codec override uses; production reads the private
+  // local key file belonging to these runtime paths.
   readonly deviceMasterKeyCredential?: DeviceMasterKeyCredential;
   readonly overrides: NodeEntryOverrides;
   readonly paths: PersonalRuntimePaths;
@@ -41,8 +41,8 @@ const archivePassword = (masterKey: Uint8Array): string =>
 // The pre-update recovery point reuses the full-backup archive from #21 with
 // the archive key derived from the device master key instead of a user
 // password: it is a same-device recovery point, so it does not need the
-// cross-device password story, and it stays unusable off this device because
-// the master key never leaves the operating-system credential store.
+// cross-device password story. The archive requires the separately stored
+// local master key, so copying the archive alone does not expose its contents.
 export const createUpdateRecoveryPoint = async (
   options: UpdateRecoveryPointOptions,
 ): Promise<UpdateRecoveryPointResult> => {
@@ -55,7 +55,8 @@ export const createUpdateRecoveryPoint = async (
   await prepareNodePlatform(bootstrapped, 'personal', overrides, paths.databasePath);
   const creationLock = bootstrapped.deviceMasterKeyCreationLock;
   if (creationLock === undefined) throw new Error('Personal profile requires a device master key creation lock');
-  const masterKey = await loadDeviceMasterKey(creationLock, false, options.deviceMasterKeyCredential);
+  const masterKey = await loadDeviceMasterKey(creationLock, false,
+    options.deviceMasterKeyCredential ?? bootstrapped.deviceMasterKeyCredential);
   try {
     const { payload } = await collectExportPayload(false);
     const archive = await createEncryptedBackupArchive(payload, archivePassword(masterKey));
