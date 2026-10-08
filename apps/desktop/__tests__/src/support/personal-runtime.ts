@@ -102,13 +102,16 @@ export const personalEntrySource = (
     : '';
   return `
 import { createLocalDeviceMasterKeyCredential } from './src/local-device-master-key.js';
+import { bootstrapNodePlatform } from './src/bootstrap.js';
 ${slowVerifyRouteImport}import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
-import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 
 try {
   await runNodeEntry({
+    bootstrapNodePlatform: options => bootstrapNodePlatform(options, {
+      deviceMasterKeyCredential: ${localCredentialSource(credentialIdentity)},
+    }),
     resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
       dataDir: ${JSON.stringify(dataRoot)},
       stableUserHome: ${JSON.stringify(dataRoot)},
@@ -125,10 +128,6 @@ try {
         },
       };
     },` : ''}
-    createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
-      const credential = ${localCredentialSource(credentialIdentity)};
-      return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
-    },
   });
 } catch (failure) {
   reportDesktopStartupFailure(failure, 'native-dependency');
@@ -146,21 +145,20 @@ export const personalUpdateEntrySource = (
   credentialIdentity: CredentialIdentity,
 ): string => `
 import { createLocalDeviceMasterKeyCredential } from './src/local-device-master-key.js';
+import { bootstrapNodePlatform } from './src/bootstrap.js';
 import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
-import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 import { createUpdateRecoveryPoint } from './src/update-recovery-point.js';
 
 const credential = ${localCredentialSource(credentialIdentity)};
 try {
   await runNodeEntry({
+    bootstrapNodePlatform: options => bootstrapNodePlatform(options, { deviceMasterKeyCredential: credential }),
     resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
       dataDir: ${JSON.stringify(dataRoot)},
       stableUserHome: ${JSON.stringify(dataRoot)},
     }),
-    createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) =>
-      await createNodeStoredSecretCodec(profile, db, creationLock, credential, options),
     createUpdateRecoveryPoint: async options =>
       await createUpdateRecoveryPoint({ ...options, deviceMasterKeyCredential: credential }),
   });

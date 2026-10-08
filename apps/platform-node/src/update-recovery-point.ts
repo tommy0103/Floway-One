@@ -51,7 +51,7 @@ export const createUpdateRecoveryPoint = async (
     profile: 'personal',
     storage: paths,
     personalStorage: storage,
-  });
+  }, { deviceMasterKeyCredential: options.deviceMasterKeyCredential });
   await prepareNodePlatform(bootstrapped, 'personal', overrides, paths.databasePath);
   const creationLock = bootstrapped.deviceMasterKeyCreationLock;
   if (creationLock === undefined) throw new Error('Personal profile requires a device master key creation lock');

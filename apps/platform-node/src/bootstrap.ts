@@ -50,6 +50,7 @@ export type BootstrapNodePlatformOptions =
 
 export interface BootstrapNodePlatformDependencies {
   readonly createDeviceMasterKeyCreationLock?: typeof createDeviceMasterKeyCreationLock;
+  readonly deviceMasterKeyCredential?: DeviceMasterKeyCredential;
 }
 
 export interface BootstrappedNodePlatform {
@@ -96,7 +97,7 @@ export const bootstrapNodePlatform = (
       })
     : undefined;
   const deviceMasterKeyCredential = options.profile === 'personal'
-    ? createLocalDeviceMasterKeyCredential(options.storage, options.personalStorage)
+    ? dependencies.deviceMasterKeyCredential ?? createLocalDeviceMasterKeyCredential(options.storage, options.personalStorage)
     : undefined;
   const prepareKeyUpgrade = options.profile === 'personal'
     ? async () => await prepareLocalKeyUpgrade(db, options.storage, options.personalStorage,
