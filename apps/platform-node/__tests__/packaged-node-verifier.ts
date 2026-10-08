@@ -213,7 +213,7 @@ const assertServerSurface = async (origin: string): Promise<void> => {
   }
 };
 
-const persistPersonalSecret = async (origin: string, bootstrapToken: string): Promise<void> => {
+const persistPersonalSecret = async (origin: string, bootstrapToken: string): Promise<string> => {
   const sessionToken = await authenticate(origin, bootstrapToken);
 
   const response = await fetch(`${origin}/api/search-config`, {
@@ -228,6 +228,7 @@ const persistPersonalSecret = async (origin: string, bootstrapToken: string): Pr
     }),
   });
   if (!response.ok) fail(`personal search credential update returned ${response.status}: ${await response.text()}`);
+  return sessionToken;
 };
 
 const assertCiphertextAtRest = (databasePath: string): void => {
@@ -531,13 +532,15 @@ const authenticate = async (origin: string, bootstrapToken: string): Promise<str
   return sessionToken;
 };
 
-const assertPersistedPersonalSecret = async (origin: string, bootstrapToken: string): Promise<void> => {
+const assertPersistedPersonalSecret = async (origin: string, bootstrapToken: string): Promise<string> => {
+  const sessionToken = await authenticate(origin, bootstrapToken);
   const response = await fetch(`${origin}/api/search-config`, {
-    headers: { 'x-floway-session': await authenticate(origin, bootstrapToken) },
+    headers: { 'x-floway-session': sessionToken },
   });
   if (!response.ok) fail(`personal search credential read returned ${response.status}`);
   const body = await response.json() as { tavily?: { apiKey?: unknown } };
   if (body.tavily?.apiKey !== PERSONAL_SECRET) fail('valid encrypted restart did not return the persisted Tavily secret');
+  return sessionToken;
 };
 
 const seedProtectedUpstream = async (databasePath: string, masterKey: Uint8Array): Promise<void> => {
@@ -602,8 +605,7 @@ const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Pr
   } finally { after.close(); }
   // Newly entered credentials survive the next normal launch after upgrade.
   const reconfigured = await startRuntime(paths.databasePath, 'personal', {}, paths);
-  await persistPersonalSecret(reconfigured.origin, reconfigured.bootstrapToken ?? fail('reconfigured installation has no bootstrap authority'));
-  const restoredSession = await authenticate(reconfigured.origin, reconfigured.bootstrapToken!);
+  const restoredSession = await persistPersonalSecret(reconfigured.origin, reconfigured.bootstrapToken ?? fail('reconfigured installation has no bootstrap authority'));
   const restored = await fetch(`${reconfigured.origin}/api/upstreams/up_packaged_entry`, {
     method: 'PATCH', headers: { 'x-floway-session': restoredSession, 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -619,8 +621,7 @@ const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Pr
   if (!catalog.ok || !(await catalog.json() as { data: { id: string }[] }).data.some(model => model.id === 'restored-provider-model')) fail('reconfigured upstream is missing from the live catalog');
   await stopRuntime(reconfigured.child);
   const restarted = await startRuntime(paths.databasePath, 'personal', {}, paths);
-  await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted older installation has no bootstrap authority'));
-  const restartSession = await authenticate(restarted.origin, restarted.bootstrapToken!);
+  const restartSession = await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted older installation has no bootstrap authority'));
   const restartedDetail = await fetch(`${restarted.origin}/api/upstreams/up_packaged_entry`, { headers: { 'x-floway-session': restartSession } });
   const restartedRecord = await restartedDetail.json() as { configuration_required?: boolean; config?: { apiKey?: string } };
   if (!restartedDetail.ok || restartedRecord.configuration_required || restartedRecord.config?.apiKey !== 'replacement-provider-credential') fail('re-entered upstream credentials did not survive restart');
