@@ -45,7 +45,6 @@ test('Custom editor values add one blank ingress row and never serialize it', ()
   expect((previewRecord(record, values).config as CustomRecord['config']).ingressHeadersRules).toEqual(expected);
 });
 
-
 test('Floway does not probe a reset upstream before its credentials are restored', () => {
   for (const kind of ['custom', 'azure', 'copilot', 'codex', 'claude-code', 'ollama'] as const) {
     const pending = upstreamRecord('pending', { kind, configuration_required: true });

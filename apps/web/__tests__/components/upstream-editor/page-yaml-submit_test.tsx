@@ -127,7 +127,6 @@ describe('upstream editor YAML submission', () => {
   });
 });
 
-
 it('Floway explains reconfiguration and removes the warning after a successful save', async () => {
   const pending = { ...record, configuration_required: true as const };
   const saved = { ...record, config: { ...record.config, models: [model('replacement')] } };

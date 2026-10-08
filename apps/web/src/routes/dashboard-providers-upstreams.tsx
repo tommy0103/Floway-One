@@ -491,6 +491,7 @@ function ModelStatus({
 }) {
   const { t } = useTranslation();
   const locale = useLocale();
+  if (record.configuration_required) return <Text>{t('dashboard.upstreams.reconfigurationRequired')}</Text>;
   const cacheStatus = record.modelsCache.lastError
     ? 'failed'
     : record.modelsCache.fetchedAt === null ? 'empty' : 'ready';
@@ -544,6 +545,7 @@ const buildModelCounts = (
     }
   }
   const countFor = (record: UpstreamRecord): number | null => {
+    if (record.configuration_required) return null;
     // Azure's catalog is the operator's own configured list, so it is known
     // without the listing.
     if (record.kind === 'azure') return record.config.models.length;

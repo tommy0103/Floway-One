@@ -175,7 +175,6 @@ const en = {
           version: 'Version',
         },
         upstreams: {
-        reconfigurationRequired: 'Needs configuration',
           title: 'Upstreams',
           totalLabel: 'Total',
           total_one: '{{count, number}} upstream',
@@ -620,6 +619,7 @@ const en = {
         },
       },
       upstreams: {
+        reconfigurationRequired: 'Needs configuration',
         empty: 'No upstreams configured. Add an upstream to serve models.',
         actions: {
           create: 'New upstream',

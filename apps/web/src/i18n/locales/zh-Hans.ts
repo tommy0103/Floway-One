@@ -163,7 +163,6 @@ const zhHansCN = {
           version: '版本',
         },
         upstreams: {
-        reconfigurationRequired: '需要重新配置',
           title: '上游',
           totalLabel: '总数',
           total_one: '{{count, number}} 个上游',
@@ -596,6 +595,7 @@ const zhHansCN = {
         },
       },
       upstreams: {
+        reconfigurationRequired: '需要重新配置',
         empty: '尚未配置上游。添加上游后即可提供模型服务。',
         actions: {
           create: '新建上游',

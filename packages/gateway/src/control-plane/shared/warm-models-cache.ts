@@ -1,4 +1,3 @@
-import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { Context } from 'hono';
 
 import { fetchUpstreamModelsCached } from '../../data-plane/providers/models-cache.ts';
@@ -8,6 +7,7 @@ import { getRepo } from '../../repo/index.ts';
 import { backgroundSchedulerFromContext } from '../../runtime/background.ts';
 import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
 import type { BackgroundScheduler } from '@floway-dev/platform';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
 
 export const reportModelsCacheWarmFailure = (

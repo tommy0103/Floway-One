@@ -606,11 +606,13 @@ const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Pr
   const restoredSession = await authenticate(reconfigured.origin, reconfigured.bootstrapToken!);
   const restored = await fetch(`${reconfigured.origin}/api/upstreams/up_packaged_entry`, {
     method: 'PATCH', headers: { 'x-floway-session': restoredSession, 'content-type': 'application/json' },
-    body: JSON.stringify({ config: {
-      baseUrl: 'https://provider.example', authStyle: 'bearer', apiKey: 'replacement-provider-credential',
-      endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [], modelsFetch: { enabled: false },
-      models: [{ upstreamModelId: 'restored-provider-model', endpoints: { openaiChatCompletions: {} } }],
-    } }),
+    body: JSON.stringify({
+      config: {
+        baseUrl: 'https://provider.example', authStyle: 'bearer', apiKey: 'replacement-provider-credential',
+        endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [], modelsFetch: { enabled: false },
+        models: [{ upstreamModelId: 'restored-provider-model', endpoints: { openaiChatCompletions: {} } }],
+      },
+    }),
   });
   if (!restored.ok || (await restored.json() as { configuration_required?: boolean }).configuration_required) fail('older installation cannot save its replacement upstream configuration');
   const catalog = await fetch(`${reconfigured.origin}/api/models`, { headers: { 'x-floway-session': restoredSession } });

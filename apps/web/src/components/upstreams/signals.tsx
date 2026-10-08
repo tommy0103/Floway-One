@@ -262,9 +262,9 @@ const upstreamPlan = (record: UpstreamRecord): string | null => {
 export const upstreamReadout = (record: UpstreamRecord, t: TFunction, locale: string, now: number): UpstreamReadout => record.configuration_required
   ? { plan: t('dashboard.upstreams.reconfigurationRequired'), signals: [] }
   : ({
-  plan: upstreamPlan(record) ?? t(`provider.${record.kind}`, providerLabel(record.kind)),
-  signals: upstreamSignals(record, t, locale, now),
-});
+      plan: upstreamPlan(record) ?? t(`provider.${record.kind}`, providerLabel(record.kind)),
+      signals: upstreamSignals(record, t, locale, now),
+    });
 
 export function UpstreamSignals({ record }: { record: UpstreamRecord }) {
   const { t } = useTranslation();

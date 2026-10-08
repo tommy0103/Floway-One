@@ -153,6 +153,10 @@ const upstreamWireSchema = parsedBy((value): UpstreamRecord => {
     throw new Error('id must use a raw upstream id, not a legacy provider-prefixed identity');
   }
 
+  const configurationRequired = wire.configuration_required === true;
+  if (configurationRequired && !upstreamNeedsConfiguration({ config: wire.config, state: wire.state })) {
+    throw new Error('An upstream awaiting configuration must have empty config and null state');
+  }
   const record: UpstreamRecord = {
     id,
     kind,
@@ -167,14 +171,10 @@ const upstreamWireSchema = parsedBy((value): UpstreamRecord => {
     modelPrefix: parseValue(parsedBy(normalizeModelPrefix).optional().default(null), wire.model_prefix),
     hue: parseValue(parsedBy(normalizeUpstreamHue), wire.hue),
     config: wire.config,
-    state: wire.configuration_required === true && upstreamNeedsConfiguration({ config: wire.config, state: wire.state })
-      ? null : normalizeUpstreamState(kind, wire.state),
+    state: configurationRequired ? null : normalizeUpstreamState(kind, wire.state),
     modelsCache: null,
   };
-  if (wire.configuration_required === true) {
-    if (!upstreamNeedsConfiguration(record)) throw new Error('An upstream awaiting configuration must have empty config and null state');
-    return record;
-  }
+  if (configurationRequired) return record;
   return { ...record, config: normalizeUpstreamConfig(record) };
 });
 

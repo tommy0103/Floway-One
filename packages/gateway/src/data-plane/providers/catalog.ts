@@ -3,7 +3,7 @@ import { fetchUpstreamModelsCached, MODEL_CATALOG_REVISION } from './models-cach
 import type { GatewayProvider } from './registry.ts';
 import type { BackgroundScheduler } from '@floway-dev/platform';
 import { kindForEndpoints } from '@floway-dev/protocols/common';
-import { isAbortError, type Fetcher, type InternalModel, type Provider, type ProviderModel, type UpstreamRecord } from '@floway-dev/provider';
+import { upstreamNeedsConfiguration, isAbortError, type Fetcher, type InternalModel, type Provider, type ProviderModel, type UpstreamRecord } from '@floway-dev/provider';
 
 interface ProviderModelsResult {
   models: InternalModel[];
@@ -170,6 +170,7 @@ const collectProviderModels = async (
 // count it from there. This is the count it had while it was on, which is the
 // last one that was ever true for it.
 export const storedCatalogSize = (record: UpstreamRecord): number | null => {
+  if (upstreamNeedsConfiguration(record)) return null;
   const cache = record.modelsCache;
   if (cache?.revision !== MODEL_CATALOG_REVISION) return null;
   const disabled = new Set(record.disabledPublicModelIds);

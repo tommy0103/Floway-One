@@ -2532,7 +2532,6 @@ test('an import naming an endpoint this build does not know is refused, not sile
   assertEquals(JSON.stringify(result.body).includes('chatCompletions'), true);
 });
 
-
 test('Floway backups round-trip upstreams awaiting configuration without inventing credentials', async () => {
   const { app, repo } = setup();
   for (const kind of ALL_PROVIDER_KINDS) await repo.upstreams.save({ ...CUSTOM_UPSTREAM, id: `pending_${kind}`, kind, config: {}, state: null });
@@ -2551,4 +2550,15 @@ test('Floway backups round-trip upstreams awaiting configuration without inventi
   }
   const safe = await app.request('/export?kind=safe');
   assertEquals(safe.status, 200);
+});
+
+test('Floway refuses backups that mark nonempty configuration or state as reset', async () => {
+  const { app } = setup();
+  const validWire = upstreamRecordToFullJson(CUSTOM_UPSTREAM);
+  for (const row of [
+    { ...validWire, configuration_required: true },
+    { ...validWire, configuration_required: true, config: {}, state: { secret: 'must-not-be-discarded' } },
+  ]) {
+    assertEquals((await doImport(app, 'replace', latestImportData({ upstreams: [row] }))).status, 400);
+  }
 });

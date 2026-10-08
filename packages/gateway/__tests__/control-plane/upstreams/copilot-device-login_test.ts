@@ -259,7 +259,7 @@ test('/api/upstreams/copilot/oauth/device-login/poll rejects a token-exchange re
   assertEquals(await repo.upstreams.list(), []);
 });
 
-test('/api/upstreams/copilot/oauth/device-login/poll targeted-patches config+state on the row identified by record.id', async () => {
+test.each([false, true])('Floway Copilot device login restores the stored row (reset=%s)', async reset => {
   const { repo, adminSession, githubAccount } = await setupAppTest({
     githubAccount: {
       token: 'ghu_old',
@@ -268,7 +268,7 @@ test('/api/upstreams/copilot/oauth/device-login/poll targeted-patches config+sta
   });
   const existing = buildCopilotUpstreamRecord(githubAccount, { id: 'up_existing_copilot', name: 'Pinned Copilot', sortOrder: 9 });
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save(existing);
+  await repo.upstreams.save(reset ? { ...existing, config: {}, state: null } : existing);
 
   await withMockedFetch(
     request => {
