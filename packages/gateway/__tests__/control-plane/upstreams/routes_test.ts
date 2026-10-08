@@ -7,7 +7,7 @@ import { listModelProviders } from '../../../src/data-plane/providers/registry.t
 import { MOCKED_FETCH_EGRESS, requestApp, setupAppTest } from '../../test-utils/app.ts';
 import { ALL_PROVIDER_KINDS } from '@floway-dev/provider';
 import type { UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
-import { assertEquals, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
+import { assertEquals, jsonResponse, sseResponse, withMockedFetch } from '@floway-dev/test-utils';
 
 type JsonObject = Record<string, any>;
 
@@ -2637,14 +2637,18 @@ test('Floway keeps reset upstreams listable and editable until configuration is 
   await withMockedFetch(request => {
     assertEquals(request.url, 'https://custom.example.com/v1/chat/completions');
     assertEquals(request.headers.get('authorization'), 'Bearer sk-test');
-    return jsonResponse({ id: 'reply', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: 'Restored' }, finish_reason: 'stop' }] });
+    return sseResponse([
+      { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: { role: 'assistant', content: 'Restored' }, finish_reason: null }] },
+      { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n');
   }, async () => {
     const reply = await requestApp('/v1/chat/completions', {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey.key}` },
       body: JSON.stringify({ model: 'restored', messages: [{ role: 'user', content: 'Test reconfiguration' }] }),
     });
-    assertEquals(reply.status, 200);
-    assertEquals((await reply.json() as JsonObject).choices[0].message.content, 'Restored');
+    const replyBody = await reply.json() as JsonObject;
+    assertEquals(reply.status, 200, JSON.stringify(replyBody));
+    assertEquals(replyBody.choices[0].message.content, 'Restored');
   });
 });
 
