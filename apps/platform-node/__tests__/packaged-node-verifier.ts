@@ -562,6 +562,46 @@ const seedProtectedUpstream = async (databasePath: string, masterKey: Uint8Array
   }
 };
 
+const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Promise<void> => {
+  const paths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'older-encrypted-installation'), stableUserHome: runtimeRoot });
+  await mkdir(paths.dataDir, { recursive: true });
+  await copyFile(baseDatabasePath, paths.databasePath);
+  const before = new DatabaseSync(paths.databasePath);
+  let originalConfig: string;
+  try {
+    before.exec('DROP TABLE floway_local_key_state');
+    originalConfig = String(before.prepare('SELECT config_json FROM upstreams').get()?.config_json);
+  } finally { before.close(); }
+  const started = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  const session = await authenticate(started.origin, started.bootstrapToken ?? fail('older installation has no bootstrap authority'));
+  const searchResponse = await fetch(`${started.origin}/api/search-config`, { headers: { 'x-floway-session': session } });
+  const search = await searchResponse.json() as { tavily?: { apiKey?: unknown } };
+  if (!searchResponse.ok || search.tavily?.apiKey !== '') fail('older installation did not expose reset search credentials');
+  await stopRuntime(started.child);
+  const key = await readCredential(createLocalDeviceMasterKeyCredential(paths)) ?? fail('older installation created no local key');
+  const codec = createAes256GcmStoredSecretCodec(key);
+  const after = new DatabaseSync(paths.databasePath);
+  try {
+    const upstream = after.prepare('SELECT * FROM upstreams').get()!;
+    if (upstream.id !== 'up_packaged_entry' || upstream.name !== 'Packaged entry validation') fail('older installation lost its provider identity');
+    if (await codec.open(String(upstream.config_json), storedSecretContext('upstream:up_packaged_entry:config')) !== '{}'
+      || upstream.state_json !== null) fail('older installation did not reset protected provider fields');
+    const state = after.prepare('SELECT phase, snapshot FROM floway_local_key_state').get()!;
+    if (state.phase !== 'active') fail('older installation did not finish its credential upgrade');
+    const snapshot = new DatabaseSync(String(state.snapshot), { readOnly: true });
+    try {
+      if (snapshot.prepare('SELECT config_json FROM upstreams').get()?.config_json !== originalConfig) fail('older installation snapshot lost its original ciphertext');
+    } finally { snapshot.close(); }
+  } finally { after.close(); }
+  // Newly entered credentials survive the next normal launch after upgrade.
+  const reconfigured = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  await persistPersonalSecret(reconfigured.origin, reconfigured.bootstrapToken ?? fail('reconfigured installation has no bootstrap authority'));
+  await stopRuntime(reconfigured.child);
+  const restarted = await startRuntime(paths.databasePath, 'personal', {}, paths);
+  await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted older installation has no bootstrap authority'));
+  await stopRuntime(restarted.child);
+};
+
 const tamperEnvelope = (stored: string): string => {
   const envelope = JSON.parse(stored) as { $flowayEncrypted: { ciphertext: string } };
   const first = envelope.$flowayEncrypted.ciphertext[0] ?? fail('stored ciphertext is empty');
@@ -857,6 +897,7 @@ await runNodeEntry({
     await stopRuntime(restarted.child);
     await assertPrivatePersonalStorage(personalPaths, contentPath, hardener);
     await assertInvalidPersonalEntries(personalPaths.databasePath, validMasterKey);
+    await assertLegacyEncryptedInstallUpgrade(personalPaths.databasePath);
 
     const hardeningFailurePaths = resolvePersonalRuntimePaths({ dataDir: resolve(runtimeRoot, 'hardening-failure') });
     await mkdir(hardeningFailurePaths.dataDir, { recursive: true });
