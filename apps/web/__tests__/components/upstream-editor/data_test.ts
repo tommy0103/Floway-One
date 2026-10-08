@@ -46,8 +46,16 @@ test('Custom editor values add one blank ingress row and never serialize it', ()
 });
 
 test('Floway does not probe a reset upstream before its credentials are restored', () => {
-  for (const kind of ['custom', 'azure', 'copilot', 'codex', 'claude-code', 'ollama'] as const) {
-    const pending = upstreamRecord('pending', { kind, configuration_required: true });
+  const seeds: Parameters<typeof upstreamRecord>[1][] = [
+    record,
+    { kind: 'azure', config: { endpoint: '', apiKey: '', models: [] }, state: null },
+    { kind: 'copilot', config: { githubHost: 'github.com', githubToken: '', user: { login: '', avatar_url: '', name: null, id: 0 } }, state: null },
+    { kind: 'codex', config: { accounts: [] }, state: { accounts: [] } },
+    { kind: 'claude-code', config: { accounts: [] }, state: { accounts: [] } },
+    { kind: 'ollama', config: { baseUrl: '', apiKey: '', cloudUsage: false, models: [] }, state: null },
+  ];
+  for (const seed of seeds) {
+    const pending = upstreamRecord(`pending_${seed.kind}`, { ...seed, configuration_required: true });
     expect(canFetchModelCatalog(pending, pending.config)).toBe(false);
   }
 });
