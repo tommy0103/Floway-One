@@ -12,7 +12,6 @@ import {
 import { platform as currentPlatform, userInfo } from 'node:os';
 import { posix, win32 } from 'node:path';
 
-import { DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY } from './device-master-key-credential-identity.ts';
 import type { InitializedPersonalStorage } from './personal-storage.ts';
 
 export const PERSONAL_HOSTNAME = '127.0.0.1' as const;
@@ -240,7 +239,7 @@ export const resolvePersonalRuntimePaths = (
     credentialLockDatabasePath: path.join(
       roots.credentialStateDir,
       'credential-lock',
-      DEVICE_MASTER_KEY_CREDENTIAL_IDENTITY.creationLockFilename,
+      'device-master-key-v1.creation-lock.db',
     ),
   });
 };

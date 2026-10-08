@@ -139,6 +139,7 @@ export const prepareNodePlatform = async (
   };
   if (hasExistingMigrationState) {
     await applyRuntimeMigrations(db, undefined, undefined, { through: LEGACY_PLAINTEXT_SCHEMA_MIGRATION });
+    await bootstrapped.prepareLocalKeyUpgrade?.();
     storedSecrets = await createStoredSecrets(
       'personal',
       db,
@@ -150,6 +151,7 @@ export const prepareNodePlatform = async (
     await validateStoredSecrets(db, storedSecrets);
   } else {
     await applyRuntimeMigrations(db);
+    await bootstrapped.prepareLocalKeyUpgrade?.();
     storedSecrets = await createStoredSecrets(profile, db, deviceMasterKeyCreationLock, deviceMasterKeyCredential);
   }
   if (personalDatabasePath !== undefined) personalStorage?.hardenSqliteFiles(personalDatabasePath);

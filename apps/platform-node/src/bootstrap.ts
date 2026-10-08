@@ -1,10 +1,11 @@
 import { createDeviceMasterKeyCreationLock, type DeviceMasterKeyCreationLock } from './device-master-key-creation-lock.ts';
 import type { DeviceMasterKeyCredential } from './device-master-key.ts';
-import { createLocalDeviceMasterKeyCredential } from './local-device-master-key.ts';
 import { EventTargetChannelBroker } from './event-target-channel-broker.ts';
 import { createNodeExternalResourceFetcher } from './external-resource-fetcher.ts';
 import { nodeFetch } from './fetch.ts';
 import { FsFileStore } from './fs-file-store.ts';
+import { createLocalDeviceMasterKeyCredential } from './local-device-master-key.ts';
+import { prepareLocalKeyUpgrade } from './local-key-upgrade.ts';
 import { createNodeSqliteDatabase } from './node-sqlite-database.ts';
 import type { PersonalRuntimePaths } from './personal-runtime.ts';
 import type { InitializedPersonalStorage } from './personal-storage.ts';
@@ -55,6 +56,7 @@ export interface BootstrappedNodePlatform {
   readonly db: SqlDatabase;
   readonly deviceMasterKeyCreationLock?: DeviceMasterKeyCreationLock;
   readonly deviceMasterKeyCredential?: DeviceMasterKeyCredential;
+  readonly prepareLocalKeyUpgrade?: () => Promise<void>;
   readonly personalStorage?: InitializedPersonalStorage;
 }
 export const resolveNodeRuntimeProfile = (value: string | undefined): RuntimeProfileMode => {
@@ -90,11 +92,18 @@ export const bootstrapNodePlatform = (
   initDumpBroker(new EventTargetChannelBroker<DumpMetadata>(dumpCodec));
   const deviceMasterKeyCreationLock = profile === 'personal'
     ? (dependencies.createDeviceMasterKeyCreationLock ?? createDeviceMasterKeyCreationLock)({
-      lockDatabasePath: options.storage.credentialLockDatabasePath,
-    })
+        lockDatabasePath: options.storage.credentialLockDatabasePath,
+      })
     : undefined;
   const deviceMasterKeyCredential = options.profile === 'personal'
     ? createLocalDeviceMasterKeyCredential(options.storage, options.personalStorage)
     : undefined;
-  return { db, deviceMasterKeyCreationLock, deviceMasterKeyCredential, personalStorage };
+  const prepareKeyUpgrade = options.profile === 'personal'
+    ? async () => await prepareLocalKeyUpgrade(db, options.storage, options.personalStorage,
+      deviceMasterKeyCreationLock!, deviceMasterKeyCredential!)
+    : undefined;
+  return {
+    db, deviceMasterKeyCreationLock, deviceMasterKeyCredential, personalStorage,
+    prepareLocalKeyUpgrade: prepareKeyUpgrade,
+  };
 };

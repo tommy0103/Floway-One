@@ -105,9 +105,8 @@ const runWithSqliteLock = async <T>(lockDatabasePath: string, operation: () => P
 export const createDeviceMasterKeyCreationLock = (
   options: DeviceMasterKeyCreationLockOptions = {},
 ): DeviceMasterKeyCreationLock => {
-  // The credential service/account is device-global, so every Floway database
-  // owned by this OS user contends on the lock resolved from the same stable
-  // platform application-data identity as the personal runtime.
+  // Serialize key creation and credential upgrades across Floway processes.
+  // The caller supplies the private lock path belonging to its runtime.
   const lockDatabasePath = resolve(
     options.lockDatabasePath ?? resolvePersonalRuntimePaths().credentialLockDatabasePath,
   );

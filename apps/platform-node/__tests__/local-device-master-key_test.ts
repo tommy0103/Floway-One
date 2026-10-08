@@ -18,8 +18,10 @@ const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), 'floway-local-key-'));
   roots.push(root);
   const paths = resolvePersonalRuntimePaths({ dataDir: root, stableUserHome: root });
-  return { paths, credential: createLocalDeviceMasterKeyCredential(paths),
-    lock: createDeviceMasterKeyCreationLock({ lockDatabasePath: join(root, 'key.lock.db') }) };
+  return {
+    paths, credential: createLocalDeviceMasterKeyCredential(paths),
+    lock: createDeviceMasterKeyCreationLock({ lockDatabasePath: join(root, 'key.lock.db') }),
+  };
 };
 
 test('Floway persists and reloads its local master key without loading Keychain bindings', async () => {

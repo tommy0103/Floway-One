@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 
 import { expect, test } from 'vitest';
 
+import { createLocalDeviceMasterKeyCredential } from '../src/local-device-master-key.ts';
 import { applyMigrations } from '../src/migrate.ts';
 import { createNodeSqliteDatabase } from '../src/node-sqlite-database.ts';
 import { resolvePersonalRuntimePaths } from '../src/personal-runtime.ts';
@@ -74,6 +75,7 @@ for (const { ownerCase, storageCase } of startupCases) {
       const db = createNodeSqliteDatabase(paths.databasePath);
       await applyMigrations(db);
       await ownerCase.mutateOwner(db);
+      await createLocalDeviceMasterKeyCredential(paths).setSecret(new Uint8Array(32).fill(MASTER_KEY_BYTE));
       const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(MASTER_KEY_BYTE));
       const upstreamId = 'up_personal_entry';
       const configJson = await codec.seal(

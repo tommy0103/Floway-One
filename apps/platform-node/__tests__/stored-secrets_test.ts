@@ -1,4 +1,3 @@
-import { createOperatingSystemCredential } from '../src/migrations/system-device-master-key.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -117,7 +116,7 @@ test('server profile keeps stored provider secrets byte-compatible and never ope
   assertEquals(await codec.seal('{"apiKey":"plaintext-server-value"}', testContext('upstream:one:config')), '{"apiKey":"plaintext-server-value"}');
 });
 
-test('personal profile creates an OS-held master key only when no protected provider data exists', async () => {
+test('personal profile creates a local master key only when no protected provider data exists', async () => {
   const credential = new MemoryDeviceMasterKeyCredential(null);
   const codec = await createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential);
   const stored = await codec.seal('{"apiKey":"provider-secret"}', testContext('upstream:one:config'));
@@ -127,7 +126,7 @@ test('personal profile creates an OS-held master key only when no protected prov
   assertEquals(stored.includes('provider-secret'), false);
 });
 
-test('personal profile creates one OS-held key for the version-gated 0083 plaintext adoption', async () => {
+test('personal profile creates one local key for the version-gated 0083 plaintext adoption', async () => {
   const credential = new MemoryDeviceMasterKeyCredential(null);
   await createNodeStoredSecretCodec(
     'personal',
@@ -141,7 +140,7 @@ test('personal profile creates one OS-held key for the version-gated 0083 plaint
   assertEquals(credential.writes[0]?.byteLength, 32);
 });
 
-test('concurrent 0083 adoption callers share one OS-held key creation', async () => {
+test('concurrent 0083 adoption callers share one local key creation', async () => {
   const credential = new MemoryDeviceMasterKeyCredential(null);
   let tail = Promise.resolve();
   const serializedLock: DeviceMasterKeyCreationLock = {
@@ -159,7 +158,7 @@ test('concurrent 0083 adoption callers share one OS-held key creation', async ()
   assertEquals(credential.writes.length, 1);
 });
 
-test('personal profile reports a lost OS-held key for existing upstream or web search credentials', async () => {
+test('personal profile reports a lost local key for existing upstream or web search credentials', async () => {
   await assertRejects(
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
@@ -169,33 +168,6 @@ test('personal profile reports a lost OS-held key for existing upstream or web s
     () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false, true), creationLock, new MemoryDeviceMasterKeyCredential(null)),
     Error,
     'Floway local device master key is missing; existing encrypted data requires migration',
-  );
-});
-
-test('personal startup rejects a successful Linux keyutils fallback mutation with the Secret Service verification chain', async () => {
-  let fallbackMutationSucceeded = false;
-  const credential = await createOperatingSystemCredential({
-    service: 'Floway test',
-    account: 'fallback-startup',
-  }, 'linux', {
-    Entry: class {
-      getSecret = () => null;
-      setSecret = () => undefined;
-      setPassword = () => { fallbackMutationSucceeded = true; };
-      deleteCredential = () => false;
-    },
-    findCredentials: () => [],
-  });
-
-  const error = await assertRejects(
-    () => createNodeStoredSecretCodec('personal', databaseWithStoredState(false), creationLock, credential),
-    Error,
-    'Failed to save the Floway device master key in the local key store',
-  );
-  assertEquals(fallbackMutationSucceeded, true);
-  assertEquals(
-    (error.cause as Error).message,
-    'Failed to verify the Floway device master key in Linux Secret Service',
   );
 });
 
@@ -366,7 +338,7 @@ test('personal profile preserves existing ciphertext when credential access is d
   const context = testContext('upstream:up_startup:config');
   const codec = createAes256GcmStoredSecretCodec(new Uint8Array(32).fill(17));
   const ciphertext = await codec.seal('{"apiKey":"existing-secret"}', context);
-  const denied = new Error('Keychain denied access without interaction');
+  const denied = new Error('Local key file denied access');
   await withSqliteStoredValues({ configJson: ciphertext }, async db => {
     const failure = await assertRejects(() => createNodeStoredSecretCodec('personal', db, creationLock, {
       getSecret: () => { throw denied; },

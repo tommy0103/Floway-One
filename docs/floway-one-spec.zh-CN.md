@@ -443,18 +443,18 @@ owner 可以显式跳过 Quick Start 进入运行概览，跳过不视为激活�
 
 ### 12.4 本地凭据
 
-Floway 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与系统凭据存储结合的方案：
+Floway 会保存订阅 OAuth token 和 Provider API Key。凭据静态存储采用字段级加密与当前用户私有密钥文件结合的方案：
 
 - 数据目录和敏感文件使用仅当前用户可读写的权限。
 - 每台设备生成独立的 256-bit 主密钥。
-- 主密钥保存到 macOS Keychain、Windows Credential Manager 或 Linux Secret Service，不与 SQLite 放在同一目录。
+- 主密钥保存在应用数据目录的 `credentials/device-master-key-v1.key`，POSIX 目录权限为 0700、文件为 0600；Windows 使用仅当前用户可访问的 DACL。正常启动不依赖系统凭据存储，也不要求输入解锁密码。
 - SQLite 中的 Provider OAuth token、Provider API Key 和其他可恢复明文凭据使用主密钥执行带认证的字段级加密。
 - 加密记录携带格式版本、随机 nonce 和认证信息，以支持后续密钥轮换与算法迁移。
-- 系统凭据存储不可用时默认启动失败并给出明确错误；是否为无 Secret Service 的 Linux 环境提供受限 key-file fallback，留到 Linux 发行阶段决定。
+- 本地密钥无法读取、格式错误或升级后丢失时保留数据并启动失败；不得自动替换已有密钥。
 - 日志、崩溃报告和导出文件不得意外包含明文凭据。
 - 不得把主密钥直接写入普通备份。
 
-Clash Verge Rev 已使用 AES-256-GCM 加密部分配置，但其加密 key 与应用配置位于同一目录。Floway 保存的是可长期使用的订阅凭据，因此只借鉴字段加密方式，不沿用同目录 key-file 作为桌面正式版的正常路径。
+旧版本系统密钥加密的数据升级时，先在私有 `credential-upgrade/` 目录保存包含 WAL 的原数据库快照，再原子重置加密的 Provider 配置、OAuth 状态和搜索凭据，提示用户重新填写。Provider 名称、模型、路由和使用记录等未加密字段保留；旧版整个 Provider 配置均已加密，其中的服务地址等连接设置也需重新填写。升级状态持久化以支持中断后继续；完成升级后不得再次执行凭据重置。快照保留旧密文，不包含旧主密钥。
 
 ### 12.5 WebView
 

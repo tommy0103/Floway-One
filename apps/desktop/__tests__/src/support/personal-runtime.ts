@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
@@ -56,9 +57,16 @@ export const errorChainIncludes = (error: unknown, fragment: string): boolean =>
   return error.cause === undefined ? false : errorChainIncludes(error.cause, fragment);
 };
 
+export const verificationCredentialDirectory = (identity: CredentialIdentity): string =>
+  resolve(tmpdir(), `floway-verification-key-${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`);
+
+const localCredentialSource = (identity: CredentialIdentity): string =>
+  `createLocalDeviceMasterKeyCredential(resolvePersonalRuntimePaths({ dataDir: ${JSON.stringify(verificationCredentialDirectory(identity))}, stableUserHome: ${JSON.stringify(verificationCredentialDirectory(identity))} }))`;
+
 const credentialScript = (identity: CredentialIdentity, action: 'delete' | 'require'): string => `
-const { createOperatingSystemCredential } = await import('./src/device-master-key.js');
-const entry = await createOperatingSystemCredential(${JSON.stringify(identity)});
+const { createLocalDeviceMasterKeyCredential } = await import('./src/local-device-master-key.js');
+const { resolvePersonalRuntimePaths } = await import('./src/personal-runtime.js');
+const entry = ${localCredentialSource(identity)};
 ${action === 'delete' ? 'await entry.deleteSecret();' : ''}
 const secret = await entry.getSecret();
 if (${action === 'delete' ? 'secret !== null' : 'secret === null'}) {
@@ -77,6 +85,7 @@ export const runCredentialScript = async (
     cwd: context.platformNode,
     timeout: 10_000,
   });
+  if (action === 'delete') await rm(verificationCredentialDirectory(identity), { recursive: true, force: true });
 };
 
 export const SLOW_VERIFY_ROUTE = '/__desktop_verifier__/slow';
@@ -92,7 +101,7 @@ export const personalEntrySource = (
     ? 'import { createLocalApp } from \'./src/local-app.js\';\n'
     : '';
   return `
-import { createOperatingSystemCredential } from './src/device-master-key.js';
+import { createLocalDeviceMasterKeyCredential } from './src/local-device-master-key.js';
 ${slowVerifyRouteImport}import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
@@ -117,9 +126,7 @@ try {
       };
     },` : ''}
     createNodeStoredSecretCodec: async (profile, db, creationLock, _credential, options) => {
-      const credential = await createOperatingSystemCredential(
-        ${JSON.stringify(credentialIdentity)},
-      );
+      const credential = ${localCredentialSource(credentialIdentity)};
       return await createNodeStoredSecretCodec(profile, db, creationLock, credential, options);
     },
   });
@@ -138,16 +145,14 @@ export const personalUpdateEntrySource = (
   dataRoot: string,
   credentialIdentity: CredentialIdentity,
 ): string => `
-import { createOperatingSystemCredential } from './src/device-master-key.js';
+import { createLocalDeviceMasterKeyCredential } from './src/local-device-master-key.js';
 import { resolvePersonalRuntimePaths } from './src/personal-runtime.js';
 import { runNodeEntry } from './src/run-node-entry.js';
 import { reportDesktopStartupFailure } from './src/startup-failure.js';
 import { createNodeStoredSecretCodec } from './src/stored-secrets.js';
 import { createUpdateRecoveryPoint } from './src/update-recovery-point.js';
 
-const credential = await createOperatingSystemCredential(
-  ${JSON.stringify(credentialIdentity)},
-);
+const credential = ${localCredentialSource(credentialIdentity)};
 try {
   await runNodeEntry({
     resolvePersonalRuntimePaths: () => resolvePersonalRuntimePaths({
@@ -318,7 +323,7 @@ export const assertPersonalRuntime = async (
         },
       );
     });
-    cleanup.defer('isolated operating-system credential', async () => {
+    cleanup.defer('isolated local credential', async () => {
       await runCredentialScript(context, credentialIdentity, 'delete');
     });
     cleanup.defer('loopback listener', async () => await assertLoopbackPortReleased(port));
