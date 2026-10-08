@@ -1,3 +1,4 @@
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { Context } from 'hono';
 
 import { fetchUpstreamModelsCached } from '../../data-plane/providers/models-cache.ts';
@@ -38,6 +39,7 @@ export const warmModelsCacheCore = async (
   scheduler: BackgroundScheduler,
   runtimeLocation: string,
 ): Promise<UpstreamModelsCache | null> => {
+  if (upstreamNeedsConfiguration(record)) return null;
   const provider = createProvider(record);
   const fetcher = (await createPerRequestFetcher(runtimeLocation))(record.id);
   try {

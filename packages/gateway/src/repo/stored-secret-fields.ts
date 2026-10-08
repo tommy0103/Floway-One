@@ -1,6 +1,7 @@
 import { decodeUpstreamConfig, decodeUpstreamState } from './upstream-codecs.ts';
 import { WEB_SEARCH_PROVIDER_NAMES, type WebSearchConfig, type WebSearchProviderName } from '../shared/web-search-providers.ts';
 import type { StoredSecretContext } from '@floway-dev/platform';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
 import { azureUpstreamConfigForSafeExport } from '@floway-dev/provider-azure';
 import { claudeCodeUpstreamConfigForSafeExport, claudeCodeUpstreamStateForSafeExport } from '@floway-dev/provider-claude-code';
@@ -55,7 +56,7 @@ const UPSTREAM_SAFE_EXPORT_PROJECTORS = Object.freeze({
 } satisfies Record<UpstreamProviderKind, UpstreamSafeExportProjector>);
 
 const upstreamSafeExportProjection = (record: UpstreamRecord): UpstreamSafeExportProjection =>
-  UPSTREAM_SAFE_EXPORT_PROJECTORS[record.kind](record);
+  upstreamNeedsConfiguration(record) ? { config: {}, state: null } : UPSTREAM_SAFE_EXPORT_PROJECTORS[record.kind](record);
 
 export const upstreamConfigSecretContext = (id: string): StoredSecretContext =>
   `upstream:${id}:config` as StoredSecretContext;

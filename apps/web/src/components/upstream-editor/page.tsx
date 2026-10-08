@@ -82,12 +82,12 @@ export function UpstreamEditorPage({ data }: { data: UpstreamEditorLoaderData })
       const config = values.config as Extract<UpstreamRecord, { kind: 'custom' }>['config'];
       refineCustomIngressHeaderRules(config.ingressHeadersRules, ctx);
     }
-    // An upstream that already exists keeps the credential it was created
-    // with, and the editor never sends it back.
-    if (data.mode !== 'create') return;
+    // Configured edit records keep their credentials; reset records must
+    // complete the same credential step as a new upstream.
+    if (data.mode !== 'create' && !record.configuration_required) return;
     if (record.kind === 'copilot' && !values.config.githubToken) ctx.addIssue({ code: 'custom', message: 'dashboard.upstreamEditor.validation.copilot', path: ['config'] });
     if ((record.kind === 'codex' || record.kind === 'claude-code') && values.config.accounts.length === 0) ctx.addIssue({ code: 'custom', message: 'dashboard.upstreamEditor.validation.credential', path: ['config'] });
-  }), [data.mode, record.kind]);
+  }), [data.mode, record.kind, record.configuration_required]);
   const form = useForm<UpstreamEditorValues>({
     defaultValues: initialValues,
     mode: 'onBlur',
@@ -152,6 +152,7 @@ export function UpstreamEditorPage({ data }: { data: UpstreamEditorLoaderData })
     if (patch.state !== undefined) setValue('state', patch.state as UpstreamEditorValues['state'], { shouldDirty: !persisted });
     const changes = { ...(patch.config !== undefined ? { config: patch.config } : {}), ...(patch.state !== undefined ? { state: patch.state } : {}) };
     const patched = { ...recordRef.current, ...changes } as UpstreamRecord;
+    if (persisted && patch.config !== undefined) delete patched.configuration_required;
     updateRecord(patched);
     // A patch the provider has already stored is not an edit, so it moves the
     // saved state the form measures itself against instead of counting as one.
@@ -225,6 +226,7 @@ export function UpstreamEditorPage({ data }: { data: UpstreamEditorLoaderData })
           <Button appearance="primary" disabled={data.mode === 'edit' && !hasUnsavedChanges} disabledFocusable={saving} icon={saving ? <Spinner size="tiny" /> : <SaveRegular />} onClick={() => void submitForm()}>{t('dashboard.upstreamEditor.actions.save')}</Button>
         </div>
       </header>
+      {record.configuration_required && <OutcomeMessageBar intent="warning">{t('dashboard.upstreamEditor.reconfigurationRequired')}</OutcomeMessageBar>}
       {saveError && <OutcomeMessageBar onDismiss={() => setSaveError(null)}>{saveError}</OutcomeMessageBar>}
       <div className={`grid grid-cols-[380px_minmax(0,1fr)] ${PANE_GAP_CLASS} min-h-0 min-w-0 flex-1 max-[1050px]:grid-cols-1`}>
         <Panel className="min-h-0 min-w-0 overflow-hidden" padding="flush">

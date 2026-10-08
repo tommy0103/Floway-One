@@ -577,6 +577,13 @@ const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Pr
   const searchResponse = await fetch(`${started.origin}/api/search-config`, { headers: { 'x-floway-session': session } });
   const search = await searchResponse.json() as { tavily?: { apiKey?: unknown } };
   if (!searchResponse.ok || search.tavily?.apiKey !== '') fail('older installation did not expose reset search credentials');
+  const headers = { 'x-floway-session': session };
+  const listing = await fetch(`${started.origin}/api/upstreams`, { headers });
+  const listed = await listing.json() as { id: string; configuration_required?: boolean }[];
+  if (!listing.ok || !listed.some(row => row.id === 'up_packaged_entry' && row.configuration_required)) fail('older installation cannot list its reset upstream');
+  const detail = await fetch(`${started.origin}/api/upstreams/up_packaged_entry`, { headers });
+  const draft = await detail.json() as { configuration_required?: boolean; config?: { baseUrl?: string; authStyle?: string } };
+  if (!detail.ok || !draft.configuration_required || draft.config?.baseUrl !== '' || draft.config.authStyle !== 'bearer') fail('older installation cannot open its upstream editor');
   await stopRuntime(started.child);
   const key = await readCredential(createLocalDeviceMasterKeyCredential(paths)) ?? fail('older installation created no local key');
   const codec = createAes256GcmStoredSecretCodec(key);
@@ -596,9 +603,25 @@ const assertLegacyEncryptedInstallUpgrade = async (baseDatabasePath: string): Pr
   // Newly entered credentials survive the next normal launch after upgrade.
   const reconfigured = await startRuntime(paths.databasePath, 'personal', {}, paths);
   await persistPersonalSecret(reconfigured.origin, reconfigured.bootstrapToken ?? fail('reconfigured installation has no bootstrap authority'));
+  const restoredSession = await authenticate(reconfigured.origin, reconfigured.bootstrapToken!);
+  const restored = await fetch(`${reconfigured.origin}/api/upstreams/up_packaged_entry`, {
+    method: 'PATCH', headers: { 'x-floway-session': restoredSession, 'content-type': 'application/json' },
+    body: JSON.stringify({ config: {
+      baseUrl: 'https://provider.example', authStyle: 'bearer', apiKey: 'replacement-provider-credential',
+      endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [], modelsFetch: { enabled: false },
+      models: [{ upstreamModelId: 'restored-provider-model', endpoints: { openaiChatCompletions: {} } }],
+    } }),
+  });
+  if (!restored.ok || (await restored.json() as { configuration_required?: boolean }).configuration_required) fail('older installation cannot save its replacement upstream configuration');
+  const catalog = await fetch(`${reconfigured.origin}/api/models`, { headers: { 'x-floway-session': restoredSession } });
+  if (!catalog.ok || !(await catalog.json() as { data: { id: string }[] }).data.some(model => model.id === 'restored-provider-model')) fail('reconfigured upstream is missing from the live catalog');
   await stopRuntime(reconfigured.child);
   const restarted = await startRuntime(paths.databasePath, 'personal', {}, paths);
   await assertPersistedPersonalSecret(restarted.origin, restarted.bootstrapToken ?? fail('restarted older installation has no bootstrap authority'));
+  const restartSession = await authenticate(restarted.origin, restarted.bootstrapToken!);
+  const restartedDetail = await fetch(`${restarted.origin}/api/upstreams/up_packaged_entry`, { headers: { 'x-floway-session': restartSession } });
+  const restartedRecord = await restartedDetail.json() as { configuration_required?: boolean; config?: { apiKey?: string } };
+  if (!restartedDetail.ok || restartedRecord.configuration_required || restartedRecord.config?.apiKey !== 'replacement-provider-credential') fail('re-entered upstream credentials did not survive restart');
   await stopRuntime(restarted.child);
 };
 

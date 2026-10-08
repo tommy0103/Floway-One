@@ -163,6 +163,7 @@ const zhHansCN = {
           version: '版本',
         },
         upstreams: {
+        reconfigurationRequired: '需要重新配置',
           title: '上游',
           totalLabel: '总数',
           total_one: '{{count, number}} 个上游',
@@ -678,6 +679,7 @@ const zhHansCN = {
         },
       },
       upstreamEditor: {
+        reconfigurationRequired: '升级时已重置保存的连接设置。请重新填写连接设置和凭据，保存后恢复此上游。',
         readyToSave: {
           title: '可以保存了',
           description: '保存这个 {{provider}} 上游即可加载它的模型目录。',

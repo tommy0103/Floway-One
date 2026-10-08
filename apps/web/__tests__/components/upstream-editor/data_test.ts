@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
 import type { UpstreamRecord } from '../../../src/api/types';
-import { createBody, previewRecord, updateBody, valuesFromRecord } from '../../../src/components/upstream-editor/data';
+import { canFetchModelCatalog, createBody, previewRecord, updateBody, valuesFromRecord } from '../../../src/components/upstream-editor/data';
 import { upstreamRecord } from '../../api/upstream-fixture';
 
 type CustomRecord = Extract<UpstreamRecord, { kind: 'custom' }>;
@@ -43,4 +43,12 @@ test('Custom editor values add one blank ingress row and never serialize it', ()
   expect((createBody(record, values).config as CustomRecord['config']).ingressHeadersRules).toEqual(expected);
   expect((updateBody(record, values).config as CustomRecord['config']).ingressHeadersRules).toEqual(expected);
   expect((previewRecord(record, values).config as CustomRecord['config']).ingressHeadersRules).toEqual(expected);
+});
+
+
+test('Floway does not probe a reset upstream before its credentials are restored', () => {
+  for (const kind of ['custom', 'azure', 'copilot', 'codex', 'claude-code', 'ollama'] as const) {
+    const pending = upstreamRecord('pending', { kind, configuration_required: true });
+    expect(canFetchModelCatalog(pending, pending.config)).toBe(false);
+  }
 });

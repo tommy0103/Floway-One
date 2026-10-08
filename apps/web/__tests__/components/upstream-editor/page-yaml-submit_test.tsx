@@ -68,7 +68,7 @@ const record = upstreamRecord('up_test', {
 
 const replacementYaml = '- upstreamModelId: replacement\n  publicModelId: replacement\n  kind: chat\n  endpoints:\n    openaiResponses: {}\n';
 
-const renderPage = () => {
+const renderPage = (openingRecord = record) => {
   const router = createMemoryRouter([{
     path: '/editor',
     element: <OutcomeToastProvider><UpstreamEditorPage data={{
@@ -77,7 +77,7 @@ const renderPage = () => {
       mode: 'edit',
       modelsError: null,
       proxies: [],
-      record,
+      record: openingRecord,
       runtime: { kind: 'node', runtimeLocation: 'test' },
       upstreams: [record],
     }} /></OutcomeToastProvider>,
@@ -125,4 +125,17 @@ describe('upstream editor YAML submission', () => {
     expect(await screen.findByText(/line 1, column 21/i)).toBeTruthy();
     expect((screen.getByLabelText('YAML models') as HTMLTextAreaElement).value).toBe('- upstreamModelId: [');
   });
+});
+
+
+it('Floway explains reconfiguration and removes the warning after a successful save', async () => {
+  const pending = { ...record, configuration_required: true as const };
+  const saved = { ...record, config: { ...record.config, models: [model('replacement')] } };
+  apiMocks.patch.mockResolvedValue({ data: saved, error: null });
+  apiMocks.get.mockResolvedValue({ data: saved, error: null });
+  renderPage(pending);
+  expect(screen.getByText(i18n.t('dashboard.upstreamEditor.reconfigurationRequired'))).toBeTruthy();
+  fireEvent.change(await screen.findByLabelText('YAML models'), { target: { value: replacementYaml } });
+  fireEvent.click(screen.getByRole('button', { name: i18n.t('dashboard.upstreamEditor.actions.save') }));
+  await waitFor(() => expect(screen.queryByText(i18n.t('dashboard.upstreamEditor.reconfigurationRequired'))).toBeNull());
 });

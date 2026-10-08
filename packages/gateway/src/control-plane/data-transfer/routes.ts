@@ -24,7 +24,14 @@ import { assertRuntimeProfileData, isPersonalRuntimeProfile, runtimeProfileDataE
 import { type exportQuery, type fullBackupBody, type importBody } from '../schemas.ts';
 import { reportModelsCacheWarmFailure, warmModelsCache } from '../shared/warm-models-cache.ts';
 import { type FullSerializedUpstreamRecord, upstreamRecordToFullJson } from '../upstreams/serialize.ts';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { UpstreamRecord } from '@floway-dev/provider';
+
+type PendingUpstreamBackup = Omit<FullSerializedUpstreamRecord, 'config' | 'state'> & {
+  configuration_required: true;
+  config: Record<string, never>;
+  state: null;
+};
 
 export interface ExportPayload {
   version: 20;
@@ -32,7 +39,7 @@ export interface ExportPayload {
   data: {
     users: User[];
     apiKeys: ApiKey[];
-    upstreams: FullSerializedUpstreamRecord[];
+    upstreams: (FullSerializedUpstreamRecord | PendingUpstreamBackup)[];
     modelAliases: ModelAliasRecord[];
     proxies: SerializedProxy[];
     usage: UsageRecord[];
@@ -70,7 +77,9 @@ export const collectExportPayload = async (includePerformance: boolean): Promise
     data: {
       users,
       apiKeys,
-      upstreams: upstreams.map(upstreamRecordToFullJson),
+      upstreams: upstreams.map(upstream => upstreamNeedsConfiguration(upstream)
+        ? { ...upstreamRecordToFullJson(upstream), configuration_required: true as const, config: {}, state: null }
+        : upstreamRecordToFullJson(upstream)),
       modelAliases,
       proxies: proxies.map(proxy => ({ id: proxy.id, name: proxy.name, url: proxy.url, dial_timeout_seconds: proxy.dialTimeoutSeconds })),
       usage,

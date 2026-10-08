@@ -452,7 +452,7 @@ function UpstreamsTable({
                 <Switch
                   aria-label={t('dashboard.upstreams.actions.toggle', { name: record.name })}
                   checked={pendingEnabled?.id === record.id ? pendingEnabled.enabled : record.enabled}
-                  disabled={busy}
+                  disabled={busy || record.configuration_required}
                   onChange={(_, detail) => onToggle(record, detail.checked)}
                 />
               </TableCentredCell>
@@ -562,6 +562,7 @@ const buildModelCounts = (
 // the operator configured names itself. The plan is not part of it -- the line
 // below states that for every provider that has one.
 const upstreamSummary = (record: UpstreamRecord, t: TFunction): string => {
+  if (record.configuration_required) return t('dashboard.upstreams.reconfigurationRequired');
   switch (record.kind) {
   case 'custom': return record.config.baseUrl;
   case 'azure': return record.config.endpoint;
