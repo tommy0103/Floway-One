@@ -129,6 +129,7 @@ export interface ClaudeCodeUpstreamState {
 }
 
 interface SerializedUpstreamRecordBase {
+  configuration_required?: true;
   id: string;
   name: string;
   enabled: boolean;
@@ -167,11 +168,12 @@ export type RedactedSerializedUpstreamRecord =
   | (SerializedUpstreamRecordBase & { kind: 'custom'; config: RedactedCustomConfig; state: null })
   | (SerializedUpstreamRecordBase & { kind: 'azure'; config: RedactedAzureConfig; state: null })
   | (SerializedUpstreamRecordBase & { kind: 'copilot'; config: RedactedCopilotConfig; state: CopilotUpstreamState | null })
-  | (SerializedUpstreamRecordBase & { kind: 'codex'; config: StoredCodexUpstreamConfig; state: { accounts: RedactedCodexCredential[] } })
-  | (SerializedUpstreamRecordBase & { kind: 'claude-code'; config: StoredClaudeCodeUpstreamConfig; state: { accounts: RedactedClaudeCodeCredential[] } })
+  | (SerializedUpstreamRecordBase & { kind: 'codex'; config: CodexUpstreamConfig; state: { accounts: RedactedCodexCredential[] } })
+  | (SerializedUpstreamRecordBase & { kind: 'claude-code'; config: ClaudeCodeUpstreamConfig; state: { accounts: RedactedClaudeCodeCredential[] } })
   | (SerializedUpstreamRecordBase & { kind: 'ollama'; config: RedactedOllamaConfig; state: StoredOllamaUpstreamState | null });
 
 export type FullSerializedUpstreamRecord =
+  | (BlueprintSerializedUpstreamRecord & { hue: number; configuration_required: true })
   | (SerializedUpstreamRecordBase & { kind: 'custom'; config: StoredCustomUpstreamConfig; state: null })
   | (SerializedUpstreamRecordBase & { kind: 'azure'; config: StoredAzureUpstreamConfig; state: null })
   | (SerializedUpstreamRecordBase & { kind: 'copilot'; config: StoredCopilotUpstreamConfig; state: StoredCopilotUpstreamState | null })

@@ -5,6 +5,7 @@ import type {
 } from './types.ts';
 import { flagDefaultsForKind } from '../../data-plane/providers/registry.ts';
 import type { FlagOverrides, ProxyFallbackEntry, UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import { assertAzureUpstreamRecord } from '@floway-dev/provider-azure';
 import { assertClaudeCodeUpstreamRecord, assertClaudeCodeUpstreamState } from '@floway-dev/provider-claude-code';
 import { assertCodexUpstreamRecord, assertCodexUpstreamState } from '@floway-dev/provider-codex';
@@ -41,7 +42,30 @@ const stateless = (upstream: UpstreamRecord): null => {
   return null;
 };
 
+const configurationDraft = (upstream: UpstreamRecord): FullSerializedUpstreamRecord => ({
+  ...blueprintUpstreamRecord(upstream.kind),
+  ...serializeBase(upstream),
+  configuration_required: true,
+});
+
 export const upstreamRecordToJson = (upstream: UpstreamRecord): RedactedSerializedUpstreamRecord => {
+  if (upstreamNeedsConfiguration(upstream)) {
+    const draft = configurationDraft(upstream);
+    switch (draft.kind) {
+    case 'custom':
+    case 'azure':
+    case 'ollama': {
+      const { apiKey: _apiKey, ...config } = { ...draft.config, apiKey: undefined };
+      return { ...draft, config: { ...config, apiKeySet: false } } as RedactedSerializedUpstreamRecord;
+    }
+    case 'copilot': {
+      const { githubToken: _githubToken, ...config } = draft.config;
+      return { ...draft, config: { ...config, githubTokenSet: false } };
+    }
+    case 'codex':
+    case 'claude-code': return { ...draft, state: { accounts: [] } };
+    }
+  }
   const base = serializeBase(upstream);
   switch (upstream.kind) {
   case 'custom': {
@@ -142,6 +166,7 @@ export const upstreamRecordToJson = (upstream: UpstreamRecord): RedactedSerializ
 };
 
 export const upstreamRecordToFullJson = (upstream: UpstreamRecord): FullSerializedUpstreamRecord => {
+  if (upstreamNeedsConfiguration(upstream)) return configurationDraft(upstream);
   const base = serializeBase(upstream);
   switch (upstream.kind) {
   case 'custom': {

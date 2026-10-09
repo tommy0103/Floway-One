@@ -14,6 +14,7 @@ import { isRecord } from '../shared/field-validators.ts';
 import { nextSortOrder } from '../shared/sort-order.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
 import {
+  upstreamNeedsConfiguration,
   normalizeModelPrefix,
   ALL_PROVIDER_KINDS,
   type ModelPrefixConfig,
@@ -40,6 +41,7 @@ type UpstreamWithCacheResponse = UpstreamResponse & {
 
 const codexQuotaForResponse = async (record: UpstreamRecord): Promise<CodexQuotaProjection> => {
   if (record.kind !== 'codex') return {};
+  if (upstreamNeedsConfiguration(record)) return { codex_quota: null };
   assertCodexUpstreamRecord(record);
   return {
     codex_quota: await getCodexQuota(record.id, record.config.accounts[0].chatgptAccountId),
@@ -75,9 +77,9 @@ const serializeForResponse = async (
     ...serialized,
     proxy_fallback_list: pruneDeletedProxyEntries(serialized.proxy_fallback_list, knownProxyIds),
     modelsCache: {
-      fetchedAt: record.modelsCache?.fetchedAt ?? null,
-      lastError: record.modelsCache?.lastError ?? null,
-      modelCount: storedCatalogSize(record),
+      fetchedAt: upstreamNeedsConfiguration(record) ? null : record.modelsCache?.fetchedAt ?? null,
+      lastError: upstreamNeedsConfiguration(record) ? null : record.modelsCache?.lastError ?? null,
+      modelCount: upstreamNeedsConfiguration(record) ? null : storedCatalogSize(record),
     },
     ...codexQuota,
   };
@@ -329,6 +331,12 @@ export const updateUpstream = async (c: CtxWithJson<typeof updateUpstreamBody, '
     const config = mergeConfigPatch(existing.kind, existing.config, body.config);
     if (!config.ok) return c.json({ error: config.error }, 400);
     next = { ...next, config: config.value };
+  }
+
+  if (upstreamNeedsConfiguration(existing) && body.config === undefined) {
+    if (body.enabled === true) return c.json({ error: 'Configure this upstream before enabling it' }, 400);
+    await getRepo().upstreams.save(next);
+    return c.json(await serializeForResponse(next, knownProxyIds));
   }
 
   const config = normalizeConfig(next);

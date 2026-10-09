@@ -102,6 +102,7 @@ export const loadEditorAux = async (): Promise<EditorAuxData> => {
 // operator is typing decide, and it is the single answer behind the loader,
 // the refresh action and the refresh button.
 export const canFetchModelCatalog = (record: UpstreamRecord, config: UpstreamEditorValues['config']): boolean => {
+  if (record.configuration_required) return false;
   switch (record.kind) {
   case 'custom': {
     const custom = config as Extract<UpstreamRecord, { kind: 'custom' }>['config'];

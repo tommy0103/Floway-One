@@ -97,6 +97,13 @@ export interface UpstreamRecord {
   hue: number;
 }
 
+// Credential reset reserves an empty config with null state for a retained
+// upstream awaiting configuration. Partially populated configs still belong
+// to the provider's strict validator.
+export const upstreamNeedsConfiguration = (record: Pick<UpstreamRecord, 'config' | 'state'>): boolean =>
+  record.state === null && typeof record.config === 'object' && record.config !== null
+  && !Array.isArray(record.config) && Object.keys(record.config).length === 0;
+
 // Public identity + capability surface shared by `InternalModel` (the merged,
 // gateway-facing view) and `ProviderModel` (a single upstream's emission).
 // The two shapes carry the same metadata verbatim; the merge step OR-unions

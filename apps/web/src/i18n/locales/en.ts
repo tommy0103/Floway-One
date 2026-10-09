@@ -619,6 +619,7 @@ const en = {
         },
       },
       upstreams: {
+        reconfigurationRequired: 'Needs configuration',
         empty: 'No upstreams configured. Add an upstream to serve models.',
         actions: {
           create: 'New upstream',
@@ -706,6 +707,7 @@ const en = {
         },
       },
       upstreamEditor: {
+        reconfigurationRequired: 'Saved connection settings were reset during the upgrade. Enter the connection settings and credentials again, then save to restore this upstream.',
         readyToSave: {
           title: 'Ready to save',
           description: 'Save this {{provider}} upstream to load its model catalog.',

@@ -38,7 +38,7 @@ export type {
   UpstreamProviderKind,
   UpstreamRecord,
 } from './model.ts';
-export { ALL_PROVIDER_KINDS, assertUpstreamProviderKind, normalizeUpstreamHue, UPSTREAM_HUE_DEGREES } from './model.ts';
+export { ALL_PROVIDER_KINDS, assertUpstreamProviderKind, upstreamNeedsConfiguration, normalizeUpstreamHue, UPSTREAM_HUE_DEGREES } from './model.ts';
 export type { PerformanceOperation, PerformanceTelemetryContext, TelemetryModelIdentity } from './telemetry.ts';
 export { parsePerformanceOperation, PERFORMANCE_OPERATIONS } from './telemetry.ts';
 

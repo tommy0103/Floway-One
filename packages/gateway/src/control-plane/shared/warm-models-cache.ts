@@ -7,6 +7,7 @@ import { getRepo } from '../../repo/index.ts';
 import { backgroundSchedulerFromContext } from '../../runtime/background.ts';
 import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
 import type { BackgroundScheduler } from '@floway-dev/platform';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
 
 export const reportModelsCacheWarmFailure = (
@@ -38,6 +39,7 @@ export const warmModelsCacheCore = async (
   scheduler: BackgroundScheduler,
   runtimeLocation: string,
 ): Promise<UpstreamModelsCache | null> => {
+  if (upstreamNeedsConfiguration(record)) return null;
   const provider = createProvider(record);
   const fetcher = (await createPerRequestFetcher(runtimeLocation))(record.id);
   try {

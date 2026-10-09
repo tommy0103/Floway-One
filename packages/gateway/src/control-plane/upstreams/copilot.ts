@@ -6,6 +6,7 @@ import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
 import type { copilotOAuthDeviceLoginPollBody, copilotOAuthDeviceLoginStartBody, copilotQuotaBody } from '../schemas.ts';
 import { isRecord } from '../shared/field-validators.ts';
 import { warmModelsCache } from '../shared/warm-models-cache.ts';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import type { Fetcher, UpstreamRecord } from '@floway-dev/provider';
 import {
   assertCopilotUpstreamRecord,
@@ -139,8 +140,8 @@ export const copilotOAuthDeviceLoginPoll = async (c: CtxWithJson<typeof copilotO
     const dbRecord = await getRepo().upstreams.getById(record.id);
     if (!dbRecord) return c.json({ status: 'error' as const, error: 'Upstream not found' }, 404);
     if (dbRecord.kind !== 'copilot') return c.json({ status: 'error' as const, error: 'Upstream is not a Copilot upstream' }, 400);
-    const previous = assertCopilotUpstreamRecord(dbRecord);
-    const sameIdentity = previous.config.githubHost === githubHost && previous.config.user.id === cred.user.id;
+    const previous = upstreamNeedsConfiguration(dbRecord) ? null : assertCopilotUpstreamRecord(dbRecord);
+    const sameIdentity = previous !== null && previous.config.githubHost === githubHost && previous.config.user.id === cred.user.id;
     const prevState = sameIdentity ? readCopilotUpstreamState(dbRecord.state) : emptyCopilotUpstreamState();
     nextState = { ...prevState, copilotToken: cred.tokenEntry, seat: cred.seat ?? prevState.seat };
     const previousUpdatedAt = Date.parse(dbRecord.updatedAt);

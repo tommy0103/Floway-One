@@ -3,9 +3,11 @@ import { test } from 'vitest';
 import { blueprintUpstreamRecord, upstreamRecordToFullJson } from '../../../src/control-plane/upstreams/serialize.ts';
 import { MODEL_LISTING_FAILURE_CODE } from '../../../src/data-plane/models/shared.ts';
 import { MODEL_CATALOG_REVISION } from '../../../src/data-plane/providers/models-cache.ts';
+import { listModelProviders } from '../../../src/data-plane/providers/registry.ts';
 import { MOCKED_FETCH_EGRESS, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { ALL_PROVIDER_KINDS } from '@floway-dev/provider';
 import type { UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
-import { assertEquals, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
+import { assertEquals, jsonResponse, sseResponse, withMockedFetch } from '@floway-dev/test-utils';
 
 type JsonObject = Record<string, any>;
 
@@ -924,11 +926,12 @@ test('POST /api/upstreams/codex/oauth/exchange in create state (auth_json) retur
   assertEquals(body.patch.state.accounts[0].refresh_token, 'rt_test');
 });
 
-test('POST /api/upstreams/codex/oauth/exchange in edit state persists the patch to the stored row', async () => {
+test.each([false, true])('Floway Codex OAuth exchange restores the stored row (reset=%s)', async reset => {
   const { repo, adminSession } = await setupAppTest();
   await repo.upstreams.deleteAll();
 
   const initial = await createCodexUpstreamViaExchange(adminSession);
+  if (reset) await repo.upstreams.save({ ...await getRecord(repo, initial.id), config: {}, state: null });
   // Re-import with a rotated refresh_token to prove the exchange overwrites
   // config + state on the existing row rather than appending an account.
   await requestApp('/api/upstreams/codex/oauth/exchange', authed(adminSession, {
@@ -2591,4 +2594,86 @@ test('POST /api/upstreams/claude-code/oauth/refresh recovers as success when a s
   assertEquals(storedState.accounts[0].state, 'active');
   assertEquals(storedState.accounts[0].refreshToken, 'rt_sibling_rotated');
   assertEquals(storedState.accounts[0].accessToken?.token, 'at_sibling_rotated');
+});
+
+test('Floway keeps reset upstreams listable and editable until configuration is restored', async () => {
+  const { repo, adminSession, copilotUpstream, apiKey } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  for (const kind of ALL_PROVIDER_KINDS) {
+    await repo.upstreams.save({ ...copilotUpstream, id: `reset_${kind}`, kind, name: `Reset ${kind}`, config: {}, state: null });
+  }
+  const list = await requestApp('/api/upstreams', authed(adminSession));
+  assertEquals(list.status, 200);
+  const items = await list.json() as JsonObject[];
+  assertEquals(items.length, ALL_PROVIDER_KINDS.length);
+  for (const kind of ALL_PROVIDER_KINDS) {
+    const item = items.find(row => row.kind === kind)!;
+    assertEquals(item.configuration_required, true);
+    assertEquals(item.name, `Reset ${kind}`);
+    const detail = await requestApp(`/api/upstreams/reset_${kind}`, authed(adminSession));
+    assertEquals(detail.status, 200);
+    const draft = await detail.json() as JsonObject;
+    assertEquals(draft.configuration_required, true);
+    assertEquals(draft.config, blueprintUpstreamRecord(kind).config);
+    assertEquals(draft.state, blueprintUpstreamRecord(kind).state);
+    const renamed = await requestApp(`/api/upstreams/reset_${kind}`, { ...authed(adminSession, { name: `Reconfigure ${kind}` }), method: 'PATCH' });
+    assertEquals(renamed.status, 200);
+    assertEquals((await renamed.json() as JsonObject).configuration_required, true);
+  }
+  assertEquals((await listModelProviders(null)).length, 0);
+  const invalid = await requestApp('/api/upstreams/reset_custom', { ...authed(adminSession, { config: { authStyle: 'bearer' } }), method: 'PATCH' });
+  assertEquals(invalid.status, 400);
+  assertEquals((await repo.upstreams.getById('reset_custom'))!.config, {});
+  const restored = await requestApp('/api/upstreams/reset_custom', {
+    ...authed(adminSession, { config: { ...customConfig, modelsFetch: { enabled: false }, models: [{ upstreamModelId: 'restored', endpoints: { openaiChatCompletions: {} } }] } }),
+    method: 'PATCH',
+  });
+  assertEquals(restored.status, 200);
+  assertEquals((await restored.json() as JsonObject).configuration_required, undefined);
+  assertEquals((await listModelProviders(null)).map(provider => provider.upstreamId), ['reset_custom']);
+  const models = await requestApp('/api/models', authed(adminSession));
+  assertEquals(models.status, 200);
+  assertEquals((await models.json() as JsonObject).data.map((model: JsonObject) => model.id), ['restored']);
+  await withMockedFetch(request => {
+    assertEquals(request.url, 'https://custom.example.com/v1/chat/completions');
+    assertEquals(request.headers.get('authorization'), 'Bearer sk-test');
+    const chunks = [
+      { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: { role: 'assistant', content: 'Restored' }, finish_reason: null }] },
+      { id: 'reply', object: 'chat.completion.chunk', created: 0, model: 'restored', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('');
+    return sseResponse(`${chunks}data: [DONE]\n\n`);
+  }, async () => {
+    const reply = await requestApp('/v1/chat/completions', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey.key}` },
+      body: JSON.stringify({ model: 'restored', messages: [{ role: 'user', content: 'Test reconfiguration' }] }),
+    });
+    const replyBody = await reply.json() as JsonObject;
+    assertEquals(reply.status, 200, JSON.stringify(replyBody));
+    assertEquals(replyBody.choices[0].message.content, 'Restored');
+  });
+});
+
+test('Floway rejects partially populated configs instead of treating them as reset upstreams', async () => {
+  const { repo, adminSession, copilotUpstream } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await repo.upstreams.save({ ...copilotUpstream, kind: 'custom', config: { authStyle: 'oauth' }, state: null });
+  const response = await requestApp('/api/upstreams', authed(adminSession));
+  assertEquals(response.status, 500);
+});
+
+test('Floway Claude Code OAuth exchange restores a reset upstream', async () => {
+  const { repo, adminSession, copilotUpstream } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await repo.upstreams.save({ ...copilotUpstream, kind: 'claude-code', config: {}, state: null });
+  await withMockedFetch(() => jsonResponse(claudeCodeProfileBody), async () => {
+    const response = await requestApp('/api/upstreams/claude-code/oauth/exchange', authed(adminSession, {
+      record: envelopeFromRecord(await getRecord(repo, copilotUpstream.id)), credentials_json: claudeCodeCredentialsJson(),
+    }));
+    assertEquals(response.status, 200);
+  });
+  const restored = await requestApp(`/api/upstreams/${copilotUpstream.id}`, authed(adminSession));
+  assertEquals(restored.status, 200);
+  const row = await restored.json() as JsonObject;
+  assertEquals(row.configuration_required, undefined);
+  assertEquals(row.state.accounts[0].refreshToken, 'cli_rt');
 });

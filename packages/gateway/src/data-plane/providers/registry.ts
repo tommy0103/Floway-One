@@ -2,6 +2,7 @@ import { getRepo } from '../../repo/index.ts';
 import type { ModelsCacheGeneration } from '../../repo/types.ts';
 import { serializeStoredConfig } from '../../repo/upstream-json.ts';
 import type { FlagDefaults, Provider, ProviderModule, UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
+import { upstreamNeedsConfiguration } from '@floway-dev/provider';
 import { azureProviderModule } from '@floway-dev/provider-azure';
 import { claudeCodeProviderModule } from '@floway-dev/provider-claude-code';
 import { codexProviderModule } from '@floway-dev/provider-codex';
@@ -27,6 +28,7 @@ export const createProvider = (
   record: UpstreamRecord,
   cacheGeneration: ModelsCacheGeneration = { updatedAt: record.updatedAt, config: record.config },
 ): GatewayProvider => {
+  if (upstreamNeedsConfiguration(record)) throw new Error(`Floway upstream ${record.id} requires configuration`);
   const provider = providersByKind[record.kind].create(record);
   return {
     ...provider,
@@ -58,7 +60,7 @@ export const listModelProviders = async (
   const upstreams = preFetchedUpstreams ?? await getRepo().upstreams.list();
   const enabledById = new Map<string, UpstreamRecord>();
   for (const upstream of upstreams) {
-    if (upstream.enabled) enabledById.set(upstream.id, upstream);
+    if (upstream.enabled && !upstreamNeedsConfiguration(upstream)) enabledById.set(upstream.id, upstream);
   }
 
   // The filter is the intersection of the per-user and per-api-key caps, both
